@@ -390,7 +390,11 @@ void OCC::SyncEngine::slotItemDiscovered(const OCC::SyncFileItemPtr &item)
             }
 
             if (item->_type == CSyncEnums::ItemTypeVirtualFile) {
-                if (item->_locked == SyncFileItem::LockStatus::LockedItem && (item->_lockOwnerType != SyncFileItem::LockOwnerType::TokenLock || item->_lockOwnerId != account()->davUser())) {
+                const auto lockOwnerTypeToSkipReadonly = _account->capabilities().filesLockTypeAvailable()
+                    ? SyncFileItem::LockOwnerType::TokenLock
+                    : SyncFileItem::LockOwnerType::UserLock;
+                if (item->_locked == SyncFileItem::LockStatus::LockedItem
+                    && (item->_lockOwnerType != lockOwnerTypeToSkipReadonly || item->_lockOwnerId != account()->davUser())) {
                     qCDebug(lcEngine()) << filePath << "file is locked: making it read only";
                     FileSystem::setFileReadOnly(filePath, true);
                 } else {
@@ -894,10 +898,11 @@ void SyncEngine::slotDiscoveryFinished()
         qCInfo(lcEngine) << "#### Post-Reconcile end #################################################### " << _stopWatch.addLapTime(QStringLiteral("Post-Reconcile Finished")) << "ms";
     };
 
-    if (!_hasNoneFiles && _hasRemoveFile) {
+    const auto displayDialog = ConfigFile().promptDeleteFiles() && !_syncOptions.isCmd();
+    if (!_hasNoneFiles && _hasRemoveFile && displayDialog) {
         qCInfo(lcEngine) << "All the files are going to be changed, asking the user";
         int side = 0; // > 0 means more deleted on the server.  < 0 means more deleted on the client
-        foreach (const auto &it, _syncItems) {
+        for (const auto &it : _syncItems) {
             if (it->_instruction == CSYNC_INSTRUCTION_REMOVE) {
                 side += it->_direction == SyncFileItem::Down ? 1 : -1;
             }

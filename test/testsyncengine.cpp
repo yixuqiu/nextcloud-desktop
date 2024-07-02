@@ -96,6 +96,8 @@ private slots:
     {
         Logger::instance()->setLogFlush(true);
         Logger::instance()->setLogDebug(true);
+
+        QStandardPaths::setTestModeEnabled(true);
     }
 
     void init()
@@ -1907,6 +1909,75 @@ private slots:
         fakeFolder.remoteModifier().insert("a/TESTDIR");
         QVERIFY(fakeFolder.syncOnce());
         QCOMPARE(fakeFolder.currentLocalState(), fakeFolder.currentRemoteState());
+    }
+
+    void testRemoveAllFilesWithNextcloudCmd()
+    {
+        FakeFolder fakeFolder{FileInfo{}};
+        auto nextcloudCmdSyncOptions = fakeFolder.syncEngine().syncOptions();
+        nextcloudCmdSyncOptions.setIsCmd(true);
+        fakeFolder.syncEngine().setSyncOptions(nextcloudCmdSyncOptions);
+        ConfigFile().setPromptDeleteFiles(true);
+        QSignalSpy displayDialogSignal(&fakeFolder.syncEngine(), &SyncEngine::aboutToRemoveAllFiles);
+
+        fakeFolder.remoteModifier().mkdir("folder");
+        fakeFolder.remoteModifier().insert("folder/file1");
+        fakeFolder.remoteModifier().insert("folder/file2");
+        fakeFolder.remoteModifier().insert("folder/file3");
+        fakeFolder.remoteModifier().mkdir("folder2");
+        fakeFolder.remoteModifier().insert("file1");
+        fakeFolder.remoteModifier().insert("file2");
+        fakeFolder.remoteModifier().insert("file3");
+
+        QVERIFY(fakeFolder.syncOnce());
+
+        fakeFolder.remoteModifier().remove("folder");
+        fakeFolder.remoteModifier().remove("folder2");
+        fakeFolder.remoteModifier().remove("file1");
+        fakeFolder.remoteModifier().remove("file2");
+        fakeFolder.remoteModifier().remove("file3");
+
+        QVERIFY(fakeFolder.syncOnce());
+        // the signal to display the dialog should not be emitted
+        QCOMPARE(displayDialogSignal.count(), 0);
+        QCOMPARE(fakeFolder.remoteModifier().find("folder"), nullptr);
+        QCOMPARE(fakeFolder.remoteModifier().find("folder2"), nullptr);
+        QCOMPARE(fakeFolder.remoteModifier().find("file1"), nullptr);
+    }
+
+    void testRemoveAllFilesWithoutNextcloudCmd()
+    {
+        FakeFolder fakeFolder{FileInfo{}};
+        auto nextcloudCmdSyncOptions = fakeFolder.syncEngine().syncOptions();
+        nextcloudCmdSyncOptions.setIsCmd(false);
+        fakeFolder.syncEngine().setSyncOptions(nextcloudCmdSyncOptions);
+        ConfigFile().setPromptDeleteFiles(true);
+        QSignalSpy displayDialogSignal(&fakeFolder.syncEngine(), &SyncEngine::aboutToRemoveAllFiles);
+
+        fakeFolder.remoteModifier().mkdir("folder");
+        fakeFolder.remoteModifier().insert("folder/file1");
+        fakeFolder.remoteModifier().insert("folder/file2");
+        fakeFolder.remoteModifier().insert("folder/file3");
+        fakeFolder.remoteModifier().mkdir("folder2");
+        fakeFolder.remoteModifier().insert("file1");
+        fakeFolder.remoteModifier().insert("file2");
+        fakeFolder.remoteModifier().insert("file3");
+
+        QVERIFY(fakeFolder.syncOnce());
+        QCOMPARE(fakeFolder.currentLocalState(), fakeFolder.currentRemoteState());
+
+        fakeFolder.remoteModifier().remove("folder");
+        fakeFolder.remoteModifier().remove("folder2");
+        fakeFolder.remoteModifier().remove("file1");
+        fakeFolder.remoteModifier().remove("file2");
+        fakeFolder.remoteModifier().remove("file3");
+
+        QVERIFY(fakeFolder.syncOnce());
+        // the signal to show the dialog should be emitted
+        QCOMPARE(displayDialogSignal.count(), 1);
+        QCOMPARE(fakeFolder.remoteModifier().find("folder"), nullptr);
+        QCOMPARE(fakeFolder.remoteModifier().find("folder2"), nullptr);
+        QCOMPARE(fakeFolder.remoteModifier().find("file1"), nullptr);
     }
 };
 
