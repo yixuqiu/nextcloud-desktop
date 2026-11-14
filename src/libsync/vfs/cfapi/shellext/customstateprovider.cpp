@@ -1,15 +1,6 @@
 /*
- * Copyright (C) by Oleksandr Zolotov <alex@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2022 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "customstateprovider.h"
@@ -84,8 +75,8 @@ CustomStateProvider::GetItemProperties(hstring const &itemPath)
 
             winrt::Windows::Storage::Provider::StorageProviderItemProperty itemProperty;
             itemProperty.Id(stateValue);
-            itemProperty.Value(QString("Value%1").arg(stateValue).toStdWString());
-            itemProperty.IconResource(QString(_dllFilePath + QString(",%1").arg(QString::number(stateValue))).toStdWString());
+            itemProperty.Value(QStringLiteral("Value%1").arg(stateValue).toStdWString());
+            itemProperty.IconResource(QString(_dllFilePath + QStringLiteral(",%1").arg(QString::number(stateValue))).toStdWString());
             properties.push_back(std::move(itemProperty));
         }
     }

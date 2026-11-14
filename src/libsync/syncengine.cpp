@@ -1,16 +1,7 @@
 /*
- * Copyright (C) by Duncan Mac-Vicar P. <duncan@kde.org>
- * Copyright (C) by Klaas Freitag <freitag@owncloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2020 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2014 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "syncengine.h"
@@ -57,6 +48,7 @@
 #include <QProcess>
 #include <QElapsedTimer>
 #include <QFileInfo>
+#include <QStorageInfo>
 #include <qtextcodec.h>
 
 namespace OCC {
@@ -215,7 +207,7 @@ void SyncEngine::deleteStaleDownloadInfos(const SyncFileItemVector &syncItems)
 {
     // Find all downloadinfo paths that we want to preserve.
     QSet<QString> download_file_paths;
-    foreach (const SyncFileItemPtr &it, syncItems) {
+    for (const SyncFileItemPtr &it : syncItems) {
         if (it->_direction == SyncFileItem::Down
             && it->_type == ItemTypeFile
             && isFileTransferInstruction(it->_instruction)) {
@@ -226,10 +218,11 @@ void SyncEngine::deleteStaleDownloadInfos(const SyncFileItemVector &syncItems)
     // Delete from journal and from filesystem.
     const QVector<SyncJournalDb::DownloadInfo> deleted_infos =
         _journal->getAndDeleteStaleDownloadInfos(download_file_paths);
-    foreach (const SyncJournalDb::DownloadInfo &deleted_info, deleted_infos) {
-        const QString tmppath = _propagator->fullLocalPath(deleted_info._tmpfile);
-        qCInfo(lcEngine) << "Deleting stale temporary file: " << tmppath;
-        FileSystem::remove(tmppath);
+    for (const SyncJournalDb::DownloadInfo &deleted_info : deleted_infos) {
+        const auto tmppath = _propagator->fullLocalPath(deleted_info._tmpfile);
+        if (QFileInfo::exists(tmppath)) {
+            FileSystem::remove(tmppath);
+        }
     }
 }
 
@@ -237,7 +230,7 @@ void SyncEngine::deleteStaleUploadInfos(const SyncFileItemVector &syncItems)
 {
     // Find all blacklisted paths that we want to preserve.
     QSet<QString> upload_file_paths;
-    foreach (const SyncFileItemPtr &it, syncItems) {
+    for (const SyncFileItemPtr &it: syncItems) {
         if (it->_direction == SyncFileItem::Up
             && it->_type == ItemTypeFile
             && isFileTransferInstruction(it->_instruction)) {
@@ -250,11 +243,12 @@ void SyncEngine::deleteStaleUploadInfos(const SyncFileItemVector &syncItems)
 
     // Delete the stales chunk on the server.
     if (account()->capabilities().chunkingNg()) {
-        foreach (uint transferId, ids) {
-            if (!transferId)
+        for (uint transferId : std::as_const(ids)) {
+            if (!transferId) {
                 continue; // Was not a chunked upload
+            }
             QUrl url = Utility::concatUrlPath(account()->url(), QLatin1String("remote.php/dav/uploads/") + account()->davUser() + QLatin1Char('/') + QString::number(transferId));
-            (new DeleteJob(account(), url, this))->start();
+            (new DeleteJob(account(), url, {}, this))->start();
         }
     }
 }
@@ -263,9 +257,10 @@ void SyncEngine::deleteStaleErrorBlacklistEntries(const SyncFileItemVector &sync
 {
     // Find all blacklisted paths that we want to preserve.
     QSet<QString> blacklist_file_paths;
-    foreach (const SyncFileItemPtr &it, syncItems) {
-        if (it->_hasBlacklistEntry)
+    for (const SyncFileItemPtr &it : syncItems) {
+        if (it->_hasBlacklistEntry) {
             blacklist_file_paths.insert(it->_file);
+        }
     }
 
     // Delete from journal.
@@ -273,11 +268,6 @@ void SyncEngine::deleteStaleErrorBlacklistEntries(const SyncFileItemVector &sync
         qCWarning(lcEngine) << "Could not delete StaleErrorBlacklistEntries from DB";
     }
 }
-
-#if (QT_VERSION < 0x050600)
-template <typename T>
-constexpr typename std::add_const<T>::type &qAsConst(T &t) noexcept { return t; }
-#endif
 
 void SyncEngine::conflictRecordMaintenance()
 {
@@ -287,7 +277,7 @@ void SyncEngine::conflictRecordMaintenance()
     const auto conflictRecordPaths = _journal->conflictRecordPaths();
     for (const auto &path : conflictRecordPaths) {
         auto fsPath = _propagator->fullLocalPath(QString::fromUtf8(path));
-        if (!QFileInfo::exists(fsPath)) {
+        if (!FileSystem::fileExists(fsPath)) {
             _journal->deleteConflictRecord(path);
         }
     }
@@ -297,7 +287,7 @@ void SyncEngine::conflictRecordMaintenance()
     //
     // This happens when the conflicts table is new or when conflict files
     // are downloaded but the server doesn't send conflict headers.
-    for (const auto &path : qAsConst(_seenConflictFiles)) {
+    for (const auto &path : std::as_const(_seenConflictFiles)) {
         ASSERT(Utility::isConflictFile(path));
 
         auto bapath = path.toUtf8();
@@ -326,7 +316,7 @@ void SyncEngine::caseClashConflictRecordMaintenance()
     const auto conflictRecordPaths = _journal->caseClashConflictRecordPaths();
     for (const auto &path : conflictRecordPaths) {
         const auto fsPath = _propagator->fullLocalPath(QString::fromUtf8(path));
-        if (!QFileInfo::exists(fsPath)) {
+        if (!FileSystem::fileExists(fsPath)) {
             _journal->deleteCaseClashConflictByPathRecord(path);
         }
     }
@@ -335,10 +325,11 @@ void SyncEngine::caseClashConflictRecordMaintenance()
 
 void OCC::SyncEngine::slotItemDiscovered(const OCC::SyncFileItemPtr &item)
 {
-    emit itemDiscovered(item);
+    Q_EMIT itemDiscovered(item);
 
-    if (Utility::isConflictFile(item->_file))
+    if (Utility::isConflictFile(item->_file)) {
         _seenConflictFiles.insert(item->_file);
+    }
     if (item->_instruction == CSYNC_INSTRUCTION_UPDATE_METADATA && !item->isDirectory()) {
         // For directories, metadata-only updates will be done after all their files are propagated.
 
@@ -368,12 +359,17 @@ void OCC::SyncEngine::slotItemDiscovered(const OCC::SyncFileItemPtr &item)
                 const bool isReadOnly = !item->_remotePerm.isNull() && !item->_remotePerm.hasPermission(RemotePermissions::CanWrite);
                 modificationHappened = FileSystem::setFileReadOnlyWeak(filePath, isReadOnly);
             }
+            if (item->isPermissionsInvalid) {
+                const auto isReadOnly = !item->_remotePerm.isNull() && !item->_remotePerm.hasPermission(RemotePermissions::CanWrite);
+                FileSystem::setFileReadOnly(filePath, isReadOnly);
+            }
 
             modificationHappened |= item->_size != prev._fileSize;
 
             auto rec = item->toSyncJournalFileRecordWithInode(filePath);
-            if (rec._checksumHeader.isEmpty())
+            if (rec._checksumHeader.isEmpty()) {
                 rec._checksumHeader = prev._checksumHeader;
+            }
             rec._serverHasIgnoredFiles |= prev._serverHasIgnoredFiles;
 
             // Ensure it's a placeholder file on disk
@@ -383,14 +379,18 @@ void OCC::SyncEngine::slotItemDiscovered(const OCC::SyncFileItemPtr &item)
                     item->_status = SyncFileItem::Status::NormalError;
                     item->_instruction = CSYNC_INSTRUCTION_ERROR;
                     item->_errorString = tr("Could not update file: %1").arg(result.error());
-                    emit itemCompleted(item, ErrorCategory::GenericError);
+                    Q_EMIT itemCompleted(item, ErrorCategory::GenericError);
                     return;
                 }
                 modificationHappened = true;
             }
 
             if (item->_type == CSyncEnums::ItemTypeVirtualFile) {
-                if (item->_locked == SyncFileItem::LockStatus::LockedItem && (item->_lockOwnerType != SyncFileItem::LockOwnerType::TokenLock || item->_lockOwnerId != account()->davUser())) {
+                const auto lockOwnerTypeToSkipReadonly = _account->capabilities().filesLockTypeAvailable()
+                    ? SyncFileItem::LockOwnerType::TokenLock
+                    : SyncFileItem::LockOwnerType::UserLock;
+                if (item->_locked == SyncFileItem::LockStatus::LockedItem
+                    && (item->_lockOwnerType != lockOwnerTypeToSkipReadonly || item->_lockOwnerId != account()->davUser())) {
                     qCDebug(lcEngine()) << filePath << "file is locked: making it read only";
                     FileSystem::setFileReadOnly(filePath, true);
                 } else {
@@ -403,19 +403,19 @@ void OCC::SyncEngine::slotItemDiscovered(const OCC::SyncFileItemPtr &item)
 
             // Update on-disk virtual file metadata
             if (modificationHappened && item->_type == ItemTypeVirtualFile) {
-                auto r = _syncOptions._vfs->updateMetadata(filePath, item->_modtime, item->_size, item->_fileId);
+                auto r = _syncOptions._vfs->updateMetadata(*item, filePath, {});
                 if (!r) {
                     item->_status = SyncFileItem::Status::NormalError;
                     item->_instruction = CSYNC_INSTRUCTION_ERROR;
                     item->_errorString = tr("Could not update virtual file metadata: %1").arg(r.error());
-                    emit itemCompleted(item, ErrorCategory::GenericError);
+                    Q_EMIT itemCompleted(item, ErrorCategory::GenericError);
                     return;
                 }
             } else if (prev._modtime != item->_modtime) {
                 if (!FileSystem::setModTime(filePath, item->_modtime)) {
                     item->_instruction = CSYNC_INSTRUCTION_ERROR;
                     item->_errorString = tr("Could not update file metadata: %1").arg(filePath);
-                    emit itemCompleted(item, ErrorCategory::GenericError);
+                    Q_EMIT itemCompleted(item, ErrorCategory::GenericError);
                     return;
                 }
             }
@@ -429,7 +429,7 @@ void OCC::SyncEngine::slotItemDiscovered(const OCC::SyncFileItemPtr &item)
             }
 
             // This might have changed the shared flag, so we must notify SyncFileStatusTracker for example
-            emit itemCompleted(item, ErrorCategory::NoError);
+            Q_EMIT itemCompleted(item, ErrorCategory::NoError);
         } else {
             // Update only outdated data from the disk.
 
@@ -441,6 +441,7 @@ void OCC::SyncEngine::slotItemDiscovered(const OCC::SyncFileItemPtr &item)
             lockInfo._lockOwnerType = static_cast<qint64>(item->_lockOwnerType);
             lockInfo._lockOwnerDisplayName = item->_lockOwnerDisplayName;
             lockInfo._lockEditorApp = item->_lockOwnerDisplayName;
+            lockInfo._lockToken = item->_lockToken;
 
             if (!_journal->updateLocalMetadata(item->_file, item->_modtime, item->_size, item->_inode, lockInfo)) {
                 qCWarning(lcEngine) << "Could not update local metadata for file" << item->_file;
@@ -509,9 +510,13 @@ void SyncEngine::startSync()
             for (const auto &e2EeLockedFolder : e2EeLockedFolders) {
                 const auto folderId = e2EeLockedFolder.first;
                 qCInfo(lcEngine()) << "start unlock job for folderId:" << folderId;
-                const auto folderToken = EncryptionHelper::decryptStringAsymmetric(_account->e2e()->_privateKey, e2EeLockedFolder.second);
+                const auto folderToken = EncryptionHelper::decryptStringAsymmetric(_account->e2e()->getCertificateInformation(), _account->e2e()->paddingMode(), *_account->e2e(), e2EeLockedFolder.second);
+                if (!folderToken) {
+                    qCWarning(lcEngine()) << "decrypt failed";
+                    return;
+                }
                 // TODO: We need to rollback changes done to metadata in case we have an active lock, this needs to be implemented on the server first
-                const auto unlockJob = new OCC::UnlockEncryptFolderApiJob(_account, folderId, folderToken, _journal, this);
+                const auto unlockJob = new OCC::UnlockEncryptFolderApiJob(_account, folderId, *folderToken, _journal, this);
                 unlockJob->setShouldRollbackMetadataChanges(true);
                 unlockJob->start();
             }
@@ -537,7 +542,7 @@ void SyncEngine::startSync()
 
     _progressInfo->reset();
 
-    if (!QDir(_localPath).exists()) {
+    if (!QFileInfo::exists(_localPath)) {
         _anotherSyncNeeded = DelayedFollowUp;
         // No _tr, it should only occur in non-mirall
         Q_EMIT syncError(QStringLiteral("Unable to find local sync folder."), ErrorCategory::GenericError);
@@ -623,20 +628,23 @@ void SyncEngine::startSync()
 
     _stopWatch.start();
     _progressInfo->_status = ProgressInfo::Starting;
-    emit transmissionProgress(*_progressInfo);
+    Q_EMIT transmissionProgress(*_progressInfo);
 
     qCInfo(lcEngine) << "#### Discovery start ####################################################";
     qCInfo(lcEngine) << "Server" << account()->serverVersion()
                      << (account()->isHttp2Supported() ? "Using HTTP/2" : "");
     _progressInfo->_status = ProgressInfo::Discovery;
-    emit transmissionProgress(*_progressInfo);
+    Q_EMIT transmissionProgress(*_progressInfo);
 
-    _discoveryPhase.reset(new DiscoveryPhase);
+    _remnantReadOnlyFolders.clear();
+
+    _discoveryPhase = std::make_unique<DiscoveryPhase>();
+    _discoveryPhase->_fileSystemReliablePermissions = _filesystemPermissionsReliable;
     _discoveryPhase->_leadingAndTrailingSpacesFilesAllowed = _leadingAndTrailingSpacesFilesAllowed;
     _discoveryPhase->_account = _account;
     _discoveryPhase->_excludes = _excludedFiles.data();
     const QString excludeFilePath = _localPath + QStringLiteral(".sync-exclude.lst");
-    if (QFile::exists(excludeFilePath)) {
+    if (FileSystem::fileExists(excludeFilePath)) {
         _discoveryPhase->_excludes->addExcludeFilePath(excludeFilePath);
         _discoveryPhase->_excludes->reloadExcludeFiles();
     }
@@ -646,7 +654,6 @@ void SyncEngine::startSync()
     _discoveryPhase->_syncOptions = _syncOptions;
     _discoveryPhase->_shouldDiscoverLocaly = [this](const QString &path) {
         const auto result = shouldDiscoverLocally(path);
-        qCDebug(lcEngine) << "shouldDiscoverLocaly" << path << (result ? "true" : "false");
         return result;
     };
     _discoveryPhase->setSelectiveSyncBlackList(selectiveSyncBlackList);
@@ -657,6 +664,28 @@ void SyncEngine::startSync()
         finalize(false);
         return;
     }
+
+    const auto accountCaps = _account->capabilities();
+    const auto forbiddenFilenames = accountCaps.forbiddenFilenames();
+    const auto forbiddenBasenames = accountCaps.forbiddenFilenameBasenames();
+    const auto forbiddenExtensions = accountCaps.forbiddenFilenameExtensions();
+    const auto forbiddenChars = accountCaps.forbiddenFilenameCharacters();
+
+    _discoveryPhase->_forbiddenFilenames = forbiddenFilenames;
+    _discoveryPhase->_forbiddenBasenames = forbiddenBasenames;
+    _discoveryPhase->_forbiddenExtensions = forbiddenExtensions;
+    _discoveryPhase->_forbiddenChars = forbiddenChars;
+    if (!forbiddenFilenames.isEmpty() &&
+        !forbiddenBasenames.isEmpty() &&
+        !forbiddenExtensions.isEmpty() &&
+        !forbiddenChars.isEmpty()) {
+        _shouldEnforceWindowsFileNameCompatibility = true;
+        _discoveryPhase->_shouldEnforceWindowsFileNameCompatibility = _shouldEnforceWindowsFileNameCompatibility;
+    }
+#if defined Q_OS_WINDOWS
+    _shouldEnforceWindowsFileNameCompatibility = true;
+    _discoveryPhase->_shouldEnforceWindowsFileNameCompatibility = _shouldEnforceWindowsFileNameCompatibility;
+#endif
 
     // Check for invalid character in old server version
     QString invalidFilenamePattern = _account->capabilities().invalidFilenameRegex();
@@ -669,21 +698,24 @@ void SyncEngine::startSync()
         // version check doesn't make sense for custom servers.
         invalidFilenamePattern = R"([\\:?*"<>|])";
     }
-    if (!invalidFilenamePattern.isEmpty())
+    if (!invalidFilenamePattern.isEmpty()) {
         _discoveryPhase->_invalidFilenameRx = QRegularExpression(invalidFilenamePattern);
+    }
     _discoveryPhase->_serverBlacklistedFiles = _account->capabilities().blacklistedFiles();
     _discoveryPhase->_ignoreHiddenFiles = ignoreHiddenFiles();
 
-    connect(_discoveryPhase.data(), &DiscoveryPhase::itemDiscovered, this, &SyncEngine::slotItemDiscovered);
-    connect(_discoveryPhase.data(), &DiscoveryPhase::newBigFolder, this, &SyncEngine::newBigFolder);
-    connect(_discoveryPhase.data(), &DiscoveryPhase::existingFolderNowBig, this, &SyncEngine::existingFolderNowBig);
-    connect(_discoveryPhase.data(), &DiscoveryPhase::fatalError, this, [this](const QString &errorString, ErrorCategory errorCategory) {
+    connect(_discoveryPhase.get(), &DiscoveryPhase::itemDiscovered, this, &SyncEngine::slotItemDiscovered);
+    connect(_discoveryPhase.get(), &DiscoveryPhase::newBigFolder, this, &SyncEngine::newBigFolder);
+    connect(_discoveryPhase.get(), &DiscoveryPhase::existingFolderNowBig, this, &SyncEngine::existingFolderNowBig);
+    connect(_discoveryPhase.get(), &DiscoveryPhase::fatalError, this, [this](const QString &errorString, ErrorCategory errorCategory) {
         Q_EMIT syncError(errorString, errorCategory);
         finalize(false);
     });
-    connect(_discoveryPhase.data(), &DiscoveryPhase::finished, this, &SyncEngine::slotDiscoveryFinished);
-    connect(_discoveryPhase.data(), &DiscoveryPhase::silentlyExcluded,
+    connect(_discoveryPhase.get(), &DiscoveryPhase::finished, this, &SyncEngine::slotDiscoveryFinished);
+    connect(_discoveryPhase.get(), &DiscoveryPhase::silentlyExcluded,
         _syncFileStatusTracker.data(), &SyncFileStatusTracker::slotAddSilentlyExcluded);
+    connect(_discoveryPhase.get(), &DiscoveryPhase::remnantReadOnlyFolderDiscovered, this, &SyncEngine::remnantReadOnlyFolderDiscovered);
+    connect(_discoveryPhase.get(), &DiscoveryPhase::seenLockedFile, this, &SyncEngine::seenLockedFile);
 
     ProcessDirectoryJob *discoveryJob = nullptr;
 
@@ -718,26 +750,29 @@ void SyncEngine::startSync()
         }();
 
         discoveryJob = new ProcessDirectoryJob(
-            _discoveryPhase.data(),
+            _discoveryPhase.get(),
             pinState,
             path,
             singleItemDiscoveryOptions().discoveryDirItem,
+            {},
             localQueryMode,
             _journal->keyValueStoreGetInt("last_sync", 0),
-            _discoveryPhase.data()
+            _discoveryPhase.get()
         );
     } else {
         discoveryJob = new ProcessDirectoryJob(
-            _discoveryPhase.data(),
+            _discoveryPhase.get(),
             PinState::AlwaysLocal,
             _journal->keyValueStoreGetInt("last_sync", 0),
-            _discoveryPhase.data()
+            _discoveryPhase.get()
         );
     }
     
     _discoveryPhase->startJob(discoveryJob);
     connect(discoveryJob, &ProcessDirectoryJob::etag, this, &SyncEngine::slotRootEtagReceived);
-    connect(_discoveryPhase.data(), &DiscoveryPhase::addErrorToGui, this, &SyncEngine::addErrorToGui);
+    connect(discoveryJob, &ProcessDirectoryJob::updatedRootFolderQuota, account().data(), &Account::rootFolderQuotaChanged);
+    connect(discoveryJob, &ProcessDirectoryJob::rootFileIdReceived, this, &SyncEngine::slotRootFileIdReceived);
+    connect(_discoveryPhase.get(), &DiscoveryPhase::addErrorToGui, this, &SyncEngine::addErrorToGui);
 }
 
 void SyncEngine::slotFolderDiscovered(bool local, const QString &folder)
@@ -756,7 +791,7 @@ void SyncEngine::slotFolderDiscovered(bool local, const QString &folder)
         _progressInfo->_currentDiscoveredRemoteFolder = folder;
         _progressInfo->_currentDiscoveredLocalFolder.clear();
     }
-    emit transmissionProgress(*_progressInfo);
+    Q_EMIT transmissionProgress(*_progressInfo);
 }
 
 void SyncEngine::slotRootEtagReceived(const QByteArray &e, const QDateTime &time)
@@ -764,8 +799,18 @@ void SyncEngine::slotRootEtagReceived(const QByteArray &e, const QDateTime &time
     if (_remoteRootEtag.isEmpty()) {
         qCDebug(lcEngine) << "Root etag:" << e;
         _remoteRootEtag = e;
-        emit rootEtag(_remoteRootEtag, time);
+        Q_EMIT rootEtag(_remoteRootEtag, time);
     }
+}
+
+void SyncEngine::slotRootFileIdReceived(const qint64 fileId)
+{
+    if (_rootFileIdReceived) {
+        return;
+    }
+    _rootFileId = fileId;
+    _rootFileIdReceived = true;
+    Q_EMIT rootFileIdReceived(fileId);
 }
 
 void SyncEngine::slotNewItem(const SyncFileItemPtr &item)
@@ -796,139 +841,33 @@ void SyncEngine::slotDiscoveryFinished()
     _progressInfo->_currentDiscoveredRemoteFolder.clear();
     _progressInfo->_currentDiscoveredLocalFolder.clear();
     _progressInfo->_status = ProgressInfo::Reconcile;
-    emit transmissionProgress(*_progressInfo);
+    Q_EMIT transmissionProgress(*_progressInfo);
 
-    //    qCInfo(lcEngine) << "Permissions of the root folder: " << _csync_ctx->remote.root_perms.toString();
-    auto finish = [this]{
-        auto databaseFingerprint = _journal->dataFingerprint();
-        // If databaseFingerprint is empty, this means that there was no information in the database
-        // (for example, upgrading from a previous version, or first sync, or server not supporting fingerprint)
-        if (!databaseFingerprint.isEmpty() && _discoveryPhase
-            && _discoveryPhase->_dataFingerprint != databaseFingerprint) {
-            qCInfo(lcEngine) << "data fingerprint changed, assume restore from backup" << databaseFingerprint << _discoveryPhase->_dataFingerprint;
-            restoreOldFiles(_syncItems);
-        }
+    if (shouldRestartSync()) {
+        // Fail the sync once and try again next time.
+        qCInfo(lcEngine) << "Restarting sync as discovery results might be incomplete.";
+        _anotherSyncNeeded = DelayedFollowUp;
+        _restartedSyncAfterDiscovery = true;
+        finalize(false);
+        return;
+    } else {
+        _restartedSyncAfterDiscovery = false;
+    }
 
-        if (_discoveryPhase->_anotherSyncNeeded && !_discoveryPhase->_filesNeedingScheduledSync.empty()) {
-            slotScheduleFilesDelayedSync();
-        } else if (_discoveryPhase->_anotherSyncNeeded && _anotherSyncNeeded == NoFollowUpSync) {
-            _anotherSyncNeeded = ImmediateFollowUp;
-        }
-
-        if (!_discoveryPhase->_filesUnscheduleSync.empty()) {
-            slotUnscheduleFilesDelayedSync();
-        }
-
-        if (_discoveryPhase->_hasDownloadRemovedItems && _discoveryPhase->_hasUploadErrorItems) {
-            for (const auto &item : qAsConst(_syncItems)) {
-                if (item->_instruction == CSYNC_INSTRUCTION_ERROR && item->_direction == SyncFileItem::Up) {
-                    item->_instruction = CSYNC_INSTRUCTION_IGNORE;
-                }
-            }
-            _anotherSyncNeeded = ImmediateFollowUp;
-        }
-
-        Q_ASSERT(std::is_sorted(_syncItems.begin(), _syncItems.end()));
-
-        qCInfo(lcEngine) << "#### Reconcile (aboutToPropagate) #################################################### " << _stopWatch.addLapTime(QStringLiteral("Reconcile (aboutToPropagate)")) << "ms";
-
-        _localDiscoveryPaths.clear();
-
-        // To announce the beginning of the sync
-        emit aboutToPropagate(_syncItems);
-
-        qCInfo(lcEngine) << "#### Reconcile (aboutToPropagate OK) #################################################### "<< _stopWatch.addLapTime(QStringLiteral("Reconcile (aboutToPropagate OK)")) << "ms";
-
-        // it's important to do this before ProgressInfo::start(), to announce start of new sync
-        _progressInfo->_status = ProgressInfo::Propagation;
-        emit transmissionProgress(*_progressInfo);
-        _progressInfo->startEstimateUpdates();
-
-        // post update phase script: allow to tweak stuff by a custom script in debug mode.
-        if (!qEnvironmentVariableIsEmpty("OWNCLOUD_POST_UPDATE_SCRIPT")) {
-    #ifndef NDEBUG
-            const QString script = qEnvironmentVariable("OWNCLOUD_POST_UPDATE_SCRIPT");
-
-            qCDebug(lcEngine) << "Post Update Script: " << script;
-            auto scriptArgs = script.split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
-            if (scriptArgs.size() > 0) {
-                const auto scriptExecutable = scriptArgs.takeFirst();
-                QProcess::execute(scriptExecutable, scriptArgs);
-            }
-#else
-            qCWarning(lcEngine) << "**** Attention: POST_UPDATE_SCRIPT installed, but not executed because compiled with NDEBUG";
-    #endif
-        }
-
-        // do a database commit
-        _journal->commit(QStringLiteral("post treewalk"));
-
-        _propagator = QSharedPointer<OwncloudPropagator>(
-            new OwncloudPropagator(_account, _localPath, _remotePath, _journal, _bulkUploadBlackList));
-        _propagator->setSyncOptions(_syncOptions);
-        connect(_propagator.data(), &OwncloudPropagator::itemCompleted,
-            this, &SyncEngine::slotItemCompleted);
-        connect(_propagator.data(), &OwncloudPropagator::progress,
-            this, &SyncEngine::slotProgress);
-        connect(_propagator.data(), &OwncloudPropagator::finished, this, &SyncEngine::slotPropagationFinished, Qt::QueuedConnection);
-        connect(_propagator.data(), &OwncloudPropagator::seenLockedFile, this, &SyncEngine::seenLockedFile);
-        connect(_propagator.data(), &OwncloudPropagator::touchedFile, this, &SyncEngine::slotAddTouchedFile);
-        connect(_propagator.data(), &OwncloudPropagator::insufficientLocalStorage, this, &SyncEngine::slotInsufficientLocalStorage);
-        connect(_propagator.data(), &OwncloudPropagator::insufficientRemoteStorage, this, &SyncEngine::slotInsufficientRemoteStorage);
-        connect(_propagator.data(), &OwncloudPropagator::newItem, this, &SyncEngine::slotNewItem);
-
-        // apply the network limits to the propagator
-        setNetworkLimits(_uploadLimit, _downloadLimit);
-
-        deleteStaleDownloadInfos(_syncItems);
-        deleteStaleUploadInfos(_syncItems);
-        deleteStaleErrorBlacklistEntries(_syncItems);
-        _journal->commit(QStringLiteral("post stale entry removal"));
-
-        // Emit the started signal only after the propagator has been set up.
-        if (_needsUpdate)
-            Q_EMIT started();
-
-        _propagator->start(std::move(_syncItems));
-
-        qCInfo(lcEngine) << "#### Post-Reconcile end #################################################### " << _stopWatch.addLapTime(QStringLiteral("Post-Reconcile Finished")) << "ms";
-    };
-
-    if (!_hasNoneFiles && _hasRemoveFile) {
-        qCInfo(lcEngine) << "All the files are going to be changed, asking the user";
-        int side = 0; // > 0 means more deleted on the server.  < 0 means more deleted on the client
-        foreach (const auto &it, _syncItems) {
-            if (it->_instruction == CSYNC_INSTRUCTION_REMOVE) {
-                side += it->_direction == SyncFileItem::Down ? 1 : -1;
-            }
-        }
-
-        QPointer<QObject> guard = new QObject();
-        QPointer<QObject> self = this;
-        auto callback = [this, self, finish, guard](bool cancel) -> void {
-            // use a guard to ensure its only called once...
-            // qpointer to self to ensure we still exist
-            if (!guard || !self) {
-                return;
-            }
-            guard->deleteLater();
-            if (cancel) {
-                qCInfo(lcEngine) << "User aborted sync";
-                finalize(false);
-                return;
-            } else {
-                finish();
-            }
-        };
-        emit aboutToRemoveAllFiles(side >= 0 ? SyncFileItem::Down : SyncFileItem::Up, callback);
+    if (handleMassDeletion()) {
         return;
     }
-    finish();
+
+    if (!_remnantReadOnlyFolders.isEmpty()) {
+        handleRemnantReadOnlyFolders();
+    }
+
+    finishSync();
 }
 
 void SyncEngine::slotCleanPollsJobAborted(const QString &error, const ErrorCategory errorCategory)
 {
-    emit syncError(error, errorCategory);
+    Q_EMIT syncError(error, errorCategory);
     finalize(false);
 }
 
@@ -939,7 +878,7 @@ void SyncEngine::detectFileLock(const SyncFileItemPtr &item)
         item->_direction == SyncFileItem::Up && item->_status == SyncFileItem::Success;
 
     if (isNewlyUploadedFile && item->_locked != SyncFileItem::LockStatus::LockedItem && _account->capabilities().filesLockAvailable() &&
-        FileSystem::isMatchingOfficeFileExtension(item->_file)) {
+        (FileSystem::isMatchingOfficeFileExtension(item->_file) || FileSystem::isMatchingAutoCADDocumentExtension(item->_file) || FileSystem::isMatchingAdobeDocumentExtension(item->_file) || FileSystem::isMatchingAffinityDocumentExtension(item->_file))) {
         {
             SyncJournalFileRecord rec;
             if (!_journal->getFileRecord(item->_file, &rec) || !rec.isValid()) {
@@ -953,7 +892,7 @@ void SyncEngine::detectFileLock(const SyncFileItemPtr &item)
             const auto checkResult = FileSystem::lockFileTargetFilePath(lockFilePath, FileSystem::filePathLockFilePatternMatch(lockFilePath));
             if (checkResult.type == FileSystem::FileLockingInfo::Type::Locked && checkResult.path == localFilePath) {
                 qCInfo(lcEngine) << "Newly-created office file lock detected. Let FolderWatcher take it from here..." << item->_file;
-                emit lockFileDetected(lockFilePath);
+                Q_EMIT lockFileDetected(lockFilePath);
             }
         }
     }
@@ -964,8 +903,9 @@ void SyncEngine::setNetworkLimits(int upload, int download)
     _uploadLimit = upload;
     _downloadLimit = download;
 
-    if (!_propagator)
+    if (!_propagator) {
         return;
+    }
 
     _propagator->_uploadLimit = upload;
     _propagator->_downloadLimit = download;
@@ -979,8 +919,8 @@ void SyncEngine::slotItemCompleted(const SyncFileItemPtr &item, const ErrorCateg
 {
     _progressInfo->setProgressComplete(*item);
 
-    emit transmissionProgress(*_progressInfo);
-    emit itemCompleted(item, category);
+    Q_EMIT transmissionProgress(*_progressInfo);
+    Q_EMIT itemCompleted(item, category);
 
     detectFileLock(item);
 }
@@ -1006,7 +946,7 @@ void SyncEngine::slotPropagationFinished(OCC::SyncFileItem::Status status)
     // so we don't count this twice (like Recent Files)
     _progressInfo->_lastCompletedItem = SyncFileItem();
     _progressInfo->_status = ProgressInfo::Done;
-    emit transmissionProgress(*_progressInfo);
+    Q_EMIT transmissionProgress(*_progressInfo);
 
     finalize(status == SyncFileItem::Success);
 }
@@ -1019,11 +959,11 @@ void SyncEngine::finalize(bool success)
     _stopWatch.stop();
 
     if (_discoveryPhase) {
-        _discoveryPhase.take()->deleteLater();
+        _discoveryPhase.release()->deleteLater();
     }
     s_anySyncRunning = false;
     _syncRunning = false;
-    emit finished(success);
+    Q_EMIT finished(success);
 
     if (_account->shouldSkipE2eeMetadataChecksumValidation()) {
         qCDebug(lcEngine) << "shouldSkipE2eeMetadataChecksumValidation was set. Sync is finished, so resetting it...";
@@ -1061,7 +1001,7 @@ void SyncEngine::processCaseClashConflictsBeforeDiscovery()
 void SyncEngine::slotProgress(const SyncFileItem &item, qint64 current)
 {
     _progressInfo->setProgressItem(item, current);
-    emit transmissionProgress(*_progressInfo);
+    Q_EMIT transmissionProgress(*_progressInfo);
 }
 
 
@@ -1073,7 +1013,7 @@ void SyncEngine::restoreOldFiles(SyncFileItemVector &syncItems)
        upload the client file. But we still downloaded the old file in a conflict file just in case
     */
 
-    for (const auto &syncItem : qAsConst(syncItems)) {
+    for (const auto &syncItem : std::as_const(syncItems)) {
         if (syncItem->_direction != SyncFileItem::Down || syncItem->_isSelectiveSync) {
             continue;
         }
@@ -1100,6 +1040,217 @@ void SyncEngine::restoreOldFiles(SyncFileItemVector &syncItems)
     }
 }
 
+void SyncEngine::cancelSyncOrContinue(bool cancel)
+{
+    if (cancel) {
+        qCInfo(lcEngine) << "User aborted sync";
+        finalize(false);
+    } else {
+        finishSync();
+    }
+}
+
+void SyncEngine::finishSync()
+{
+    auto databaseFingerprint = _journal->dataFingerprint();
+    // If databaseFingerprint is empty, this means that there was no information in the database
+    // (for example, upgrading from a previous version, or first sync, or server not supporting fingerprint)
+    if (!databaseFingerprint.isEmpty() && _discoveryPhase
+        && _discoveryPhase->_dataFingerprint != databaseFingerprint) {
+        qCInfo(lcEngine) << "data fingerprint changed, assume restore from backup" << databaseFingerprint << _discoveryPhase->_dataFingerprint;
+        restoreOldFiles(_syncItems);
+    }
+
+    if (_discoveryPhase && _discoveryPhase->_anotherSyncNeeded && !_discoveryPhase->_filesNeedingScheduledSync.empty()) {
+        slotScheduleFilesDelayedSync();
+    } else if (_discoveryPhase && _discoveryPhase->_anotherSyncNeeded && _anotherSyncNeeded == NoFollowUpSync) {
+        _anotherSyncNeeded = ImmediateFollowUp;
+    }
+
+    if (_discoveryPhase && !_discoveryPhase->_filesUnscheduleSync.empty()) {
+        slotUnscheduleFilesDelayedSync();
+    }
+
+    if (_discoveryPhase && _discoveryPhase->_hasDownloadRemovedItems && _discoveryPhase->_hasUploadErrorItems) {
+        for (const auto &item : std::as_const(_syncItems)) {
+            if (item->_instruction == CSYNC_INSTRUCTION_ERROR && item->_direction == SyncFileItem::Up) {
+                // item->_instruction = CSYNC_INSTRUCTION_IGNORE;
+            }
+        }
+        _anotherSyncNeeded = ImmediateFollowUp;
+    }
+
+    Q_ASSERT(std::is_sorted(_syncItems.begin(), _syncItems.end()));
+
+    qCInfo(lcEngine) << "#### Reconcile (aboutToPropagate) #################################################### " << _stopWatch.addLapTime(QStringLiteral("Reconcile (aboutToPropagate)")) << "ms";
+
+    _localDiscoveryPaths.clear();
+
+    // To announce the beginning of the sync
+    Q_EMIT aboutToPropagate(_syncItems);
+
+    qCInfo(lcEngine) << "#### Reconcile (aboutToPropagate OK) #################################################### "<< _stopWatch.addLapTime(QStringLiteral("Reconcile (aboutToPropagate OK)")) << "ms";
+
+    // it's important to do this before ProgressInfo::start(), to announce start of new sync
+    _progressInfo->_status = ProgressInfo::Propagation;
+    Q_EMIT transmissionProgress(*_progressInfo);
+    _progressInfo->startEstimateUpdates();
+
+    // do a database commit
+    _journal->commit(QStringLiteral("post treewalk"));
+
+    _propagator = QSharedPointer<OwncloudPropagator>(
+        new OwncloudPropagator(_account, _localPath, _remotePath, _journal, _bulkUploadBlackList));
+    _propagator->setSyncOptions(_syncOptions);
+    connect(_propagator.data(), &OwncloudPropagator::itemCompleted,
+            this, &SyncEngine::slotItemCompleted);
+    connect(_propagator.data(), &OwncloudPropagator::progress,
+            this, &SyncEngine::slotProgress);
+    connect(_propagator.data(), &OwncloudPropagator::finished, this, &SyncEngine::slotPropagationFinished, Qt::QueuedConnection);
+    connect(_propagator.data(), &OwncloudPropagator::seenLockedFile, this, &SyncEngine::seenLockedFile);
+    connect(_propagator.data(), &OwncloudPropagator::touchedFile, this, &SyncEngine::slotAddTouchedFile);
+    connect(_propagator.data(), &OwncloudPropagator::insufficientLocalStorage, this, &SyncEngine::slotInsufficientLocalStorage);
+    connect(_propagator.data(), &OwncloudPropagator::insufficientRemoteStorage, this, &SyncEngine::slotInsufficientRemoteStorage);
+    connect(_propagator.data(), &OwncloudPropagator::newItem, this, &SyncEngine::slotNewItem);
+
+    // apply the network limits to the propagator
+    setNetworkLimits(_uploadLimit, _downloadLimit);
+
+    deleteStaleDownloadInfos(_syncItems);
+    deleteStaleUploadInfos(_syncItems);
+    deleteStaleErrorBlacklistEntries(_syncItems);
+    _journal->commit(QStringLiteral("post stale entry removal"));
+
+    // Emit the started signal only after the propagator has been set up.
+    if (_needsUpdate) {
+        Q_EMIT started();
+    }
+
+    _propagator->start(std::move(_syncItems));
+
+    qCInfo(lcEngine) << "#### Post-Reconcile end #################################################### " << _stopWatch.addLapTime(QStringLiteral("Post-Reconcile Finished")) << "ms";
+}
+
+bool SyncEngine::shouldRestartSync() const
+{
+    // On Windows with cfapi enabled it's possible that the discovery phase didn't detect all changed files.
+    //
+    // There is a disconnect between file system events reported and what the low-level file system APIs
+    // return -- it's possible that a folder did not yet contain the changed files on the file system even
+    // though these files were already reported by the folder watcher.  This sometimes happens when moving a
+    // directory from one place to another; in that case the rename would not be caught during the discovery
+    // phase, resulting in a remote delete operation of the folder at the original path.
+    //
+    // It's better to restart the sync a bit later to ensure we didn't miss anything.
+
+    if (_restartedSyncAfterDiscovery) {
+        // This is the second attempt: assume the discovery result is complete.
+        return false;
+    }
+
+    if (const auto vfs = _syncOptions._vfs; vfs && vfs->mode() != Vfs::WindowsCfApi) {
+        // Not using cfapi -- no issue there.
+        return false;
+    }
+
+    for (const auto &syncItem : _syncItems) {
+        // If there's at least one remove instruction to be propagated to the remote: bail out, we might have lost a local rename.
+        if (syncItem->_instruction == CSYNC_INSTRUCTION_REMOVE && syncItem->_direction == SyncFileItem::Up) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool SyncEngine::handleMassDeletion()
+{
+    const auto displayDialog = ConfigFile().promptDeleteFiles() && !_syncOptions.isCmd();
+    const auto allFilesDeleted = !_hasNoneFiles && _hasRemoveFile;
+
+    auto deletionCounter = 0;
+    for (const auto &oneItem : std::as_const(_syncItems)) {
+        if (oneItem->_instruction == CSYNC_INSTRUCTION_REMOVE) {
+            if (oneItem->isDirectory()) {
+                const auto result = _journal->listFilesInPath(oneItem->_file.toUtf8(), [&deletionCounter] (const auto &oneRecord) {
+                    if (oneRecord.isFile()) {
+                        ++deletionCounter;
+                    }
+                });
+                if (!result) {
+                    qCDebug(lcEngine()) << "unable to find the number of files within a deleted folder:" << oneItem->_file;
+                }
+            } else {
+                ++deletionCounter;
+            }
+        }
+    }
+    const auto filesDeletedThresholdExceeded = deletionCounter > ConfigFile().deleteFilesThreshold();
+
+    if ((allFilesDeleted || filesDeletedThresholdExceeded) && displayDialog) {
+        qCWarning(lcEngine) << "Many files are going to be deleted, asking the user";
+        int side = 0; // > 0 means more deleted on the server.  < 0 means more deleted on the client
+        for (const auto &it : std::as_const(_syncItems)) {
+            if (it->_instruction == CSYNC_INSTRUCTION_REMOVE) {
+                side += it->_direction == SyncFileItem::Down ? 1 : -1;
+            }
+        }
+
+        promptUserBeforePropagation([this, side](auto &&callback){
+            Q_EMIT aboutToRemoveAllFiles(side >= 0 ? SyncFileItem::Down : SyncFileItem::Up, callback);
+        });
+        return true;
+    }
+    return false;
+}
+
+void SyncEngine::handleRemnantReadOnlyFolders()
+{
+    auto listOfFolders = QStringList{};
+    for (const auto &oneFolder : std::as_const(_remnantReadOnlyFolders)) {
+        listOfFolders.push_back(oneFolder->_file);
+    }
+
+    qCInfo(lcEngine()) << "will delete invalid read-only folders:" << listOfFolders.join(", ");
+
+    for(const auto &oneFolder : std::as_const(_remnantReadOnlyFolders)) {
+        const auto fileInfo = QFileInfo{_localPath + oneFolder->_file};
+        const auto parentFolderPath = fileInfo.dir().absolutePath();
+        slotAddTouchedFile(parentFolderPath);
+        const auto parentPermissionsHandler = FileSystem::FilePermissionsRestore{parentFolderPath, FileSystem::FolderPermissions::ReadWrite};
+        slotAddTouchedFile(_localPath + oneFolder->_file);
+
+        if (oneFolder->_type == ItemType::ItemTypeDirectory) {
+            const auto deletionCallback = [this] (const QString &deleteItem, bool) {
+                slotAddTouchedFile(deleteItem);
+            };
+
+            qCInfo(lcEngine()) << "delete" << _localPath + oneFolder->_file;
+            FileSystem::removeRecursively(_localPath + oneFolder->_file, deletionCallback, nullptr, deletionCallback);
+        } else {
+            FileSystem::remove(_localPath + oneFolder->_file);
+        }
+    }
+}
+
+template <typename T>
+void SyncEngine::promptUserBeforePropagation(T &&lambda)
+{
+    QPointer<QObject> guard = new QObject();
+    QPointer<QObject> self = this;
+    auto callback = [this, self, guard](bool cancel) -> void {
+        // use a guard to ensure its only called once...
+        // qpointer to self to ensure we still exist
+        if (!guard || !self) {
+            return;
+        }
+        guard->deleteLater();
+
+        cancelSyncOrContinue(cancel);
+    };
+
+    lambda(callback);
+}
+
 void SyncEngine::slotAddTouchedFile(const QString &fn)
 {
     QElapsedTimer now;
@@ -1109,8 +1260,9 @@ void SyncEngine::slotAddTouchedFile(const QString &fn)
     // Iterate from the oldest and remove anything older than 15 seconds.
     while (true) {
         auto first = _touchedFiles.begin();
-        if (first == _touchedFiles.end())
+        if (first == _touchedFiles.end()) {
             break;
+        }
         // Compare to our new QElapsedTimer instead of using elapsed().
         // This avoids querying the current time from the OS for every loop.
         auto elapsed = std::chrono::milliseconds(now.msecsSinceReference() - first.key().msecsSinceReference());
@@ -1136,13 +1288,19 @@ void SyncEngine::addAcceptedInvalidFileName(const QString& filePath)
     _leadingAndTrailingSpacesFilesAllowed.append(filePath);
 }
 
+void SyncEngine::setLocalDiscoveryEnforceWindowsFileNameCompatibility(bool value)
+{
+    _shouldEnforceWindowsFileNameCompatibility = value;
+}
+
 bool SyncEngine::wasFileTouched(const QString &fn) const
 {
     // Start from the end (most recent) and look for our path. Check the time just in case.
     auto begin = _touchedFiles.constBegin();
     for (auto it = _touchedFiles.constEnd(); it != begin; --it) {
-        if ((it-1).value() == fn)
-            return std::chrono::milliseconds((it-1).key().elapsed()) <= s_touchedFilesMaxAgeMs;
+        if (const auto prevIt = std::prev(it); prevIt.value() == fn) {
+            return std::chrono::milliseconds(prevIt.key().elapsed()) <= s_touchedFilesMaxAgeMs;
+        }
     }
     return false;
 }
@@ -1151,6 +1309,15 @@ void SyncEngine::setLocalDiscoveryOptions(LocalDiscoveryStyle style, std::set<QS
 {
     _localDiscoveryStyle = style;
     _localDiscoveryPaths = std::move(paths);
+
+    if (lcEngine().isDebugEnabled() && !_localDiscoveryPaths.empty()) {
+        // only execute if logging is enabled
+        auto debug = qDebug(lcEngine);
+        debug << "paths to discover locally";
+        for (const auto &path : _localDiscoveryPaths) {
+            debug << path;
+        }
+    }
 
     // Normalize to make sure that no path is a contained in another.
     // Note: for simplicity, this code consider anything less than '/' as a path separator, so for
@@ -1179,10 +1346,19 @@ const SyncEngine::SingleItemDiscoveryOptions &SyncEngine::singleItemDiscoveryOpt
     return _singleItemDiscoveryOptions;
 }
 
+void SyncEngine::setFilesystemPermissionsReliable(bool reliable)
+{
+    _filesystemPermissionsReliable = reliable;
+}
+
 bool SyncEngine::shouldDiscoverLocally(const QString &path) const
 {
-    if (_localDiscoveryStyle == LocalDiscoveryStyle::FilesystemOnly)
-        return true;
+    auto result = false;
+
+    if (_localDiscoveryStyle == LocalDiscoveryStyle::FilesystemOnly) {
+        result = true;
+        return result;
+    }
 
     // The intention is that if "A/X" is in _localDiscoveryPaths:
     // - parent folders like "/", "A" will be discovered (to make sure the discovery reaches the
@@ -1196,33 +1372,49 @@ bool SyncEngine::shouldDiscoverLocally(const QString &path) const
     if (it == _localDiscoveryPaths.end() || !it->startsWith(path)) {
         // Maybe a subfolder of something in the list?
         if (it != _localDiscoveryPaths.begin() && path.startsWith(*(--it))) {
-            return it->endsWith('/') || (path.size() > it->size() && path.at(it->size()) <= '/');
+            result = it->endsWith('/') || (path.size() > it->size() && path.at(it->size()) <= '/');
+            if (!result) {
+                qCDebug(lcEngine()) << path << "no local discovery needed";
+            }
+            return result;
         }
-        return false;
+        result = false;
+        qCDebug(lcEngine()) << path << "no local discovery needed";
+        return result;
     }
 
     // maybe an exact match or an empty path?
-    if (it->size() == path.size() || path.isEmpty())
+    if (it->size() == path.size() || path.isEmpty()) {
         return true;
+    }
 
     // Maybe a parent folder of something in the list?
     // check for a prefix + / match
-    forever {
-        if (it->size() > path.size() && it->at(path.size()) == '/')
-            return true;
+    Q_FOREVER {
+        if (it->size() > path.size() && it->at(path.size()) == '/') {
+            result = true;
+            return result;
+        }
+
         ++it;
-        if (it == _localDiscoveryPaths.end() || !it->startsWith(path))
-            return false;
+        if (it == _localDiscoveryPaths.end() || !it->startsWith(path)) {
+            result = false;
+            qCDebug(lcEngine()) << path << "no local discovery needed";
+            return result;
+        }
     }
-    return false;
+
+    qCDebug(lcEngine()) << path << "no local discovery needed";
+    return result;
 }
 
 void SyncEngine::wipeVirtualFiles(const QString &localPath, SyncJournalDb &journal, Vfs &vfs)
 {
     qCInfo(lcEngine) << "Wiping virtual files inside" << localPath;
     const auto resGetFilesBelowPath = journal.getFilesBelowPath(QByteArray(), [&](const SyncJournalFileRecord &rec) {
-        if (rec._type != ItemTypeVirtualFile && rec._type != ItemTypeVirtualFileDownload)
+        if (rec._type != ItemTypeVirtualFile && rec._type != ItemTypeVirtualFileDownload && rec._type != ItemTypeVirtualDirectory) {
             return;
+        }
 
         qCDebug(lcEngine) << "Removing db record for" << rec.path();
         if (!journal.deleteFileRecord(rec._path)) {
@@ -1232,7 +1424,7 @@ void SyncEngine::wipeVirtualFiles(const QString &localPath, SyncJournalDb &journ
         // If the local file is a dehydrated placeholder, wipe it too.
         // Otherwise leave it to allow the next sync to have a new-new conflict.
         QString localFile = localPath + rec._path;
-        if (QFile::exists(localFile) && vfs.isDehydratedPlaceholder(localFile)) {
+        if (FileSystem::fileExists(localFile) && vfs.isDehydratedPlaceholder(localFile)) {
             qCDebug(lcEngine) << "Removing local dehydrated placeholder" << rec.path();
             QFile::remove(localFile);
         }
@@ -1279,8 +1471,8 @@ void SyncEngine::abort()
     } else if (_discoveryPhase) {
         // Delete the discovery and all child jobs after ensuring
         // it can't finish and start the propagator
-        disconnect(_discoveryPhase.data(), nullptr, this, nullptr);
-        _discoveryPhase.take()->deleteLater();
+        disconnect(_discoveryPhase.get(), nullptr, this, nullptr);
+        _discoveryPhase.release()->deleteLater();
         qCInfo(lcEngine) << "Aborting sync in discovery...";
         finalize(false);
     }
@@ -1288,11 +1480,12 @@ void SyncEngine::abort()
 
 void SyncEngine::slotSummaryError(const QString &message)
 {
-    if (_uniqueErrors.contains(message))
+    if (_uniqueErrors.contains(message)) {
         return;
+    }
 
     _uniqueErrors.insert(message);
-    emit syncError(message, ErrorCategory::GenericError);
+    Q_EMIT syncError(message, ErrorCategory::GenericError);
 }
 
 void SyncEngine::slotInsufficientLocalStorage()
@@ -1306,11 +1499,12 @@ void SyncEngine::slotInsufficientLocalStorage()
 void SyncEngine::slotInsufficientRemoteStorage()
 {
     auto msg = tr("There is insufficient space available on the server for some uploads.");
-    if (_uniqueErrors.contains(msg))
+    if (_uniqueErrors.contains(msg)) {
         return;
+    }
 
     _uniqueErrors.insert(msg);
-    emit syncError(msg, ErrorCategory::InsufficientRemoteStorage);
+    Q_EMIT syncError(msg, ErrorCategory::InsufficientRemoteStorage);
 }
 
 void SyncEngine::slotScheduleFilesDelayedSync()
@@ -1365,7 +1559,7 @@ void SyncEngine::slotScheduleFilesDelayedSync()
         newTimer->callOnTimeout(this, [this, newTimer] {
             qCInfo(lcEngine) << "Rescanning now that delayed sync run is scheduled for:" << newTimer->files;
 
-            for (const auto &file : qAsConst(newTimer->files)) {
+            for (const auto &file : std::as_const(newTimer->files)) {
                 this->_filesScheduledForLaterSync.remove(file);
             }
 
@@ -1374,6 +1568,7 @@ void SyncEngine::slotScheduleFilesDelayedSync()
         });
 
         addFilesToTimerAndScheduledHash(newTimer);
+        qCDebug(lcEngine) << "automated sync will be fired at" << scheduledSyncTimerMsecs;
         newTimer->start(scheduledSyncTimerMsecs);
         _scheduledSyncTimers.append(newTimer);
     }
@@ -1485,13 +1680,18 @@ void SyncEngine::slotCleanupScheduledSyncTimers()
     }
 }
 
+void SyncEngine::remnantReadOnlyFolderDiscovered(const SyncFileItemPtr &item)
+{
+    _remnantReadOnlyFolders.push_back(item);
+}
+
 void SyncEngine::slotUnscheduleFilesDelayedSync()
 {
     if (!_discoveryPhase || _discoveryPhase->_filesUnscheduleSync.empty()) {
         return;
     }
 
-    for (const auto &file : qAsConst(_discoveryPhase->_filesUnscheduleSync)) {
+    for (const auto &file : std::as_const(_discoveryPhase->_filesUnscheduleSync)) {
         const auto fileSyncRunTimer = _filesScheduledForLaterSync.value(file);
 
         if (fileSyncRunTimer) {

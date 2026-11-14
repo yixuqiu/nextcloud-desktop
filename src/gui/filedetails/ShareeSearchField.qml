@@ -1,27 +1,20 @@
 /*
- * Copyright (C) 2022 by Claudio Cambra <claudio.cambra@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2022 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
-import QtQuick 2.15
-import QtQuick.Window 2.15
-import QtQuick.Layouts 1.2
-import QtQuick.Controls 2.15
+import QtQuick
+import QtQuick.Window
+import QtQuick.Layouts
+import QtQuick.Controls
 
-import com.nextcloud.desktopclient 1.0
-import Style 1.0
+import com.nextcloud.desktopclient
+import com.nextcloud.desktopclient as NC
+import Style
+import "../common"
 import "../tray"
 
-TextField {
+NCContextMenuTextField {
     id: root
 
     signal shareeSelected(var sharee)
@@ -38,7 +31,6 @@ TextField {
     }
 
     readonly property int horizontalPaddingOffset: Style.trayHorizontalMargin
-    readonly property color placeholderColor: palette.dark
     readonly property double iconsScaleFactor: 0.6
 
     function triggerSuggestionsVisibility() {
@@ -46,7 +38,8 @@ TextField {
     }
 
     placeholderText: enabled ? qsTr("Search for users or groups…") : qsTr("Sharing is not available for this folder")
-    placeholderTextColor: placeholderColor
+    verticalAlignment: Qt.AlignVCenter
+    implicitHeight: Math.max(Style.talkReplyTextFieldPreferredHeight, contentHeight)
 
     onActiveFocusChanged: triggerSuggestionsVisibility()
     onTextChanged: triggerSuggestionsVisibility()
@@ -90,13 +83,6 @@ TextField {
     leftPadding: searchIcon.width + searchIcon.anchors.leftMargin + horizontalPaddingOffset
     rightPadding: clearTextButton.width + clearTextButton.anchors.rightMargin + horizontalPaddingOffset
 
-    background: Rectangle {
-        radius: 5
-        border.color: parent.activeFocus ? UserModel.currentUser.accentColor : palette.dark
-        border.width: 1
-        color: palette.base
-    }
-
     Image {
         id: searchIcon
         anchors {
@@ -114,7 +100,7 @@ TextField {
         fillMode: Image.PreserveAspectFit
         horizontalAlignment: Image.AlignLeft
 
-        source: "image://svgimage-custom-color/search.svg" + "/" + root.placeholderColor
+        source: "image://svgimage-custom-color/search.svg" + "/" + palette.placeholderText
         sourceSize: Qt.size(parent.height * root.iconsScaleFactor, parent.height * root.iconsScaleFactor)
 
         visible: !root.shareeModel.fetchOngoing
@@ -130,7 +116,7 @@ TextField {
         }
 
         width: height
-        color: root.placeholderColor
+        color: palette.placeholderText
         visible: root.shareeModel.fetchOngoing
         running: visible
     }
@@ -152,7 +138,7 @@ TextField {
         mipmap: true
         fillMode: Image.PreserveAspectFit
 
-        source: "image://svgimage-custom-color/clear.svg" + "/" + root.placeholderColor
+        source: "image://svgimage-custom-color/clear.svg" + "/" + palette.placeholderText
         sourceSize: Qt.size(parent.height * root.iconsScaleFactor, parent.height * root.iconsScaleFactor)
 
         visible: root.text
@@ -168,7 +154,6 @@ TextField {
         id: suggestionsPopup
 
         width: root.width
-        height: 100
         y: root.height
 
         contentItem: ScrollView {
@@ -176,6 +161,11 @@ TextField {
 
             clip: true
             ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+            ScrollBar.vertical.policy: shareeListView.contentHeight > shareeListView.height ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff
+
+            // need to take the popup's padding in account for the max height
+            // remove bottomPadding twice to leave some space between the window border
+            implicitHeight: Math.min(Window.height - parent.y - parent.topPadding - parent.bottomPadding * 2, contentHeight)
 
             ListView {
                 id: shareeListView
@@ -201,8 +191,8 @@ TextField {
                 delegate: ShareeDelegate {
                     width: shareeListView.contentItem.width
 
-                    enabled: model.type !== Sharee.LookupServerSearchResults
-                    hoverEnabled: model.type !== Sharee.LookupServerSearchResults
+                    enabled: model.type !== NC.sharee.LookupServerSearchResults
+                    hoverEnabled: model.type !== NC.sharee.LookupServerSearchResults
 
                     function selectSharee() {
                         root.shareeSelected(model.sharee);
@@ -212,7 +202,7 @@ TextField {
                     }
 
                     function selectItem() {
-                        if (model.type === Sharee.LookupServerSearch) {
+                        if (model.type === NC.sharee.LookupServerSearch) {
                             shareeListView.currentIndex = -1
                             root.shareeModel.searchGlobally()
                         } else {

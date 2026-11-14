@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2022 Nextcloud GmbH and Nextcloud contributors
+# SPDX-License-Identifier: GPL-2.0-or-later
 include(GenerateIconsUtils)
 
 unset(CMAKE_CXX_CLANG_TIDY)
@@ -33,11 +35,11 @@ endif()
 
 file(GLOB_RECURSE CUSTOM_STATE_ICONS_LOCKED "${custom_state_icons_path}/*-locked.png*")
 get_filename_component(CUSTOM_STATE_ICON_LOCKED_NAME ${CUSTOM_STATE_ICON_LOCKED_PATH} NAME_WLE)
-ecm_add_app_icon(CUSTOM_STATE_ICON_LOCKED_OUT ICONS "${CUSTOM_STATE_ICONS_LOCKED}" OUTFILE_BASENAME "${CUSTOM_STATE_ICON_LOCKED_NAME}" DO_NOT_GENERATE_RC_FILE TRUE)
+ecm_add_app_icon(CUSTOM_STATE_ICON_LOCKED_OUT ICONS "${CUSTOM_STATE_ICONS_LOCKED}" OUTFILE_BASENAME "${CUSTOM_STATE_ICON_LOCKED_NAME}")
 
 file(GLOB_RECURSE CUSTOM_STATE_ICONS_SHARED "${custom_state_icons_path}/*-shared.png*")
 get_filename_component(CUSTOM_STATE_ICON_SHARED_NAME ${CUSTOM_STATE_ICON_SHARED_PATH} NAME_WLE)
-ecm_add_app_icon(CUSTOM_STATE_ICON_SHARED_OUT ICONS "${CUSTOM_STATE_ICONS_SHARED}" OUTFILE_BASENAME "${CUSTOM_STATE_ICON_SHARED_NAME}" DO_NOT_GENERATE_RC_FILE TRUE)
+ecm_add_app_icon(CUSTOM_STATE_ICON_SHARED_OUT ICONS "${CUSTOM_STATE_ICONS_SHARED}" OUTFILE_BASENAME "${CUSTOM_STATE_ICON_SHARED_NAME}")
 
 file(REMOVE "${CMAKE_CURRENT_BINARY_DIR}/${CFAPI_SHELL_EXTENSIONS_LIB_NAME}.rc.in")
 
@@ -153,6 +155,8 @@ set(cppWinRtExe "${WindowsSDKBinPathForTools}\\cppwinrt.exe")
 message("cppWinRtExe: ${cppWinRtExe}")
 message("midlExe: ${midlExe}")
 
+configure_file(CfApiShellIntegrationVersion.h.in ${CMAKE_CURRENT_BINARY_DIR}/CfApiShellIntegrationVersion.h)
+
 # use midl.exe and cppwinrt.exe to generate files for CustomStateProvider (WinRT class)
 add_custom_command(OUTPUT ${MidlOutputPathHeader}
    COMMAND ${midlExe} /winrt /h nul /tlb ${MidlOutputPathTlb} /winmd ${MidlOutputPathWinmd} /metadata_dir "${WindowsSDKReferencesPath}\\Windows.Foundation.FoundationContract\\${WindowsFoundationContractVersion}" /nomidl /reference "${WindowsSDKReferencesPath}\\Windows.Foundation.FoundationContract\\${WindowsFoundationContractVersion}\\Windows.Foundation.FoundationContract.winmd" /reference "${WindowsSDKReferencesPath}\\Windows.Storage.Provider.CloudFilesContract\\${WindowsStorageProviderCloudFilesContractVersion}\\Windows.Storage.Provider.CloudFilesContract.winmd" /I ${MidleFileFolder} customstateprovider.idl
@@ -170,6 +174,7 @@ add_library(CfApiShellExtensions MODULE
     ${CMAKE_SOURCE_DIR}/src/common/shellextensionutils.cpp
     customstateprovider.cpp
     CfApiShellIntegration.def
+    CfApiShellIntegration.rc
 )
 
 message("CUSTOM_STATE_ICON_LOCKED_OUT: ${CUSTOM_STATE_ICON_LOCKED_OUT}")
@@ -186,6 +191,8 @@ endif()
 add_dependencies(CfApiShellExtensions CustomStateProviderImpl)
 
 target_link_libraries(CfApiShellExtensions shlwapi Gdiplus onecoreuap Nextcloud::csync Qt::Core Qt::Network)
+
+target_compile_definitions(CfApiShellExtensions PRIVATE QT_NO_KEYWORDS)
 
 target_include_directories(CfApiShellExtensions PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 target_include_directories(CfApiShellExtensions PRIVATE ${GeneratedFilesPath})
@@ -210,5 +217,7 @@ install(TARGETS CfApiShellExtensions
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
+
+install(FILES $<TARGET_PDB_FILE:CfApiShellExtensions> DESTINATION bin OPTIONAL)
 
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/configvfscfapishellext.h.in ${CMAKE_CURRENT_BINARY_DIR}/configvfscfapishellext.h)

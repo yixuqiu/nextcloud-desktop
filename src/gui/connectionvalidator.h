@@ -1,15 +1,7 @@
 /*
- * Copyright (C) by Klaas Freitag <freitag@owncloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2018 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2014 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #ifndef CONNECTIONVALIDATOR_H
@@ -22,6 +14,8 @@
 #include <QNetworkReply>
 #include "accountfwd.h"
 #include "clientsideencryption.h"
+
+#include <functional>
 
 namespace OCC {
 
@@ -75,6 +69,37 @@ namespace OCC {
 
 class UserInfo;
 
+class TermsOfServiceChecker : public QObject
+{
+    Q_OBJECT
+
+    Q_PROPERTY(bool needToSign READ needToSign NOTIFY needToSignChanged FINAL)
+public:
+    explicit TermsOfServiceChecker(AccountPtr account,
+                                   QObject *parent = nullptr);
+
+    explicit TermsOfServiceChecker(QObject *parent = nullptr);
+
+    [[nodiscard]] bool needToSign() const;
+
+public Q_SLOTS:
+    void start();
+
+Q_SIGNALS:
+    void needToSignChanged();
+
+    void done();
+
+private Q_SLOTS:
+    void slotServerTermsOfServiceRecieved(const QJsonDocument &reply);
+
+private:
+    void checkServerTermsOfService();
+
+    AccountPtr _account;
+    bool _needToSign = false;
+};
+
 class ConnectionValidator : public QObject
 {
     Q_OBJECT
@@ -95,14 +120,15 @@ public:
         StatusRedirect, // 204 URL received one of redirect HTTP codes (301-307), possibly a captive portal
         ServiceUnavailable, // 503 on authed request
         MaintenanceMode, // maintenance enabled in status.php
-        Timeout // actually also used for other errors on the authed request
+        Timeout, // actually also used for other errors on the authed request
+        NeedToSignTermsOfService,
     };
     Q_ENUM(Status);
 
     // How often should the Application ask this object to check for the connection?
     enum { DefaultCallingIntervalMsec = 62 * 1000 };
 
-public slots:
+public Q_SLOTS:
     /// Checks the server and the authentication.
     void checkServerAndAuth();
     void systemProxyLookupDone(const QNetworkProxy &proxy);
@@ -110,10 +136,10 @@ public slots:
     /// Checks authentication only.
     void checkAuthentication();
 
-signals:
+Q_SIGNALS:
     void connectionResult(OCC::ConnectionValidator::Status status, const QStringList &errors);
 
-protected slots:
+protected Q_SLOTS:
     void slotCheckRedirectCostFreeUrl();
 
     void slotCheckServerAndAuth();
@@ -130,7 +156,13 @@ protected slots:
     void slotCapabilitiesRecieved(const QJsonDocument &);
     void slotUserFetched(OCC::UserInfo *userInfo);
 
+    void termsOfServiceCheckDone();
+
 private:
+    using LocalNetworkPermissionCheck = std::function<void(const QUrl &, QObject *, std::function<void(bool)>)>;
+
+    friend class ConnectionValidatorTestAccess;
+
 #ifndef TOKEN_AUTH_ONLY
     void reportConnected();
 #endif
@@ -144,13 +176,15 @@ private:
      */
     bool setAndCheckServerVersion(const QString &version);
 
+    void checkServerTermsOfService();
+
     const QStringList _previousErrors;
     QStringList _errors;
     AccountStatePtr _accountState;
     AccountPtr _account;
+    TermsOfServiceChecker _termsOfServiceChecker;
+    LocalNetworkPermissionCheck _localNetworkPermissionCheck;
     bool _isCheckingServerAndAuth = false;
-
-    void showSystrayErrorMessage();
 };
 }
 

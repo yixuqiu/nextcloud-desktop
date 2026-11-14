@@ -1,19 +1,7 @@
 /*
- * Copyright (C) by Klaas Freitag <freitag@owncloud.com>
- *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * SPDX-FileCopyrightText: 2020 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2014 ownCloud GmbH
+ * SPDX-License-Identifier: LGPL-2.1-or-later
  */
 
 #include <QDateTime>
@@ -186,12 +174,14 @@ QString SqlDatabase::error() const
 void SqlDatabase::close()
 {
     if (_db) {
-        foreach (auto q, _queries) {
+        const auto queries = _queries;
+        for (const auto q : queries) {
             q->finish();
         }
         SQLITE_DO(sqlite3_close(_db));
-        if (_errId != SQLITE_OK)
+        if (_errId != SQLITE_OK) {
             qCWarning(lcSql) << "Closing database failed" << _error;
+        }
         _db = nullptr;
     }
 }
@@ -334,7 +324,7 @@ auto SqlQuery::next() -> NextResult
     const bool firstStep = !sqlite3_stmt_busy(_stmt);
 
     int n = 0;
-    forever {
+    Q_FOREVER {
         _errId = sqlite3_step(_stmt);
         if (n < SQLITE_REPEAT_COUNT && firstStep && (_errId == SQLITE_LOCKED || _errId == SQLITE_BUSY)) {
             sqlite3_reset(_stmt); // not necessary after sqlite version 3.6.23.1
@@ -364,34 +354,24 @@ void SqlQuery::bindValueInternal(int pos, const QVariant &value)
         return;
     }
 
-    switch (value.type()) {
-    case QVariant::Int:
-    case QVariant::Bool:
+    const auto metatype = value.metaType();
+    if (metatype == QMetaType(QMetaType::Int) || metatype == QMetaType(QMetaType::Bool)) {
         res = sqlite3_bind_int(_stmt, pos, value.toInt());
-        break;
-    case QVariant::Double:
+    } else if (metatype == QMetaType(QMetaType::Double)) {
         res = sqlite3_bind_double(_stmt, pos, value.toDouble());
-        break;
-    case QVariant::UInt:
-    case QVariant::LongLong:
-    case QVariant::ULongLong:
+    } else if (metatype == QMetaType(QMetaType::UInt) || metatype == QMetaType(QMetaType::LongLong) || metatype == QMetaType(QMetaType::ULongLong)) {
         res = sqlite3_bind_int64(_stmt, pos, value.toLongLong());
-        break;
-    case QVariant::DateTime: {
+    } else if (metatype == QMetaType(QMetaType::QDateTime)) {
         const QDateTime dateTime = value.toDateTime();
         const QString str = dateTime.toString(QStringLiteral("yyyy-MM-ddThh:mm:ss.zzz"));
         res = sqlite3_bind_text16(_stmt, pos, str.utf16(),
             str.size() * static_cast<int>(sizeof(ushort)), SQLITE_TRANSIENT);
-        break;
-    }
-    case QVariant::Time: {
+    } else if (metatype == QMetaType(QMetaType::QTime)) {
         const QTime time = value.toTime();
         const QString str = time.toString(QStringLiteral("hh:mm:ss.zzz"));
         res = sqlite3_bind_text16(_stmt, pos, str.utf16(),
             str.size() * static_cast<int>(sizeof(ushort)), SQLITE_TRANSIENT);
-        break;
-    }
-    case QVariant::String: {
+    } else if (metatype == QMetaType(QMetaType::QString)) {
         if (!value.toString().isNull()) {
             // lifetime of string == lifetime of its qvariant
             const auto *str = static_cast<const QString *>(value.constData());
@@ -400,20 +380,14 @@ void SqlQuery::bindValueInternal(int pos, const QVariant &value)
         } else {
             res = sqlite3_bind_null(_stmt, pos);
         }
-        break;
-    }
-    case QVariant::ByteArray: {
+    } else if (metatype == QMetaType(QMetaType::QByteArray)) {
         auto ba = value.toByteArray();
         res = sqlite3_bind_text(_stmt, pos, ba.constData(), ba.size(), SQLITE_TRANSIENT);
-        break;
-    }
-    default: {
+    } else {
         QString str = value.toString();
         // SQLITE_TRANSIENT makes sure that sqlite buffers the data
         res = sqlite3_bind_text16(_stmt, pos, str.utf16(),
             (str.size()) * static_cast<int>(sizeof(QChar)), SQLITE_TRANSIENT);
-        break;
-    }
     }
     if (res != SQLITE_OK) {
         qCWarning(lcSql) << "ERROR binding SQL value:" << value << "error:" << res;
@@ -428,7 +402,7 @@ bool SqlQuery::nullValue(int index)
 
 QString SqlQuery::stringValue(int index)
 {
-    return QString::fromUtf16(static_cast<const ushort *>(sqlite3_column_text16(_stmt, index)));
+    return QString::fromUtf16(static_cast<const char16_t *>(sqlite3_column_text16(_stmt, index)));
 }
 
 int SqlQuery::intValue(int index)
@@ -469,8 +443,9 @@ int SqlQuery::numRowsAffected()
 
 void SqlQuery::finish()
 {
-    if (!_stmt)
+    if (!_stmt) {
         return;
+    }
     SQLITE_DO(sqlite3_finalize(_stmt));
     _stmt = nullptr;
     if (_sqldb) {

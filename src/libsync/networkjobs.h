@@ -1,23 +1,18 @@
 /*
- * Copyright (C) by Klaas Freitag <freitag@owncloud.com>
- * Copyright (C) by Daniel Molkentin <danimo@owncloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2017 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2013 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #ifndef NETWORKJOBS_H
 #define NETWORKJOBS_H
 
+#include "config.h"
+
 #include "abstractnetworkjob.h"
 
+#include "common/remoteinfo.h"
+#include "common/remotepermissions.h"
 #include "common/result.h"
 
 #include <QBuffer>
@@ -57,10 +52,10 @@ public:
     explicit EntityExistsJob(AccountPtr account, const QString &path, QObject *parent = nullptr);
     void start() override;
 
-signals:
+Q_SIGNALS:
     void exists(QNetworkReply *);
 
-private slots:
+private Q_SLOTS:
     bool finished() override;
 };
 
@@ -80,9 +75,9 @@ public:
     QNetworkReply *startRequest(const QByteArray &verb, const QUrl &url, const QNetworkRequest req = QNetworkRequest(),
         QIODevice *requestBody = nullptr);
 
-signals:
+Q_SIGNALS:
     void finishedSignal(QNetworkReply *reply);
-protected slots:
+protected Q_SLOTS:
     bool finished() override;
 
 private:
@@ -103,10 +98,10 @@ public:
     explicit DeleteApiJob(AccountPtr account, const QString &path, QObject *parent = nullptr);
     void start() override;
 
-signals:
+Q_SIGNALS:
     void result(int httpCode);
 
-private slots:
+private Q_SLOTS:
     bool finished() override;
 };
 
@@ -129,7 +124,7 @@ public:
                QHash<QString, ExtraFolderInfo> *sizes,
                const QString &expectedPath);
 
-signals:
+Q_SIGNALS:
     void directoryListingSubfolders(const QStringList &items);
     void directoryListingIterated(const QString &name, const QMap<QString, QString> &properties);
     void finishedWithError(QNetworkReply *reply);
@@ -140,6 +135,12 @@ class OWNCLOUDSYNC_EXPORT LsColJob : public AbstractNetworkJob
 {
     Q_OBJECT
 public:
+    enum class FolderType {
+        ChildFolder,
+        RootFolder,
+    };
+    Q_ENUM(FolderType)
+
     explicit LsColJob(AccountPtr account, const QString &path);
     explicit LsColJob(AccountPtr account, const QUrl &url);
     void start() override;
@@ -156,13 +157,16 @@ public:
     void setProperties(QList<QByteArray> properties);
     [[nodiscard]] QList<QByteArray> properties() const;
 
-signals:
+    static QList<QByteArray> defaultProperties(FolderType isRootPath, AccountPtr account);
+    static void propertyMapToRemoteInfo(const QMap<QString, QString> &map, RemotePermissions::MountedPermissionAlgorithm algorithm, RemoteInfo &result);
+
+Q_SIGNALS:
     void directoryListingSubfolders(const QStringList &items);
     void directoryListingIterated(const QString &name, const QMap<QString, QString> &properties);
     void finishedWithError(QNetworkReply *reply);
     void finishedWithoutError();
 
-private slots:
+private Q_SLOTS:
     bool finished() override;
 
 private:
@@ -198,11 +202,11 @@ public:
     void setProperties(QList<QByteArray> properties);
     [[nodiscard]] QList<QByteArray> properties() const;
 
-signals:
+Q_SIGNALS:
     void result(const QVariantMap &values);
     void finishedWithError(QNetworkReply *reply = nullptr);
 
-private slots:
+private Q_SLOTS:
     bool finished() override;
 
 private:
@@ -236,14 +240,14 @@ public:
     /** The retrieved avatar images don't have the circle shape by default */
     static QImage makeCircularAvatar(const QImage &baseAvatar);
 
-signals:
+Q_SIGNALS:
     /**
      * @brief avatarPixmap - returns either a valid pixmap or not.
      */
 
     void avatarPixmap(const QImage &);
 
-private slots:
+private Q_SLOTS:
     bool finished() override;
 
 private:
@@ -278,11 +282,11 @@ public:
     void setProperties(QMap<QByteArray, QByteArray> properties);
     [[nodiscard]] QMap<QByteArray, QByteArray> properties() const;
 
-signals:
+Q_SIGNALS:
     void success();
     void finishedWithError();
 
-private slots:
+private Q_SLOTS:
     bool finished() override;
 
 private:
@@ -306,7 +310,7 @@ public:
         const QMap<QByteArray, QByteArray> &extraHeaders, QObject *parent = nullptr);
     void start() override;
 
-signals:
+Q_SIGNALS:
     void finishedWithError(QNetworkReply *reply);
     void finishedWithoutError();
 
@@ -329,7 +333,7 @@ public:
     static QString versionString(const QJsonObject &info);
     static bool installed(const QJsonObject &info);
 
-signals:
+Q_SIGNALS:
     /** Emitted when a status.php was successfully read.
      *
      * \a url see _serverStatusUrl (does not include "/status.php")
@@ -352,7 +356,7 @@ signals:
 private:
     bool finished() override;
     void onTimedOut() override;
-private slots:
+private Q_SLOTS:
     virtual void metaDataChangedSlot();
     virtual void encryptedSlot();
     void slotRedirected(QNetworkReply *reply, const QUrl &targetUrl, int redirectCount);
@@ -382,7 +386,7 @@ public:
     explicit CheckRedirectCostFreeUrlJob(const AccountPtr &account, QObject *parent = nullptr);
     void start() override;
 
-signals:
+Q_SIGNALS:
     /**
     * a check is finished
     * \a statusCode cost-free URL GET HTTP response code
@@ -410,11 +414,11 @@ public:
     explicit RequestEtagJob(AccountPtr account, const QString &path, QObject *parent = nullptr);
     void start() override;
 
-signals:
+Q_SIGNALS:
     void etagRetrieved(const QByteArray &etag, const QDateTime &time);
-    void finishedWithResult(const HttpResult<QByteArray> &etag);
+    void finishedWithResult(const OCC::HttpResult<QByteArray> &etag);
 
-private slots:
+private Q_SLOTS:
     bool finished() override;
 };
 
@@ -435,6 +439,8 @@ public:
 
     void setVerb(Verb value);
 
+    [[nodiscard]] Verb stringToVerb(const QString &verb) const;
+
     /**
      * @brief addQueryParams - add more parameters to the ocs call
      * @param params: list pairs of strings containing the parameter name and the value.
@@ -448,7 +454,7 @@ public:
     void addQueryParams(const QUrlQuery &params);
     void addRawHeader(const QByteArray &headerName, const QByteArray &value);
 
-public slots:
+public Q_SLOTS:
     void start() override;
 
 Q_SIGNALS:
@@ -493,12 +499,12 @@ public:
 
     void setBody(const QJsonDocument &body);
 
-public slots:
+public Q_SLOTS:
     void start() override;
 
 protected:
     bool finished() override;
-signals:
+Q_SIGNALS:
 
     /**
      * @brief jsonReceived - signal to report the json answer from ocs
@@ -526,9 +532,6 @@ class OWNCLOUDSYNC_EXPORT DetermineAuthTypeJob : public QObject
 public:
     enum AuthType {
         NoAuthType, // used only before we got a chance to probe the server
-#ifdef WITH_WEBENGINE
-        WebViewFlow,
-#endif // WITH_WEBENGINE
         Basic, // also the catch-all fallback for backwards compatibility reasons
         LoginFlowV2
     };
@@ -536,7 +539,7 @@ public:
 
     explicit DetermineAuthTypeJob(AccountPtr account, QObject *parent = nullptr);
     void start();
-signals:
+Q_SIGNALS:
     void authType(OCC::DetermineAuthTypeJob::AuthType);
 
 private:
@@ -545,11 +548,8 @@ private:
     AccountPtr _account;
     AuthType _resultGet = NoAuthType;
     AuthType _resultPropfind = NoAuthType;
-    AuthType _resultOldFlow = NoAuthType;
     bool _getDone = false;
     bool _propfindDone = false;
-    bool _oldFlowDone = false;
-    bool useFlow2 = false;
 };
 
 /**
@@ -568,28 +568,11 @@ public:
         QNetworkRequest req = QNetworkRequest(),
         QIODevice *requestBody = nullptr);
 
-signals:
+Q_SIGNALS:
     void finishedSignal(QNetworkReply *reply);
-private slots:
+private Q_SLOTS:
     bool finished() override;
 };
-
-/**
- * @brief Runs a PROPFIND to figure out the private link url
- *
- * The numericFileId is used only to build the deprecatedPrivateLinkUrl
- * locally as a fallback. If it's empty and the PROPFIND fails, targetFun
- * will be called with an empty string.
- *
- * The job and signal connections are parented to the target QObject.
- *
- * Note: targetFun is guaranteed to be called only through the event
- * loop and never directly.
- */
-void OWNCLOUDSYNC_EXPORT fetchPrivateLinkUrl(
-    AccountPtr account, const QString &remotePath,
-    const QByteArray &numericFileId, QObject *target,
-    std::function<void(const QString &url)> targetFun);
 
 } // namespace OCC
 

@@ -1,15 +1,6 @@
 /*
- * Copyright (C) 2023 by Claudio Cambra <claudio.cambra@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2023 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "fileprovideritemmetadata.h"
@@ -22,6 +13,9 @@
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 #include "fileproviderutils.h"
+#include "fileproviderutils_mac.h"
+
+static_assert(__has_feature(objc_arc), "fileprovideritemmetadata_mac requires ARC.");
 
 namespace {
 
@@ -56,7 +50,7 @@ Q_LOGGING_CATEGORY(lcMacImplFileProviderItemMetadata, "nextcloud.gui.macfileprov
 FileProviderItemMetadata FileProviderItemMetadata::fromNSFileProviderItem(const void *const nsFileProviderItem, const QString &domainIdentifier)
 {
     FileProviderItemMetadata metadata;
-    const id<NSFileProviderItem> bridgedNsFileProviderItem = (__bridge id<NSFileProviderItem>)nsFileProviderItem;
+    const auto bridgedNsFileProviderItem = (__bridge id<NSFileProviderItem>)nsFileProviderItem;
     if (bridgedNsFileProviderItem == nil) {
         return {};
     }
@@ -97,7 +91,7 @@ FileProviderItemMetadata FileProviderItemMetadata::fromNSFileProviderItem(const 
 
     if (metadata._documentSize == 0) {
         // If the document size is 0, we can try to get the size of the file
-        // directly from its path. These are all materialised files anyway
+        // directly from its path. These are all materialized files anyway
         // so the size will be properly represented
         const auto path = metadata.userVisiblePath();
         const auto fileInfo = QFileInfo(path);
@@ -111,43 +105,25 @@ QString FileProviderItemMetadata::getUserVisiblePath() const
 {
     qCDebug(lcMacImplFileProviderItemMetadata) << "Getting user visible path";
 
-    const auto id = identifier();
+    const auto itemIdentifier = identifier();
     const auto domainId = domainIdentifier();
 
-    if (id.isEmpty() || domainId.isEmpty()) {
+    if (itemIdentifier.isEmpty() || domainId.isEmpty()) {
         qCWarning(lcMacImplFileProviderItemMetadata) << "Could not fetch user visible path for item, no identifier or domainIdentifier";
         return QStringLiteral("Unknown");
     }
 
-    __block QString returnPath = QObject::tr("Unknown");
-    NSFileProviderManager *manager = FileProviderUtils::managerForDomainIdentifier(domainId);
+    const auto returnPath = QObject::tr("Unknown");
+    NSFileProviderManager *const manager = FileProviderUtils::managerForDomainIdentifier(domainId);
 
-     if (manager == nil) {
+    if (manager == nil) {
         qCWarning(lcMacImplFileProviderItemMetadata) << "Null manager, cannot get item path";
         return returnPath;
     }
 
-    NSString *const nsItemIdentifier = id.toNSString();
-    dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
-
-    // getUserVisibleUrl is async, so wait here
-
-    [manager getUserVisibleURLForItemIdentifier:nsItemIdentifier
-                              completionHandler:^(NSURL *const userVisibleFile, NSError *const error) {
-
-        if (error != nil) {
-            qCWarning(lcMacImplFileProviderItemMetadata) << "Error fetching user visible url for item identifier." << error.localizedDescription;
-        } else {
-            returnPath = QString::fromNSString(userVisibleFile.path);
-        }
-
-        dispatch_semaphore_signal(semaphore);
-    }];
-
-    dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
-    dispatch_release(semaphore);
-
-    return returnPath;
+    NSString *const nsItemIdentifier = itemIdentifier.toNSString();
+    const auto resultURL = FileProviderUtils::userVisibleURLForItem(manager, nsItemIdentifier);
+    return resultURL != nil ? QString::fromNSString(resultURL.path) : returnPath;
 }
 
 }

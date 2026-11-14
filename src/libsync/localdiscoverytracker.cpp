@@ -1,15 +1,7 @@
 /*
- * Copyright (C) by Christian Kamm <mail@ckamm.de>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2020 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2018 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "localdiscoverytracker.h"
@@ -20,7 +12,7 @@
 
 using namespace OCC;
 
-Q_LOGGING_CATEGORY(lcLocalDiscoveryTracker, "sync.localdiscoverytracker", QtInfoMsg)
+Q_LOGGING_CATEGORY(lcLocalDiscoveryTracker, "nextcloud.sync.localdiscoverytracker", QtInfoMsg)
 
 LocalDiscoveryTracker::LocalDiscoveryTracker() = default;
 
@@ -41,8 +33,9 @@ void LocalDiscoveryTracker::startSyncPartialDiscovery()
 {
     if (lcLocalDiscoveryTracker().isDebugEnabled()) {
         QStringList paths;
-        for (auto &path : _localDiscoveryPaths)
+        for (auto &path : _localDiscoveryPaths) {
             paths.append(path);
+        }
         qCDebug(lcLocalDiscoveryTracker) << "partial discovery with paths: " << paths;
     }
 
@@ -69,13 +62,15 @@ void LocalDiscoveryTracker::slotItemCompleted(const SyncFileItemPtr &item)
         || (item->_status == SyncFileItem::NoStatus
                && (item->_instruction == CSYNC_INSTRUCTION_NONE
                       || item->_instruction == CSYNC_INSTRUCTION_UPDATE_METADATA))) {
-        if (_previousLocalDiscoveryPaths.erase(item->_file.toUtf8()))
+        if (_previousLocalDiscoveryPaths.erase(item->_file.toUtf8())) {
             qCDebug(lcLocalDiscoveryTracker) << "wiped successful item" << item->_file;
-        if (!item->_renameTarget.isEmpty() && _previousLocalDiscoveryPaths.erase(item->_renameTarget.toUtf8()))
+        }
+        if (!item->_renameTarget.isEmpty() && _previousLocalDiscoveryPaths.erase(item->_renameTarget.toUtf8())) {
             qCDebug(lcLocalDiscoveryTracker) << "wiped successful item" << item->_renameTarget;
+        }
     } else {
         _localDiscoveryPaths.insert(item->_file.toUtf8());
-        qCDebug(lcLocalDiscoveryTracker) << "inserted error item" << item->_file;
+        qCWarning(lcLocalDiscoveryTracker) << "inserted error item" << item->_file;
     }
 }
 
@@ -89,7 +84,7 @@ void LocalDiscoveryTracker::slotSyncFinished(bool success)
         // C++17: Could use std::set::merge().
         _localDiscoveryPaths.insert(
             _previousLocalDiscoveryPaths.begin(), _previousLocalDiscoveryPaths.end());
-        qCDebug(lcLocalDiscoveryTracker) << "sync failed, keeping last sync's local discovery path list";
+        qCWarning(lcLocalDiscoveryTracker) << "sync failed, keeping last sync's local discovery path list";
     }
     _previousLocalDiscoveryPaths.clear();
 }

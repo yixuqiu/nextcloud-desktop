@@ -1,8 +1,11 @@
 /*
- *    This software is in the public domain, furnished "as is", without technical
- *    support, and with no warranty, express or implied, as to its usefulness for
- *    any purpose.
+ * SPDX-FileCopyrightText: 2020 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2016 ownCloud GmbH
+ * SPDX-License-Identifier: CC0-1.0
  *
+ * This software is in the public domain, furnished "as is", without technical
+ * support, and with no warranty, express or implied, as to its usefulness for
+ * any purpose.
  */
 
 #include <QtTest>
@@ -11,6 +14,7 @@
 #include <QString>
 
 #include "account.h"
+#include "logger.h"
 
 using namespace OCC;
 
@@ -42,7 +46,15 @@ static QueryItems make(QString key1, QString value1,
 class TestConcatUrl: public QObject
 {
     Q_OBJECT
-private slots:
+private Q_SLOTS:
+    void initTestCase()
+    {
+        OCC::Logger::instance()->setLogFlush(true);
+        OCC::Logger::instance()->setLogDebug(true);
+
+        QStandardPaths::setTestModeEnabled(true);
+    }
+
     void testFolder()
     {
         QFETCH(QString, base);

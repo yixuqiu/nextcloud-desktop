@@ -1,15 +1,7 @@
 /*
- * Copyright (C) by Olivier Goffart <ogoffart@owncloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2018 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2014 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #ifndef OWNCLOUDPROPAGATOR_H
@@ -126,30 +118,31 @@ public:
      */
     void setAssociatedComposite(PropagatorCompositeJob *job) { _associatedComposite = job; }
 
-public slots:
+public Q_SLOTS:
     /*
      * Asynchronous abort requires emit of abortFinished() signal,
      * while synchronous is expected to abort immedietaly.
     */
-    virtual void abort(PropagatorJob::AbortType abortType) {
-        if (abortType == AbortType::Asynchronous)
-            emit abortFinished();
+    virtual void abort(OCC::PropagatorJob::AbortType abortType) {
+        if (abortType == AbortType::Asynchronous) {
+            Q_EMIT abortFinished();
+        }
     }
 
     /** Starts this job, or a new subjob
      * returns true if a job was started.
      */
     virtual bool scheduleSelfOrChild() = 0;
-signals:
+Q_SIGNALS:
     /**
      * Emitted when the job is fully finished
      */
-    void finished(SyncFileItem::Status);
+    void finished(OCC::SyncFileItem::Status);
 
     /**
      * Emitted when the abort is fully finished
      */
-    void abortFinished(SyncFileItem::Status status = SyncFileItem::NormalError);
+    void abortFinished(OCC::SyncFileItem::Status status = SyncFileItem::NormalError);
 protected:
     [[nodiscard]] OwncloudPropagator *propagator() const;
 
@@ -191,8 +184,8 @@ protected:
 
     [[nodiscard]] bool hasEncryptedAncestor() const;
 
-protected slots:
-    void slotRestoreJobFinished(SyncFileItem::Status status);
+protected Q_SLOTS:
+    void slotRestoreJobFinished(OCC::SyncFileItem::Status status);
 
 private:
     void reportClientStatuses();
@@ -229,7 +222,7 @@ public:
 
     SyncFileItemPtr _item;
 
-public slots:
+public Q_SLOTS:
     virtual void start() = 0;
 };
 
@@ -277,7 +270,7 @@ public:
     {
         if (!_runningJobs.empty()) {
             _abortsCount = _runningJobs.size();
-            foreach (PropagatorJob *j, _runningJobs) {
+            for (const auto j : std::as_const(_runningJobs)) {
                 if (abortType == AbortType::Asynchronous) {
                     connect(j, &PropagatorJob::abortFinished,
                             this, &PropagatorCompositeJob::slotSubJobAbortFinished);
@@ -285,13 +278,13 @@ public:
                 j->abort(abortType);
             }
         } else if (abortType == AbortType::Asynchronous){
-            emit abortFinished();
+            Q_EMIT abortFinished();
         }
     }
 
     [[nodiscard]] qint64 committedDiskSpace() const override;
 
-private slots:
+private Q_SLOTS:
     void slotSubJobAbortFinished();
     bool possiblyRunNextJob(OCC::PropagatorJob *next)
     {
@@ -315,7 +308,7 @@ class OWNCLOUDSYNC_EXPORT PropagateDirectory : public PropagatorJob
 public:
     SyncFileItemPtr _item;
     // e.g: create the directory
-    QScopedPointer<PropagateItemJob> _firstJob;
+    std::unique_ptr<PropagateItemJob> _firstJob;
 
     PropagatorCompositeJob _subJobs;
 
@@ -331,14 +324,17 @@ public:
         _subJobs.appendTask(item);
     }
 
+    void willDeleteItemToClientTrashBin(const SyncFileItemPtr &item);
+
     bool scheduleSelfOrChild() override;
     [[nodiscard]] JobParallelism parallelism() const override;
     void abort(PropagatorJob::AbortType abortType) override
     {
-        if (_firstJob)
+        if (_firstJob) {
             // Force first job to abort synchronously
             // even if caller allows async abort (asyncAbort)
             _firstJob->abort(AbortType::Synchronous);
+        }
 
         if (abortType == AbortType::Asynchronous){
             connect(&_subJobs, &PropagatorCompositeJob::abortFinished, this, &PropagateDirectory::abortFinished);
@@ -357,7 +353,7 @@ public:
         return _subJobs.committedDiskSpace();
     }
 
-private slots:
+private Q_SLOTS:
 
     void slotFirstJobFinished(OCC::SyncFileItem::Status status);
     virtual void slotSubJobsFinished(OCC::SyncFileItem::Status status);
@@ -383,15 +379,14 @@ public:
 
     [[nodiscard]] qint64 committedDiskSpace() const override;
 
-public slots:
+public Q_SLOTS:
     void appendDirDeletionJob(OCC::PropagatorJob *job);
 
-private slots:
+private Q_SLOTS:
     void slotSubJobsFinished(OCC::SyncFileItem::Status status) override;
     void slotDirDeletionJobsFinished(OCC::SyncFileItem::Status status);
 
 private:
-
     bool scheduleDelayedJobs();
 
     PropagatorCompositeJob _dirDeletionJobs;
@@ -463,6 +458,8 @@ public:
                               QString &removedDirectory,
                               QString &maybeConflictDirectory);
 
+    void addBulkPropagateDownloadItem(const SyncFileItemPtr &item, QStack<QPair<QString, PropagateDirectory *>> &directories);
+
     void processE2eeMetadataMigration(const SyncFileItemPtr &item, QStack<QPair<QString, PropagateDirectory *>> &directories);
 
     [[nodiscard]] const SyncOptions &syncOptions() const;
@@ -529,14 +526,16 @@ public:
      */
     bool hasCaseClashAccessibilityProblem(const QString &relfile);
 
-    Q_REQUIRED_RESULT QString fullLocalPath(const QString &tmp_file_name) const;
+    [[nodiscard]] QString fullLocalPath(const QString &tmp_file_name) const;
     [[nodiscard]] QString localPath() const;
+    [[nodiscard]] bool localPathContainsSymlink(const QString &relativePath) const;
+    [[nodiscard]] static QString symlinkNotSupportedMessage();
 
     /**
      * Returns the full remote path including the folder root of a
      * folder sync path.
      */
-    Q_REQUIRED_RESULT QString fullRemotePath(const QString &tmp_file_name) const;
+    [[nodiscard]] QString fullRemotePath(const QString &tmp_file_name) const;
     [[nodiscard]] QString remotePath() const;
 
     [[nodiscard]] QString fulllRemotePathToPathInSyncJournalDb(const QString &fullRemotePath) const;
@@ -550,8 +549,9 @@ public:
 
     void abort()
     {
-        if (_abortRequested)
+        if (_abortRequested) {
             return;
+        }
 
         _abortRequested = true;
         if (_rootJob) {
@@ -629,9 +629,9 @@ public:
                                                                                  SyncJournalDb * const journal,
                                                                                  Vfs::UpdateMetadataTypes updateType);
 
-    Q_REQUIRED_RESULT bool isDelayedUploadItem(const SyncFileItemPtr &item) const;
+    [[nodiscard]] bool isDelayedUploadItem(const SyncFileItemPtr &item) const;
 
-    Q_REQUIRED_RESULT const std::deque<SyncFileItemPtr>& delayedTasks() const
+    [[nodiscard]] const std::deque<SyncFileItemPtr>& delayedTasks() const
     {
         return _delayedTasks;
     }
@@ -646,8 +646,9 @@ public:
 
     [[nodiscard]] bool isInBulkUploadBlackList(const QString &file) const;
 
-private slots:
+    void emitItemCompleted(const OCC::SyncFileItemPtr &item, OCC::ErrorCategory category);
 
+private Q_SLOTS:
     void abortTimeout()
     {
         // Abort synchronously and finish
@@ -659,7 +660,7 @@ private slots:
     void emitFinished(OCC::SyncFileItem::Status status)
     {
         if (!_finishedEmited) {
-            emit finished(status);
+            Q_EMIT finished(status);
         }
         _abortRequested = false;
         _finishedEmited = true;
@@ -667,7 +668,7 @@ private slots:
 
     void scheduleNextJobImpl();
 
-signals:
+Q_SIGNALS:
     void newItem(const OCC::SyncFileItemPtr &);
     void itemCompleted(const OCC::SyncFileItemPtr &item, OCC::ErrorCategory category);
     void progress(const OCC::SyncFileItem &, qint64 bytes);
@@ -748,10 +749,10 @@ public:
      * will destroy itself.
      */
     void start();
-signals:
+Q_SIGNALS:
     void finished();
     void aborted(const QString &error, const OCC::ErrorCategory errorCategory);
-private slots:
+private Q_SLOTS:
     void slotPollFinished();
 };
 }

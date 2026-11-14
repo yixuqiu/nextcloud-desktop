@@ -1,25 +1,32 @@
+/*
+ * SPDX-FileCopyrightText: 2021 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
 #ifndef USERMODEL_H
 #define USERMODEL_H
 
 #include <QAbstractListModel>
-#include <QImage>
 #include <QDateTime>
-#include <QStringList>
-#include <QQuickImageProvider>
 #include <QHash>
+#include <QImage>
+#include <QPointer>
+#include <QQuickImageProvider>
+#include <QStringList>
+#include <QTimer>
+#include <QVariantMap>
 
 #include "accountfwd.h"
 #include "accountmanager.h"
-#include "activitydata.h"
-#include "activitylistmodel.h"
+#include "activity/activitydata.h"
+#include "activity/activitylistmodel.h"
 #include "folderman.h"
+#include "userinfo.h"
 #include "userstatusconnector.h"
 #include "userstatusselectormodel.h"
 #include <chrono>
 
 namespace OCC {
-class UnifiedSearchResultsListModel;
-
 
 class TrayFolderInfo
 {
@@ -50,17 +57,27 @@ class User : public QObject
     Q_PROPERTY(QColor headerColor READ headerColor NOTIFY headerColorChanged)
     Q_PROPERTY(QColor headerTextColor READ headerTextColor NOTIFY headerTextColorChanged)
     Q_PROPERTY(QColor accentColor READ accentColor NOTIFY accentColorChanged)
-    Q_PROPERTY(bool serverHasUserStatus READ serverHasUserStatus CONSTANT)
+    Q_PROPERTY(bool serverHasUserStatus READ serverHasUserStatus NOTIFY serverHasUserStatusChanged)
+    Q_PROPERTY(UserStatus::OnlineStatus status READ status NOTIFY statusChanged)
     Q_PROPERTY(QUrl statusIcon READ statusIcon NOTIFY statusChanged)
     Q_PROPERTY(QString statusEmoji READ statusEmoji NOTIFY statusChanged)
     Q_PROPERTY(QString statusMessage READ statusMessage NOTIFY statusChanged)
     Q_PROPERTY(bool desktopNotificationsAllowed READ isDesktopNotificationsAllowed NOTIFY desktopNotificationsAllowedChanged)
     Q_PROPERTY(bool hasLocalFolder READ hasLocalFolder NOTIFY hasLocalFolderChanged)
-    Q_PROPERTY(bool serverHasTalk READ serverHasTalk NOTIFY serverHasTalkChanged)
+#ifdef BUILD_FILE_PROVIDER_MODULE
+    Q_PROPERTY(bool hasFileProvider READ hasFileProvider NOTIFY accountStateChanged)
+#endif
     Q_PROPERTY(QString avatar READ avatarUrl NOTIFY avatarChanged)
+    Q_PROPERTY(QVariantList recentActivities READ recentActivities NOTIFY recentActivitiesChanged)
+    Q_PROPERTY(QVariantList trayNotifications READ trayNotifications NOTIFY trayNotificationsChanged)
+    Q_PROPERTY(QVariantMap accountAlert READ accountAlert NOTIFY accountAlertChanged)
+    Q_PROPERTY(QUrl syncStatusIcon READ syncStatusIcon NOTIFY syncStatusChanged)
+    Q_PROPERTY(bool syncStatusOk READ syncStatusOk NOTIFY syncStatusChanged)
     Q_PROPERTY(bool isConnected READ isConnected NOTIFY accountStateChanged)
-    Q_PROPERTY(UnifiedSearchResultsListModel* unifiedSearchResultsListModel READ getUnifiedSearchResultsListModel CONSTANT)
+    Q_PROPERTY(bool needsToSignTermsOfService READ needsToSignTermsOfService NOTIFY accountStateChanged)
     Q_PROPERTY(QVariantList groupFolders READ groupFolders NOTIFY groupFoldersChanged)
+    Q_PROPERTY(bool canLogout READ canLogout CONSTANT)
+    Q_PROPERTY(bool isAssistantEnabled READ isNcAssistantEnabled NOTIFY assistantStateChanged)
 
 public:
     User(AccountStatePtr &account, const bool &isCurrent = false, QObject *parent = nullptr);
@@ -69,25 +86,36 @@ public:
     [[nodiscard]] AccountStatePtr accountState() const;
 
     [[nodiscard]] bool isConnected() const;
+    [[nodiscard]] bool needsToSignTermsOfService() const;
     [[nodiscard]] bool isCurrentUser() const;
     void setCurrentUser(const bool &isCurrent);
     [[nodiscard]] Folder *getFolder() const;
     ActivityListModel *getActivityModel();
-    [[nodiscard]] UnifiedSearchResultsListModel *getUnifiedSearchResultsListModel() const;
-    void openLocalFolder();
+
+    /** @brief Requests a refresh of this user's activities. */
+    void refreshActivities();
+    void openLocalFolder() const;
+#ifdef BUILD_FILE_PROVIDER_MODULE
+    void openFileProviderDomain() const;
+#endif
     void openFolderLocallyOrInBrowser(const QString &fullRemotePath);
     [[nodiscard]] QString name() const;
     [[nodiscard]] QString server(bool shortened = true) const;
     [[nodiscard]] bool hasLocalFolder() const;
-    [[nodiscard]] bool serverHasTalk() const;
+#ifdef BUILD_FILE_PROVIDER_MODULE
+    [[nodiscard]] bool hasFileProvider() const;
+#endif
+    [[nodiscard]] QVariantList recentActivities() const;
+    [[nodiscard]] QVariantList trayNotifications() const;
+    [[nodiscard]] QVariantMap accountAlert() const;
     [[nodiscard]] bool serverHasUserStatus() const;
-    [[nodiscard]] AccountApp *talkApp() const;
     [[nodiscard]] bool hasActivities() const;
+    [[nodiscard]] bool isNcAssistantEnabled() const;
     [[nodiscard]] QColor accentColor() const;
     [[nodiscard]] QColor headerColor() const;
     [[nodiscard]] QColor headerTextColor() const;
-    [[nodiscard]] AccountAppList appList() const;
     [[nodiscard]] QImage avatar() const;
+    /** @brief Signs in a signed-out account or retries another disconnected state. */
     void login() const;
     void logout() const;
     void removeAccount() const;
@@ -97,24 +125,32 @@ public:
     [[nodiscard]] QString statusMessage() const;
     [[nodiscard]] QUrl statusIcon() const;
     [[nodiscard]] QString statusEmoji() const;
+    [[nodiscard]] QUrl syncStatusIcon() const;
+    [[nodiscard]] bool syncStatusOk() const;
     void processCompletedSyncItem(const Folder *folder, const SyncFileItemPtr &item);
     [[nodiscard]] const QVariantList &groupFolders() const;
+    [[nodiscard]] bool canLogout() const;
+    [[nodiscard]] bool isPublicShareLink() const;
 
-signals:
+Q_SIGNALS:
     void nameChanged();
     void hasLocalFolderChanged();
-    void serverHasTalkChanged();
     void avatarChanged();
+    void recentActivitiesChanged();
+    void trayNotificationsChanged();
+    void accountAlertChanged();
     void accountStateChanged();
+    void serverHasUserStatusChanged();
     void statusChanged();
     void desktopNotificationsAllowedChanged();
     void headerColorChanged();
     void headerTextColorChanged();
     void accentColorChanged();
-    void sendReplyMessage(const int activityIndex, const QString &conversationToken, const QString &message, const QString &replyTo);
+    void syncStatusChanged();
     void groupFoldersChanged();
+    void assistantStateChanged();
 
-public slots:
+public Q_SLOTS:
     void slotItemCompleted(const QString &folder, const OCC::SyncFileItemPtr &item);
     void slotProgressInfo(const QString &folder, const OCC::ProgressInfo &progress);
     void slotAddError(const QString &folderAlias, const QString &message, OCC::ErrorCategory category);
@@ -130,26 +166,52 @@ public slots:
     void slotBuildIncomingCallDialogs(const OCC::ActivityList &list);
     void slotRefreshNotifications();
     void slotRefreshActivitiesInitial();
+    void slotRefreshActivityPreview();
     void slotRefreshActivities();
     void slotRefresh();
     void slotRefreshUserStatus();
     void slotRefreshImmediately();
     void setNotificationRefreshInterval(std::chrono::milliseconds interval);
-    void slotRebuildNavigationAppList();
-    void slotSendReplyMessage(const int activityIndex, const QString &conversationToken, const QString &message, const QString &replyTo);
     void forceSyncNow() const;
+    void openServer() const;
     void slotAccountCapabilitiesChangedRefreshGroupFolders();
     void slotFetchGroupFolders();
 
-private slots:
+#ifdef BUILD_FILE_PROVIDER_MODULE
+    /// Surface a bundle-shaped item refused by the file provider extension as an entry in the
+    /// account's activity view. Connected from `Mac::FileProviderService::itemExcludedFromSync`.
+    /// Tracked at https://github.com/nextcloud/desktop/issues/9827.
+    void slotFileProviderItemExcludedFromSync(const QString &domainIdentifier, const QString &relativePath, const QString &fileName, const QString &reason);
+
+    /// Surface a single item refused by the server quota as a per-item entry in the activity
+    /// view. Connected from `Mac::FileProviderService::insufficientQuotaForItem`.
+    /// See https://github.com/nextcloud/desktop/issues/9598.
+    void slotFileProviderInsufficientQuotaForItem(const QString &domainIdentifier, const QString &relativePath, const QString &fileName, qint64 fileBytes, qint64 availableBytes);
+
+    /// Surface a per-folder summary entry for an insufficient-quota event in the activity
+    /// view. Carries a "Retry all uploads" button. Connected from
+    /// `Mac::FileProviderService::insufficientQuotaSummary`.
+    void slotFileProviderInsufficientQuotaSummary(const QString &domainIdentifier);
+
+    /// Trigger when the user clicks "Retry all uploads" on a per-folder quota summary.
+    /// Calls `NSFileProviderManager.signalErrorResolved(_:)` followed by
+    /// `signalEnumerator(for: .workingSet)` for the affected domain so the system retries
+    /// previously refused uploads.
+    void slotFileProviderRetryUploads(const QString &domainIdentifier);
+#endif
+
+private Q_SLOTS:
     void slotPushNotificationsReady();
     void slotDisconnectPushNotifications();
+    void slotReceivedPushFilesChanges(Account *account);
+    void slotReceivedPushFileIdsChanges(Account *account, const QList<qint64> &fileIds);
     void slotReceivedPushNotification(OCC::Account *account);
     void slotReceivedPushActivity(OCC::Account *account);
     void slotCheckExpiredActivities();
     void slotGroupFoldersFetched(QNetworkReply *reply);
+    void slotQuotaChanged(const int64_t &usedBytes, const int64_t &availableBytes);
     void checkNotifiedNotifications();
-    void showDesktopNotification(const QString &title, const QString &message, const long notificationId);
+    void showDesktopNotification(const QString &title, const QString &message, const qint64 notificationId);
     void showDesktopNotification(const OCC::Activity &activity);
     void showDesktopNotification(const OCC::ActivityList &activityList);
     void showDesktopTalkNotification(const OCC::Activity &activity);
@@ -162,26 +224,45 @@ private:
 
     bool isActivityOfCurrentAccount(const Folder *folder) const;
     [[nodiscard]] bool isUnsolvableConflict(const SyncFileItemPtr &item) const;
+    void updateSyncStatus();
+    [[nodiscard]] QVariantMap buildAccountAlert() const;
+    void refreshAccountAlert();
 
-    bool notificationAlreadyShown(const long notificationId);
-    bool canShowNotification(const long notificationId);
-
-    void checkAndRemoveSeenActivities(const ActivityList &list, const int numTalkNotificationsReceived);
+    bool notificationAlreadyShown(const qint64 notificationId);
+    bool canShowNotification(const qint64 notificationId);
 
     AccountStatePtr _account;
     bool _isCurrentUser;
     ActivityListModel *_activityModel;
-    UnifiedSearchResultsListModel *_unifiedSearchResultsModel;
-    ActivityList _blacklistedNotifications;
+    QVariantMap _accountAlert;
     
     QVariantList _trayFolderInfos;
 
     QTimer _expiredActivitiesCheckTimer;
     QTimer _notificationCheckTimer;
     QHash<AccountState *, QElapsedTimer> _timeSinceLastCheck;
+    QElapsedTimer _timeSinceLastActivityPreviewCheck;
 
     QElapsedTimer _guiLogTimer;
-    QSet<long> _notifiedNotifications;
+    QSet<qint64> _notifiedNotifications;
+    QSet<qint64> _activeNotifications;
+#ifdef BUILD_FILE_PROVIDER_MODULE
+    /// Rate-limit per relativePath so repeated bundle drops don't spam the activity view.
+    /// Cleared by the existing `_expiredActivitiesCheckTimer` tick.
+    QSet<QString> _reportedExcludedBundles;
+
+    /// Per-domain dedup for the file provider quota summary entry. Cleared on
+    /// "Retry all uploads" click so a fresh quota event re-emits the summary.
+    QSet<QString> _reportedQuotaSummaryDomains;
+
+    /// Per-(domain, relativePath) dedup for the file provider quota item entries. Without
+    /// this, every system-driven retry of the failing createItem/modifyItem produces a new
+    /// "X was not synchronized" row in the activity list. Keys are
+    /// `domainIdentifier + "|" + relativePath`. Cleared wholesale on the existing expiry
+    /// timer tick (so once an entry naturally expires it can re-surface) and per-domain on
+    /// "Retry all uploads" click.
+    QSet<QString> _reportedQuotaItems;
+#endif
     QMimeDatabase _mimeDb;
 
     // number of currently running notification requests. If non zero,
@@ -191,6 +272,13 @@ private:
     int _lastTalkNotificationsReceivedCount = 0;
 
     bool _isNotificationFetchRunning = false;
+
+    // used for quota warnings
+    int _lastQuotaPercent = 0;
+    Activity _lastQuotaActivity;
+
+    QUrl _syncStatusIcon;
+    bool _syncStatusOk = true;
 };
 
 class UserModel : public QAbstractListModel
@@ -198,37 +286,37 @@ class UserModel : public QAbstractListModel
     Q_OBJECT
     Q_PROPERTY(User* currentUser READ currentUser NOTIFY currentUserChanged)
     Q_PROPERTY(int currentUserId READ currentUserId WRITE setCurrentUserId NOTIFY currentUserChanged)
+    Q_PROPERTY(int count READ count NOTIFY countChanged)
 public:
 
     static UserModel *instance();
     ~UserModel() override = default;
 
     void addUser(AccountStatePtr &user, const bool &isCurrent = false);
-    int currentUserIndex();
-
     [[nodiscard]] int rowCount(const QModelIndex &parent = QModelIndex()) const override;
     [[nodiscard]] QVariant data(const QModelIndex &index, int role = Qt::DisplayRole) const override;
 
     [[nodiscard]]  QImage avatarById(const int id) const;
+    [[nodiscard]] QImage avatarForRow(int row) const;
+    [[nodiscard]] QImage syncStatusIconForRow(int row) const;
 
     [[nodiscard]] User *currentUser() const;
+    [[nodiscard]] User *user(int id) const;
     [[nodiscard]] User *findUserForAccount(AccountState *account) const;
     [[nodiscard]] int findUserIdForAccount(AccountState *account) const;
 
-    Q_INVOKABLE int numUsers();
-    Q_INVOKABLE QString currentUserServer();
+    [[nodiscard]] int count() const;
     [[nodiscard]] int currentUserId() const;
 
     Q_INVOKABLE bool isUserConnected(const int id);
 
     Q_INVOKABLE std::shared_ptr<OCC::UserStatusConnector> userStatusConnector(int id);
 
-    ActivityListModel *currentActivityModel();
-
     enum UserRoles {
         NameRole = Qt::UserRole + 1,
         ServerRole,
         ServerHasUserStatusRole,
+        StatusRole,
         StatusIconRole,
         StatusEmojiRole,
         StatusMessageRole,
@@ -236,19 +324,31 @@ public:
         AvatarRole,
         IsCurrentUserRole,
         IsConnectedRole,
-        IdRole
+        IdRole,
+        CanLogoutRole,
+        RemoveAccountTextRole,
+        SyncStatusIconRole,
+        SyncStatusOkRole,
+        RecentActivitiesRole,
+        AssistantEnabledRole,
+        TrayNotificationsRole,
+        AccountAlertRole,
     };
 
-    [[nodiscard]] AccountAppList appList() const;
-
-signals:
+Q_SIGNALS:
     void addAccount();
     void currentUserChanged();
+    void countChanged();
 
-public slots:
+public Q_SLOTS:
     void fetchCurrentActivityModel();
+    Q_INVOKABLE void fetchActivityPreview(int id);
+    Q_INVOKABLE void dismissNotification(int id, int activityIndex);
+    Q_INVOKABLE void triggerNotificationAction(int id, int activityIndex, int actionIndex);
     void openCurrentAccountLocalFolder();
-    void openCurrentAccountTalk();
+#ifdef BUILD_FILE_PROVIDER_MODULE
+    void openCurrentAccountFileProviderDomain();
+#endif
     void openCurrentAccountServer();
     void openCurrentAccountFolderFromTrayInfo(const QString &fullRemotePath);
     void setCurrentUserId(const int id);
@@ -265,47 +365,21 @@ private:
     QList<User*> _users;
     int _currentUserId = -1;
     bool _init = true;
-
     void buildUserList();
+    void addAccsToUserList();
+    void setInitialUser();
 };
 
-class ImageProvider : public QQuickImageProvider
-{
-public:
-    ImageProvider();
-    QImage requestImage(const QString &id, QSize *size, const QSize &requestedSize) override;
-};
-
-class UserAppsModel : public QAbstractListModel
+class ImageProvider : public QQuickAsyncImageProvider
 {
     Q_OBJECT
+
 public:
-    static UserAppsModel *instance();
-    ~UserAppsModel() override = default;
-
-    [[nodiscard]] int rowCount(const QModelIndex &parent = QModelIndex()) const override;
-
-    [[nodiscard]] QVariant data(const QModelIndex &index, int role = Qt::DisplayRole) const override;
-
-    enum UserAppsRoles {
-        NameRole = Qt::UserRole + 1,
-        UrlRole,
-        IconUrlRole
-    };
-
-    void buildAppList();
-
-public slots:
-    void openAppUrl(const QUrl &url);
-
-protected:
-    [[nodiscard]] QHash<int, QByteArray> roleNames() const override;
+    ImageProvider() = default;
+    QQuickImageResponse *requestImageResponse(const QString &id, const QSize &requestedSize) override;
 
 private:
-    static UserAppsModel *_instance;
-    UserAppsModel(QObject *parent = nullptr);
-
-    AccountAppList _apps;
+    QThreadPool _pool;
 };
 }
 #endif // USERMODEL_H

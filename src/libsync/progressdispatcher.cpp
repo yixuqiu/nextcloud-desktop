@@ -1,15 +1,7 @@
 /*
- * Copyright (C) by Klaas Freitag <freitag@owncloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2018 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2013 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "progressdispatcher.h"
@@ -58,6 +50,8 @@ QString Progress::asResultString(const SyncFileItem &item)
         return QCoreApplication::translate("progress", "Updated local metadata");
     case CSYNC_INSTRUCTION_UPDATE_VFS_METADATA:
         return QCoreApplication::translate("progress", "Updated local virtual files metadata");
+    case CSYNC_INSTRUCTION_UPDATE_ENCRYPTION_METADATA:
+        return QCoreApplication::translate("progress", "Updated end-to-end encryption metadata");
     case CSYNC_INSTRUCTION_NONE:
     case CSYNC_INSTRUCTION_EVAL:
         return QCoreApplication::translate("progress", "Unknown");
@@ -73,24 +67,27 @@ QString Progress::asActionString(const SyncFileItem &item)
     case CSYNC_INSTRUCTION_SYNC:
     case CSYNC_INSTRUCTION_NEW:
     case CSYNC_INSTRUCTION_TYPE_CHANGE:
-        if (item._direction != SyncFileItem::Up)
-            return QCoreApplication::translate("progress", "downloading");
-        else
-            return QCoreApplication::translate("progress", "uploading");
+        if (item._direction != SyncFileItem::Up) {
+            return QCoreApplication::translate("progress", "Downloading");
+        } else {
+            return QCoreApplication::translate("progress", "Uploading");
+        }
     case CSYNC_INSTRUCTION_REMOVE:
-        return QCoreApplication::translate("progress", "deleting");
+        return QCoreApplication::translate("progress", "Deleting");
     case CSYNC_INSTRUCTION_EVAL_RENAME:
     case CSYNC_INSTRUCTION_RENAME:
-        return QCoreApplication::translate("progress", "moving");
+        return QCoreApplication::translate("progress", "Moving");
     case CSYNC_INSTRUCTION_IGNORE:
-        return QCoreApplication::translate("progress", "ignoring");
+        return QCoreApplication::translate("progress", "Ignoring");
     case CSYNC_INSTRUCTION_STAT_ERROR:
     case CSYNC_INSTRUCTION_ERROR:
-        return QCoreApplication::translate("progress", "error");
+        return QCoreApplication::translate("progress", "Error");
     case CSYNC_INSTRUCTION_UPDATE_METADATA:
-        return QCoreApplication::translate("progress", "updating local metadata");
+        return QCoreApplication::translate("progress", "Updating local metadata");
     case CSYNC_INSTRUCTION_UPDATE_VFS_METADATA:
-        return QCoreApplication::translate("progress", "updating local virtual files metadata");
+        return QCoreApplication::translate("progress", "Updating local virtual files metadata");
+    case CSYNC_INSTRUCTION_UPDATE_ENCRYPTION_METADATA:
+        return QCoreApplication::translate("progress", "Updating end-to-end encryption metadata");
     case CSYNC_INSTRUCTION_NONE:
     case CSYNC_INSTRUCTION_EVAL:
         break;
@@ -138,7 +135,7 @@ void ProgressDispatcher::setProgressInfo(const QString &folder, const ProgressIn
     {
         return;
     }
-    emit progressInfo(folder, progress);
+    Q_EMIT progressInfo(folder, progress);
 }
 
 ProgressInfo::ProgressInfo()
@@ -365,9 +362,10 @@ void ProgressInfo::updateEstimates()
 void ProgressInfo::recomputeCompletedSize()
 {
     qint64 r = _totalSizeOfCompletedJobs;
-    foreach (const ProgressItem &i, _currentItems) {
-        if (isSizeDependent(i._item))
+    for (const auto &i : std::as_const(_currentItems)) {
+        if (isSizeDependent(i._item)) {
             r += i._progress._completed;
+        }
     }
     _sizeProgress.setCompleted(r);
 }

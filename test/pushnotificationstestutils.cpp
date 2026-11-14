@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2021 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
 #include <QLoggingCategory>
 #include <QSignalSpy>
 #include <QTest>
@@ -62,6 +67,11 @@ QWebSocket *FakeWebSocketServer::authenticateAccount(const OCC::AccountPtr accou
         return nullptr;
     }
 
+    // Wait for notify_file_id opt-in
+    if (textMessagesCount() < 3 && !waitForTextMessages()) {
+        return nullptr;
+    }
+
     afterAuthentication();
 
     return socket;
@@ -80,7 +90,7 @@ void FakeWebSocketServer::close()
 void FakeWebSocketServer::processTextMessageInternal(const QString &message)
 {
     auto client = qobject_cast<QWebSocket *>(sender());
-    emit processTextMessage(client, message);
+    Q_EMIT processTextMessage(client, message);
 }
 
 void FakeWebSocketServer::onNewConnection()
@@ -134,19 +144,21 @@ void FakeWebSocketServer::clearTextMessages()
     _processTextMessageSpy->clear();
 }
 
-OCC::AccountPtr FakeWebSocketServer::createAccount(const QString &username, const QString &password)
+OCC::AccountPtr FakeWebSocketServer::createAccount(const QString &username,
+    const QString &password,
+    const QUrl &accountUrl,
+    const QUrl &webSocketUrl)
 {
     auto account = OCC::Account::create();
+    account->setUrl(accountUrl);
 
     QStringList typeList;
     typeList.append("files");
     typeList.append("activities");
     typeList.append("notifications");
 
-    QString websocketUrl("ws://localhost:12345");
-
     QVariantMap endpointsMap;
-    endpointsMap["websocket"] = websocketUrl;
+    endpointsMap["websocket"] = webSocketUrl;
 
     QVariantMap notifyPushMap;
     notifyPushMap["type"] = typeList;
@@ -194,7 +206,10 @@ bool CredentialsStub::ready() const
     return false;
 }
 
-void CredentialsStub::fetchFromKeychain() { }
+void CredentialsStub::fetchFromKeychain(const QString &appName)
+{
+    Q_UNUSED(appName)
+}
 
 void CredentialsStub::askFromUser() { }
 

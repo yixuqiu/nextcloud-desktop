@@ -1,15 +1,6 @@
 /*
- * Copyright (C) by Oleksandr Zolotov <alex@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2022 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "shellextensionsserver.h"
@@ -155,7 +146,7 @@ void ShellExtensionsServer::processCustomStateRequest(QLocalSocket *socket, cons
             }
             _customStateSocketConnections.remove(socket->socketDescriptor());
         }
-        
+
         const auto folder = FolderMan::instance()->folder(folderAlias);
         SyncJournalFileRecord record;
         if (!folder || !folder->journalDb()->getFileRecord(filePathRelative, &record) || !record.isValid()) {
@@ -203,7 +194,7 @@ void ShellExtensionsServer::processCustomStateRequest(QLocalSocket *socket, cons
 
         if (!folder->journalDb()->setFileRecord(record)) {
             qCWarning(lcShellExtServer) << "Could not set file record for path: " << record._path;
-            emit directoryListingIterationFinished(folderAlias);
+            Q_EMIT directoryListingIterationFinished(folderAlias);
             return;
         }
     });
@@ -212,14 +203,14 @@ void ShellExtensionsServer::processCustomStateRequest(QLocalSocket *socket, cons
         _runningLsColJobsForPaths.removeOne(lsColJobPath);
         const auto httpCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         qCWarning(lcShellExtServer) << "LSCOL job error" << reply->errorString() << httpCode << reply->error();
-        emit directoryListingIterationFinished(folderAlias);
+        Q_EMIT directoryListingIterationFinished(folderAlias);
     });
 
     QObject::connect(lsColJob, &LsColJob::finishedWithoutError, this, [this, folderAlias, lsColJobPath]() {
         _runningLsColJobsForPaths.removeOne(lsColJobPath);
-        emit directoryListingIterationFinished(folderAlias);
+        Q_EMIT directoryListingIterationFinished(folderAlias);
     });
-    
+
     _runningLsColJobsForPaths.push_back(lsColJobPath);
     lsColJob->start();
 }
@@ -251,6 +242,7 @@ void ShellExtensionsServer::processThumbnailRequest(QLocalSocket *socket, const 
     queryItems.addQueryItem(QStringLiteral("fileId"), record._fileId);
     queryItems.addQueryItem(QStringLiteral("x"), QString::number(thumbnailRequestInfo.size.width()));
     queryItems.addQueryItem(QStringLiteral("y"), QString::number(thumbnailRequestInfo.size.height()));
+    queryItems.addQueryItem(QStringLiteral("a"), QStringLiteral("true")); // Keep aspect ratio
     const QUrl jobUrl = Utility::concatUrlPath(folder->accountState()->account()->url(), getFetchThumbnailPath(), queryItems);
     const auto job = new SimpleNetworkJob(folder->accountState()->account());
     job->startRequest(QByteArrayLiteral("GET"), jobUrl);
@@ -260,7 +252,7 @@ void ShellExtensionsServer::processThumbnailRequest(QLocalSocket *socket, const 
             sendEmptyDataAndCloseSession(socket);
             return;
         }
-        
+
         auto messageReplyWithThumbnail = QVariantMap {
             {VfsShellExtensions::Protocol::ThumnailProviderDataKey, reply->readAll().toBase64()}
         };
@@ -319,7 +311,7 @@ void ShellExtensionsServer::parseCustomStateRequest(QLocalSocket *socket, const 
         sendEmptyDataAndCloseSession(socket);
         return;
     }
-    
+
     const auto customStateRequestInfo = CustomStateRequestInfo {
         itemFilePath,
         foundFolderAlias

@@ -10,7 +10,8 @@
 #  See help for CheckCSourceCompiles for a listing of variables
 #  that can modify the build.
 
-# Copyright (c) 2006, Alexander Neundorf, <neundorf@kde.org>
+# SPDX-FileCopyrightText: 2006 Alexander Neundorf <neundorf@kde.org>
+# SPDX-License-Identifier: BSD-3-Clause
 #
 # Redistribution and use is allowed according to the terms of the BSD license.
 # For details see the accompanying COPYING-CMAKE-SCRIPTS file.
@@ -23,4 +24,4 @@ function(CHECK_C_COMPILER_FLAG_SSP _FLAG _RESULT)
    set(CMAKE_REQUIRED_DEFINITIONS "${_FLAG}")
    check_c_source_compiles("int main(int argc, char **argv) { char buffer[256]; return buffer[argc]=0;}" ${_RESULT})
    set(CMAKE_REQUIRED_DEFINITIONS "${SAFE_CMAKE_REQUIRED_DEFINITIONS}")
-endfunction(CHECK_C_COMPILER_FLAG_SSP)
+endfunction()

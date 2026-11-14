@@ -1,15 +1,6 @@
 /*
- * Copyright (C) by Oleksandr Zolotov <alex@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2023 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include <QFileInfo>
@@ -91,6 +82,7 @@ void BasePropagateRemoteDeleteEncrypted::slotFolderUnLockFinished(const QByteArr
 {
     if (statusCode != 200) {
         _item->_httpErrorCode = statusCode;
+        //: %1 is the HTTP status code. %2 is the encrypted folder identifier.
         _errorString = tr("\"%1 Failed to unlock encrypted folder %2\".").arg(statusCode).arg(QString::fromUtf8(folderId));
         _item->_errorString = _errorString;
         taskFailed();
@@ -153,7 +145,8 @@ void BasePropagateRemoteDeleteEncrypted::deleteRemoteItem(const QString &filenam
 {
     qCInfo(ABSTRACT_PROPAGATE_REMOVE_ENCRYPTED) << "Deleting nested encrypted item" << filename;
 
-    const auto deleteJob = new DeleteJob(_propagator->account(), _propagator->fullRemotePath(filename), this);
+    const auto deleteJob = new DeleteJob(_propagator->account(), _propagator->fullRemotePath(filename), {}, this);
+    deleteJob->setSkipTrashbin(true);
     if (_encryptedFolderMetadataHandler && _encryptedFolderMetadataHandler->folderMetadata()
         && _encryptedFolderMetadataHandler->folderMetadata()->isValid()) {
         deleteJob->setFolderToken(_encryptedFolderMetadataHandler->folderToken());
@@ -169,7 +162,7 @@ void BasePropagateRemoteDeleteEncrypted::unlockFolder(const EncryptedFolderMetad
         qCWarning(ABSTRACT_PROPAGATE_REMOVE_ENCRYPTED) << "Null _encryptedFolderMetadataHandler";
     }
     if (!_encryptedFolderMetadataHandler || !_encryptedFolderMetadataHandler->isFolderLocked()) {
-        emit finished(true);
+        Q_EMIT finished(true);
         return;
     }
 
@@ -181,12 +174,12 @@ void BasePropagateRemoteDeleteEncrypted::unlockFolder(const EncryptedFolderMetad
 
 void BasePropagateRemoteDeleteEncrypted::taskFailed()
 {
-    qCDebug(ABSTRACT_PROPAGATE_REMOVE_ENCRYPTED) << "Task failed for job" << sender();
+    qCWarning(ABSTRACT_PROPAGATE_REMOVE_ENCRYPTED) << "Task failed for job" << sender();
     _isTaskFailed = true;
     if (_encryptedFolderMetadataHandler && _encryptedFolderMetadataHandler->isFolderLocked()) {
         unlockFolder(EncryptedFolderMetadataHandler::UnlockFolderWithResult::Failure);
     } else {
-        emit finished(false);
+        Q_EMIT finished(false);
     }
 }
 
@@ -205,3 +198,5 @@ const QByteArray BasePropagateRemoteDeleteEncrypted::folderToken() const
 }
 
 } // namespace OCC
+
+#include "moc_basepropagateremotedeleteencrypted.cpp"

@@ -1,20 +1,7 @@
 /*
- * Copyright (C) by Klaas Freitag <freitag@owncloud.com>
- * Copyright (C) by Daniel Molkentin <danimo@owncloud.com>
- *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * SPDX-FileCopyrightText: 2020 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2014 ownCloud GmbH
+ * SPDX-License-Identifier: LGPL-2.1-or-later
  */
 
 #ifndef UTILITY_H
@@ -62,12 +49,92 @@ namespace Utility {
      */
     OCSYNC_EXPORT QVector<ProcessInfosForOpenFile> queryProcessInfosKeepingFileOpen(const QString &filePath);
 
+#ifdef Q_OS_WIN
+    class OCSYNC_EXPORT Handle
+    {
+    public:
+        /**
+         * A RAAI for Windows Handles
+         */
+        Handle() = default;
+        explicit Handle(HANDLE h);
+        explicit Handle(HANDLE h, std::function<void(HANDLE)> &&close);
+
+        Handle(const Handle &) = delete;
+        Handle &operator=(const Handle &) = delete;
+
+        Handle(Handle &&other)
+        {
+            std::swap(_handle, other._handle);
+            std::swap(_close, other._close);
+        }
+
+        Handle &operator=(Handle &&other)
+        {
+            if (this != &other) {
+                std::swap(_handle, other._handle);
+                std::swap(_close, other._close);
+            }
+            return *this;
+        }
+
+        ~Handle();
+
+        HANDLE &handle() { return _handle; }
+
+        void close();
+
+        explicit operator bool() const { return _handle != INVALID_HANDLE_VALUE; }
+
+        operator HANDLE() const { return _handle; }
+
+    private:
+        HANDLE _handle = INVALID_HANDLE_VALUE;
+        std::function<void(HANDLE)> _close;
+    };
+#endif
+
     OCSYNC_EXPORT int rand();
     OCSYNC_EXPORT void sleep(int sec);
     OCSYNC_EXPORT void usleep(int usec);
     OCSYNC_EXPORT QString formatFingerprint(const QByteArray &, bool colonSeparated = true);
+    /**
+     * @brief Create favorite link for sync folder with application name and icon
+     *
+     * @param folder absolute file path to folder
+     */
     OCSYNC_EXPORT void setupFavLink(const QString &folder);
+    /**
+     * @brief Migrate favorite link for sync folder with new application name and icon
+     *
+     * @param folder absolute file path to folder
+     */
+    OCSYNC_EXPORT void migrateFavLink(const QString &folder);
+    /**
+     * @brief Creates or overwrite the Desktop.ini file to use new folder IconResource shown as a favorite link
+     *
+     * @param folder absolute file path to folder
+     * @param localizedResourceName new folder name to be used as display name (migration)
+     */
+    OCSYNC_EXPORT void setupDesktopIni(const QString &folder, const QString localizedResourceName = {});
+    /**
+     * @brief Removes the Desktop.ini file which contains the folder IconResource shown as a favorite link
+     *
+     * @param folder absolute file path to folder
+     */
     OCSYNC_EXPORT void removeFavLink(const QString &folder);
+    /**
+     * @brief Return the display name of a folder - to be used in fav links and sync root name (VFS).x
+     * e.g. Nextcloud1 will become NewAppName1, NewAppName2 or FolderName will be kept as is.
+     *
+     * @param currentDisplayName current folder display name string
+     * @param newName new name to be used for the folder
+     */
+    OCSYNC_EXPORT QString syncFolderDisplayName(const QString &currentDisplayName, const QString &newName);
+
+    // convenience system path to links folder
+    OCSYNC_EXPORT QString systemPathToLinks();
+
     OCSYNC_EXPORT bool writeRandomFile(const QString &fname, int size = -1);
     OCSYNC_EXPORT QString octetsToString(const qint64 octets);
     OCSYNC_EXPORT QByteArray userAgentString();
@@ -83,6 +150,9 @@ namespace Utility {
     OCSYNC_EXPORT bool hasSystemLaunchOnStartup(const QString &appName);
     OCSYNC_EXPORT bool hasLaunchOnStartup(const QString &appName);
     OCSYNC_EXPORT void setLaunchOnStartup(const QString &appName, const QString &guiName, const bool launch);
+    /** On macOS, returns true when the login item is registered but awaiting user approval
+     *  in System Settings → General → Login Items. Always returns false on other platforms. */
+    OCSYNC_EXPORT bool launchOnStartupRequiresApproval();
     OCSYNC_EXPORT uint convertSizeToUint(size_t &convertVar);
     OCSYNC_EXPORT int convertSizeToInt(size_t &convertVar);
 
@@ -141,11 +211,11 @@ namespace Utility {
     OCSYNC_EXPORT bool hasDarkSystray();
 
     // convenience OS detection methods
-    inline bool isWindows();
-    inline bool isMac();
-    inline bool isUnix();
-    inline bool isLinux(); // use with care
-    inline bool isBSD(); // use with care, does not match OS X
+    constexpr bool isWindows();
+    constexpr bool isMac();
+    constexpr bool isUnix();
+    constexpr bool isLinux(); // use with care
+    constexpr bool isBSD(); // use with care, does not match OS X
 
     OCSYNC_EXPORT QString platformName();
     // crash helper for --debug
@@ -157,17 +227,15 @@ namespace Utility {
     // if false, the two cases are two different files.
     OCSYNC_EXPORT bool fsCasePreserving();
 
+    inline auto fsCaseSensitivity()
+    {
+        return fsCasePreserving() ? Qt::CaseInsensitive : Qt::CaseSensitive;
+    }
+
     // Check if two paths that MUST exist are equal. This function
     // uses QDir::canonicalPath() to judge and cares for the systems
     // case sensitivity.
     OCSYNC_EXPORT bool fileNamesEqual(const QString &fn1, const QString &fn2);
-
-    // Call the given command with the switch --version and rerun the first line
-    // of the output.
-    // If command is empty, the function calls the running application which, on
-    // Linux, might have changed while this one is running.
-    // For Mac and Windows, it returns QString()
-    OCSYNC_EXPORT QByteArray versionOfInstalledBinary(const QString &command = QString());
 
     OCSYNC_EXPORT QString fileNameForGuiUse(const QString &fName);
 
@@ -262,6 +330,20 @@ namespace Utility {
      */
     OCSYNC_EXPORT QString getCurrentUserName();
 
+#ifdef Q_OS_LINUX
+    OCSYNC_EXPORT QString appImageLocation();
+    OCSYNC_EXPORT bool runningInAppImage();
+#else
+    inline QString appImageLocation()
+    {
+        Q_UNREACHABLE();
+    };
+    constexpr bool runningInAppImage()
+    {
+        return false;
+    };
+#endif
+
     /**
      * @brief Registers the desktop app as a handler for a custom URI to enable local editing
      */
@@ -273,6 +355,19 @@ namespace Utility {
     OCSYNC_EXPORT QString noTrailingSlashPath(const QString &path);
     OCSYNC_EXPORT QString fullRemotePathToRemoteSyncRootRelative(const QString &fullRemotePath, const QString &remoteSyncRoot);
 
+    /**
+     * @brief Splits "--option=value" arguments into a separate "--option" and "value" entry
+     *
+     * The option parsers of the client and of nextcloudcmd walk the argument list with an
+     * iterator and expect the value of an option in the entry that follows it. Normalising
+     * the list before parsing makes both spellings work without teaching every single
+     * option about the inline form.
+     *
+     * Only entries starting with "--" are split, and only at their first '='. "--option="
+     * keeps no value so that the parsers report their usual "not specified" error.
+     */
+    OCSYNC_EXPORT QStringList expandCommandLineOptionValues(const QStringList &arguments);
+
 #ifdef Q_OS_WIN
     OCSYNC_EXPORT bool registryKeyExists(HKEY hRootKey, const QString &subKey);
     OCSYNC_EXPORT QVariant registryGetKeyValue(HKEY hRootKey, const QString &subKey, const QString &valueName);
@@ -283,9 +378,6 @@ namespace Utility {
     OCSYNC_EXPORT bool registryWalkValues(HKEY hRootKey, const QString &subKey, const std::function<void(const QString &, bool *)> &callback);
     OCSYNC_EXPORT QRect getTaskbarDimensions();
 
-    // Possibly refactor to share code with UnixTimevalToFileTime in c_time.c
-    OCSYNC_EXPORT void UnixTimeToFiletime(time_t t, FILETIME *filetime);
-    OCSYNC_EXPORT void FiletimeToLargeIntegerFiletime(FILETIME *filetime, LARGE_INTEGER *hundredNSecs);
     OCSYNC_EXPORT void UnixTimeToLargeIntegerFiletime(time_t t, LARGE_INTEGER *hundredNSecs);
 
     OCSYNC_EXPORT QString formatWinError(long error);
@@ -307,11 +399,40 @@ namespace Utility {
         Q_DISABLE_COPY(NtfsPermissionLookupRAII);
     };
 
+    /**
+     * Closes a Win32 HANDLE if the HANDLE is valid (i.e. not `INVALID_HANDLE_VALUE`).
+     */
+    struct OCSYNC_EXPORT HandleDeleter {
+        typedef HANDLE pointer; // HANDLEs are not really pointers even though they're treated as such
+
+        void operator()(HANDLE handle) const;
+    };
+
+    /**
+     * A `std::unique_ptr` that automatically closes a HANDLE.
+     */
+    using UniqueHandle = std::unique_ptr<HANDLE, HandleDeleter>;
+
+    /**
+     * Releases a pointer previously allocated by `LocalAlloc`.
+     */
+    struct OCSYNC_EXPORT LocalFreeDeleter {
+        void operator()(void *p) const;
+    };
+
+    /**
+     * A `std::unique_ptr` that automatically cleans up `P*` types (e.g. `PSID`).
+     *
+     * Use this whenever the Win32 API docs of a given function tell you to free a returned buffer
+     * by calling the `LocalFree` function.
+     */
+    template<typename T>
+    using UniqueLocalFree = std::unique_ptr<typename std::remove_pointer<T>::type, LocalFreeDeleter>;
 #endif
 }
 /** @} */ // \addtogroup
 
-inline bool Utility::isWindows()
+inline constexpr bool Utility::isWindows()
 {
 #ifdef Q_OS_WIN
     return true;
@@ -320,16 +441,16 @@ inline bool Utility::isWindows()
 #endif
 }
 
-inline bool Utility::isMac()
+inline constexpr bool Utility::isMac()
 {
-#ifdef Q_OS_MAC
+#ifdef Q_OS_MACOS
     return true;
 #else
     return false;
 #endif
 }
 
-inline bool Utility::isUnix()
+inline constexpr bool Utility::isUnix()
 {
 #ifdef Q_OS_UNIX
     return true;
@@ -338,7 +459,7 @@ inline bool Utility::isUnix()
 #endif
 }
 
-inline bool Utility::isLinux()
+inline constexpr bool Utility::isLinux()
 {
 #if defined(Q_OS_LINUX)
     return true;
@@ -347,7 +468,7 @@ inline bool Utility::isLinux()
 #endif
 }
 
-inline bool Utility::isBSD()
+inline constexpr bool Utility::isBSD()
 {
 #if defined(Q_OS_FREEBSD) || defined(Q_OS_NETBSD) || defined(Q_OS_OPENBSD)
     return true;
@@ -355,6 +476,5 @@ inline bool Utility::isBSD()
     return false;
 #endif
 }
-
 }
 #endif // UTILITY_H

@@ -1,15 +1,6 @@
 /*
- * Copyright (C) by Oleksandr Zolotov <alex@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2021 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "iconutils.h"
@@ -108,9 +99,11 @@ QImage createSvgImageWithCustomColor(const QString &fileName,
         return {};
     }
 
+    const auto sizeToUse = requestedSize.isValid() || originalSize == nullptr ? requestedSize : *originalSize;
+
     // some icons are present in white or black only, so, we need to check both when needed
-    const auto iconBaseColors = QStringList{QStringLiteral("black"), QStringLiteral("white")};
-    const auto customColorImage = findImageWithCustomColor(fileName, customColor, iconBaseColors, requestedSize);
+    const auto iconBaseColors = QStringList{QStringLiteral("black"), QStringLiteral("white"), QStringLiteral("colored")};
+    const auto customColorImage = findImageWithCustomColor(fileName, customColor, iconBaseColors, sizeToUse);
 
     if (!customColorImage.isNull()) {
         return customColorImage;
@@ -125,8 +118,7 @@ QImage createSvgImageWithCustomColor(const QString &fileName,
         return {};
     }
 
-    const auto result = drawSvgWithCustomFillColor(sourceSvg, customColor, originalSize, requestedSize);
-    Q_ASSERT(!result.isNull());
+    const auto result = drawSvgWithCustomFillColor(sourceSvg, customColor, originalSize, sizeToUse);
 
     if (result.isNull()) {
         qCWarning(lcIconUtils) << "Failed to load pixmap for" << fileName;
@@ -172,8 +164,8 @@ QImage drawSvgWithCustomFillColor(const QString &sourceSvgPath,
         return {};
     }
 
-    const auto reqSize = (requestedSize.isValid() && requestedSize.height() && requestedSize.height()) ? requestedSize : svgRenderer.defaultSize();
-    if (!reqSize.isValid() || !reqSize.height() || !reqSize.height()) {
+    const auto reqSize = (requestedSize.isValid() && requestedSize.width() && requestedSize.height()) ? requestedSize : svgRenderer.defaultSize();
+    if (!reqSize.isValid() || !reqSize.width() || !reqSize.height()) {
         return {};
     }
 

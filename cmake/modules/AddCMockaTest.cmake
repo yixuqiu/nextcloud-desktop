@@ -1,7 +1,8 @@
 # - ADD_CHECK_TEST(test_name test_source linklib1 ... linklibN)
 
-# Copyright (c) 2007      Daniel Gollub <dgollub@suse.de>
-# Copyright (c) 2007-2010 Andreas Schneider <asn@cynapses.org>
+# SPDX-FileCopyrightText: 2007 Daniel Gollub <dgollub@suse.de>
+# SPDX-FileCopyrightText: 2007-2010 Andreas Schneider <asn@cynapses.org>
+# SPDX-License-Identifier: BSD-3-Clause
 #
 # Redistribution and use is allowed according to the terms of the BSD license.
 # For details see the accompanying COPYING-CMAKE-SCRIPTS file.
@@ -14,10 +15,11 @@ if(CMAKE_COMPILER_IS_GNUCC AND NOT MINGW)
     set(CMAKE_SHARED_LINKER_FLAGS_PROFILING " -fprofile-arcs -ftest-coverage" CACHE STRING "Profiling Linker Flags")
     set(CMAKE_MODULE_LINKER_FLAGS_PROFILING " -fprofile-arcs -ftest-coverage" CACHE STRING "Profiling Linker Flags")
     set(CMAKE_EXEC_LINKER_FLAGS_PROFILING " -fprofile-arcs -ftest-coverage" CACHE STRING "Profiling Linker Flags")
-endif(CMAKE_COMPILER_IS_GNUCC AND NOT MINGW)
+endif()
 
 function (ADD_CMOCKA_TEST _testName _testSource)
     add_executable(${_testName} ${_testSource})
+    set_target_properties(${_testName} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${BIN_OUTPUT_DIRECTORY})
     target_link_libraries(${_testName} ${ARGN})
-    add_test(${_testName} ${CMAKE_CURRENT_BINARY_DIR}/${_testName})
-endfunction (ADD_CMOCKA_TEST)
+    add_test(${_testName} ${BIN_OUTPUT_DIRECTORY}/${_testName})
+endfunction ()

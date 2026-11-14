@@ -1,25 +1,16 @@
 /*
- * Copyright (C) 2022 by Claudio Cambra <claudio.cambra@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2022 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
-import QtQuick 2.15
-import QtQuick.Window 2.15
-import QtQuick.Layouts 1.15
-import QtQuick.Controls 2.15
+import QtQuick
+import QtQuick.Window
+import QtQuick.Layouts
+import QtQuick.Controls
 import Qt5Compat.GraphicalEffects
 
-import com.nextcloud.desktopclient 1.0
-import Style 1.0
+import com.nextcloud.desktopclient
+import Style
 import "../tray"
 import "../"
 
@@ -87,7 +78,6 @@ Page {
     readonly property bool isFolderItem: shareModelData.sharedItemType === ShareModel.SharedItemTypeFolder
     readonly property bool isEncryptedItem: shareModelData.sharedItemType === ShareModel.SharedItemTypeEncryptedFile || shareModelData.sharedItemType === ShareModel.SharedItemTypeEncryptedFolder || shareModelData.sharedItemType === ShareModel.SharedItemTypeEncryptedTopLevelFolder
 
-    property bool waitingForNoteEnabledChange: false
     property bool waitingForExpireDateEnabledChange: false
     property bool waitingForPasswordProtectEnabledChange: false
     property bool waitingForExpireDateChange: false
@@ -101,7 +91,7 @@ Page {
     }
 
     function resetNoteField() {
-        noteTextEdit.text = note;
+        noteTextArea.text = note;
         waitingForNoteChange = false;
     }
 
@@ -133,7 +123,7 @@ Page {
 
     function resetNoteEnabledField() {
         noteEnabledMenuItem.checked = noteEnabled;
-        waitingForNoteEnabledChange = false;
+        waitingForNoteChange = false;
     }
 
     function resetExpireDateEnabledField() {
@@ -175,7 +165,7 @@ Page {
     padding: Style.standardSpacing * 2
 
     background: Rectangle {
-        color: palette.window
+        color: palette.base
         visible: root.backgroundsVisible
     }
 
@@ -220,19 +210,18 @@ Page {
                 elide: Text.ElideRight
             }
 
-            CustomButton {
+            Button {
                 id: closeButton
 
                 Layout.rowSpan: headerGridLayout.rows
-                Layout.preferredWidth: Style.iconButtonWidth
-                Layout.preferredHeight: width
+                Layout.preferredWidth: Style.activityListButtonWidth
+                Layout.preferredHeight: Style.activityListButtonHeight
+                Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
                 Layout.rightMargin: root.padding
 
                 icon.source: "image://svgimage-custom-color/clear.svg" + "/" + palette.buttonText
-                bgColor: palette.highlight
-                bgNormalOpacity: 0
-                toolTipText: qsTr("Dismiss")
-
+                icon.width: Style.activityListButtonIconSize
+                icon.height: Style.activityListButtonIconSize
                 onClicked: root.closeShareDetails()
             }
 
@@ -243,7 +232,6 @@ Page {
                 Layout.rightMargin: root.padding
 
                 text: root.fileDetails.name
-                color: palette.midlight
                 wrapMode: Text.Wrap
             }
         }
@@ -262,6 +250,7 @@ Page {
             readonly property int itemPadding: Style.smallSpacing
 
             width: parent.width
+            spacing: Style.smallSpacing
 
             RowLayout {
                 Layout.fillWidth: true
@@ -278,7 +267,7 @@ Page {
                     horizontalAlignment: Image.AlignHCenter
                     fillMode: Image.Pad
 
-                    source: "image://svgimage-custom-color/edit.svg/" + palette.dark
+                    source: "image://svgimage-custom-color/label.svg/" + palette.windowText
                     sourceSize.width: scrollContentsColumn.rowIconWidth
                     sourceSize.height: scrollContentsColumn.rowIconWidth
                 }
@@ -314,32 +303,9 @@ Page {
                 active: !root.isFolderItem && !root.isEncryptedItem
                 visible: active
                 sourceComponent: CheckBox {
-                    // TODO: Rather than setting all these palette colours manually,
-                    // create a custom style and do it for all components globally.
-                    //
-                    // Additionally, we need to override the entire palette when we
-                    // set one palette property, as otherwise we default back to the
-                    // theme palette -- not the parent palette
-                    palette {
-                        text: Style.ncTextColor
-                        windowText: Style.ncTextColor
-                        buttonText: Style.ncTextColor
-                        brightText: Style.ncTextBrightColor
-                        highlight: Style.lightHover
-                        highlightedText: Style.ncTextColor
-                        light: Style.lightHover
-                        midlight: Style.ncSecondaryTextColor
-                        mid: Style.darkerHover
-                        dark: Style.menuBorder
-                        button: Style.buttonBackgroundColor
-                        window: Style.menuBorder
-                        base: Style.backgroundColor
-                        toolTipBase: Style.backgroundColor
-                        toolTipText: Style.ncTextColor
-                    }
-
                     spacing: scrollContentsColumn.indicatorSpacing
-                    padding: scrollContentsColumn.itemPadding
+                    leftPadding: scrollContentsColumn.itemPadding
+                    rightPadding: scrollContentsColumn.itemPadding
                     indicator.width: scrollContentsColumn.indicatorItemWidth
                     indicator.height: scrollContentsColumn.indicatorItemWidth
 
@@ -365,52 +331,49 @@ Page {
                 visible: active
                 sourceComponent: ColumnLayout {
                     id: permissionRadioButtonsLayout
-                    spacing: 0
+                    spacing: Layout.smallSpacing
                     width: parent.width
 
                     ButtonGroup {
                         id: permissionModeRadioButtonsGroup
                     }
 
-                    NCRadioButton {
+                    RadioButton {
                         readonly property int permissionMode: ShareModel.ModeViewOnly
                         Layout.fillWidth: true
                         ButtonGroup.group: permissionModeRadioButtonsGroup
                         enabled: !root.isSharePermissionChangeInProgress
                         checked: root.currentPermissionMode === permissionMode
                         text: qsTr("View only")
-                        indicatorItemWidth: scrollContentsColumn.indicatorItemWidth
-                        indicatorItemHeight: scrollContentsColumn.indicatorItemWidth
                         spacing: scrollContentsColumn.indicatorSpacing
-                        padding: scrollContentsColumn.itemPadding
+                        leftPadding: scrollContentsColumn.itemPadding
+                        rightPadding: scrollContentsColumn.itemPadding
                         onClicked: root.permissionModeChanged(permissionMode)
                     }
 
-                    NCRadioButton {
+                    RadioButton {
                         readonly property int permissionMode: ShareModel.ModeUploadAndEditing
                         Layout.fillWidth: true
                         ButtonGroup.group: permissionModeRadioButtonsGroup
                         enabled: !root.isSharePermissionChangeInProgress
                         checked: root.currentPermissionMode === permissionMode
                         text: qsTr("Allow upload and editing")
-                        indicatorItemWidth: scrollContentsColumn.indicatorItemWidth
-                        indicatorItemHeight: scrollContentsColumn.indicatorItemWidth
                         spacing: scrollContentsColumn.indicatorSpacing
-                        padding: scrollContentsColumn.itemPadding
+                        leftPadding: scrollContentsColumn.itemPadding
+                        rightPadding: scrollContentsColumn.itemPadding
                         onClicked: root.permissionModeChanged(permissionMode)
                     }
 
-                    NCRadioButton {
+                    RadioButton {
                         readonly property int permissionMode: ShareModel.ModeFileDropOnly
                         Layout.fillWidth: true
                         ButtonGroup.group: permissionModeRadioButtonsGroup
                         enabled: !root.isSharePermissionChangeInProgress
                         checked: root.currentPermissionMode === permissionMode
                         text: qsTr("File drop (upload only)")
-                        indicatorItemWidth: scrollContentsColumn.indicatorItemWidth
-                        indicatorItemHeight: scrollContentsColumn.indicatorItemWidth
                         spacing: scrollContentsColumn.indicatorSpacing
-                        padding: scrollContentsColumn.itemPadding
+                        leftPadding: scrollContentsColumn.itemPadding
+                        rightPadding: scrollContentsColumn.itemPadding
                         onClicked: root.permissionModeChanged(permissionMode)
                     }
 
@@ -419,32 +382,9 @@ Page {
 
                         Layout.fillWidth: true
 
-                        // TODO: Rather than setting all these palette colours manually,
-                        // create a custom style and do it for all components globally.
-                        //
-                        // Additionally, we need to override the entire palette when we
-                        // set one palette property, as otherwise we default back to the
-                        // theme palette -- not the parent palette
-                        palette {
-                            text: Style.ncTextColor
-                            windowText: Style.ncTextColor
-                            buttonText: Style.ncTextColor
-                            brightText: Style.ncTextBrightColor
-                            highlight: Style.lightHover
-                            highlightedText: Style.ncTextColor
-                            light: Style.lightHover
-                            midlight: Style.ncSecondaryTextColor
-                            mid: Style.darkerHover
-                            dark: Style.menuBorder
-                            button: Style.buttonBackgroundColor
-                            window: palette.dark // NOTE: Fusion theme uses darker window colour for the border of the checkbox
-                            base: Style.backgroundColor
-                            toolTipBase: Style.backgroundColor
-                            toolTipText: Style.ncTextColor
-                        }
-
                         spacing: scrollContentsColumn.indicatorSpacing
-                        padding: scrollContentsColumn.itemPadding
+                        leftPadding: scrollContentsColumn.itemPadding
+                        rightPadding: scrollContentsColumn.itemPadding
                         indicator.width: scrollContentsColumn.indicatorItemWidth
                         indicator.height: scrollContentsColumn.indicatorItemWidth
 
@@ -482,32 +422,9 @@ Page {
                         anchors.left: parent.left
                         anchors.right: parent.right
 
-                        // TODO: Rather than setting all these palette colours manually,
-                        // create a custom style and do it for all components globally.
-                        //
-                        // Additionally, we need to override the entire palette when we
-                        // set one palette property, as otherwise we default back to the
-                        // theme palette -- not the parent palette
-                        palette {
-                            text: Style.ncTextColor
-                            windowText: Style.ncTextColor
-                            buttonText: Style.ncTextColor
-                            brightText: Style.ncTextBrightColor
-                            highlight: Style.lightHover
-                            highlightedText: Style.ncTextColor
-                            light: Style.lightHover
-                            midlight: Style.ncSecondaryTextColor
-                            mid: Style.darkerHover
-                            dark: Style.menuBorder
-                            button: Style.buttonBackgroundColor
-                            window: palette.dark // NOTE: Fusion theme uses darker window colour for the border of the checkbox
-                            base: Style.backgroundColor
-                            toolTipBase: Style.backgroundColor
-                            toolTipText: Style.ncTextColor
-                        }
-
                         spacing: scrollContentsColumn.indicatorSpacing
-                        padding: scrollContentsColumn.itemPadding
+                        leftPadding: scrollContentsColumn.itemPadding
+                        rightPadding: scrollContentsColumn.itemPadding
                         indicator.width: scrollContentsColumn.indicatorItemWidth
                         indicator.height: scrollContentsColumn.indicatorItemWidth
 
@@ -531,38 +448,15 @@ Page {
 
                 Layout.fillWidth: true
 
-                // TODO: Rather than setting all these palette colours manually,
-                // create a custom style and do it for all components globally.
-                //
-                // Additionally, we need to override the entire palette when we
-                // set one palette property, as otherwise we default back to the
-                // theme palette -- not the parent palette
-                palette {
-                    text: Style.ncTextColor
-                    windowText: Style.ncTextColor
-                    buttonText: Style.ncTextColor
-                    brightText: Style.ncTextBrightColor
-                    highlight: Style.lightHover
-                    highlightedText: Style.ncTextColor
-                    light: Style.lightHover
-                    midlight: Style.ncSecondaryTextColor
-                    mid: Style.darkerHover
-                    dark: Style.menuBorder
-                    button: Style.buttonBackgroundColor
-                    window: Style.menuBorder
-                    base: Style.backgroundColor
-                    toolTipBase: Style.backgroundColor
-                    toolTipText: Style.ncTextColor
-                }
-
                 spacing: scrollContentsColumn.indicatorSpacing
-                padding: scrollContentsColumn.itemPadding
+                leftPadding: scrollContentsColumn.itemPadding
+                rightPadding: scrollContentsColumn.itemPadding
                 indicator.width: scrollContentsColumn.indicatorItemWidth
                 indicator.height: scrollContentsColumn.indicatorItemWidth
 
                 checkable: true
                 checked: root.passwordProtectEnabled
-                text: qsTr("Password protect")
+                text: qsTr("Password protection")
                 visible: root.shareSupportsPassword
                 enabled: visible && 
                          !root.waitingForPasswordProtectEnabledChange && 
@@ -597,7 +491,7 @@ Page {
                     horizontalAlignment: Image.AlignHCenter
                     fillMode: Image.Pad
 
-                    source: "image://svgimage-custom-color/lock-https.svg/" + palette.dark
+                    source: "image://svgimage-custom-color/lock-https.svg/" + palette.windowText
                     sourceSize.width: scrollContentsColumn.rowIconWidth
                     sourceSize.height: scrollContentsColumn.rowIconWidth
                 }
@@ -664,32 +558,9 @@ Page {
 
                 Layout.fillWidth: true
 
-                // TODO: Rather than setting all these palette colours manually,
-                // create a custom style and do it for all components globally.
-                //
-                // Additionally, we need to override the entire palette when we
-                // set one palette property, as otherwise we default back to the
-                // theme palette -- not the parent palette
-                palette {
-                    text: Style.ncTextColor
-                    windowText: Style.ncTextColor
-                    buttonText: Style.ncTextColor
-                    brightText: Style.ncTextBrightColor
-                    highlight: Style.lightHover
-                    highlightedText: Style.ncTextColor
-                    light: Style.lightHover
-                    midlight: Style.ncSecondaryTextColor
-                    mid: Style.darkerHover
-                    dark: Style.menuBorder
-                    button: Style.buttonBackgroundColor
-                    window: Style.menuBorder
-                    base: Style.backgroundColor
-                    toolTipBase: Style.backgroundColor
-                    toolTipText: Style.ncTextColor
-                }
-
                 spacing: scrollContentsColumn.indicatorSpacing
-                padding: scrollContentsColumn.itemPadding
+                leftPadding: scrollContentsColumn.itemPadding
+                rightPadding: scrollContentsColumn.itemPadding
                 indicator.width: scrollContentsColumn.indicatorItemWidth
                 indicator.height: scrollContentsColumn.indicatorItemWidth
 
@@ -726,7 +597,7 @@ Page {
                     horizontalAlignment: Image.AlignHCenter
                     fillMode: Image.Pad
 
-                    source: "image://svgimage-custom-color/calendar.svg/" + palette.dark
+                    source: "image://svgimage-custom-color/calendar.svg/" + palette.windowText
                     sourceSize.width: scrollContentsColumn.rowIconWidth
                     sourceSize.height: scrollContentsColumn.rowIconWidth
                 }
@@ -772,48 +643,27 @@ Page {
 
                 Layout.fillWidth: true
 
-                // TODO: Rather than setting all these palette colours manually,
-                // create a custom style and do it for all components globally.
-                //
-                // Additionally, we need to override the entire palette when we
-                // set one palette property, as otherwise we default back to the
-                // theme palette -- not the parent palette
-                palette {
-                    text: Style.ncTextColor
-                    windowText: Style.ncTextColor
-                    buttonText: Style.ncTextColor
-                    brightText: Style.ncTextBrightColor
-                    highlight: Style.lightHover
-                    highlightedText: Style.ncTextColor
-                    light: Style.lightHover
-                    midlight: Style.ncSecondaryTextColor
-                    mid: Style.darkerHover
-                    dark: Style.menuBorder
-                    button: Style.buttonBackgroundColor
-                    window: Style.menuBorder
-                    base: Style.backgroundColor
-                    toolTipBase: Style.backgroundColor
-                    toolTipText: Style.ncTextColor
-                }
-
                 spacing: scrollContentsColumn.indicatorSpacing
-                padding: scrollContentsColumn.itemPadding
+                leftPadding: scrollContentsColumn.itemPadding
+                rightPadding: scrollContentsColumn.itemPadding
                 indicator.width: scrollContentsColumn.indicatorItemWidth
                 indicator.height: scrollContentsColumn.indicatorItemWidth
 
                 checkable: true
                 checked: root.noteEnabled
                 text: qsTr("Note to recipient")
-                enabled: !root.waitingForNoteEnabledChange
+                enabled: !root.waitingForNoteChange
 
                 onClicked: {
-                    root.toggleNoteToRecipient(checked);
-                    root.waitingForNoteEnabledChange = true;
+                    if (!checked && root.note !== "") {
+                        root.setNote("");
+                        root.waitingForNoteChange = true;
+                    }
                 }
 
                 NCBusyIndicator {
                     anchors.fill: parent
-                    visible: root.waitingForNoteEnabledChange
+                    visible: root.waitingForNoteChange && !noteEnabledMenuItem.checked
                     running: visible
                     z: 1
                 }
@@ -824,7 +674,7 @@ Page {
                 height: visible ? implicitHeight : 0
                 spacing: scrollContentsColumn.indicatorSpacing
 
-                visible: root.noteEnabled
+                visible: noteEnabledMenuItem.checked
 
                 Image {
                     Layout.preferredWidth: scrollContentsColumn.indicatorItemWidth
@@ -834,72 +684,51 @@ Page {
                     horizontalAlignment: Image.AlignHCenter
                     fillMode: Image.Pad
 
-                    source: "image://svgimage-custom-color/edit.svg/" + palette.dark
+                    source: "image://svgimage-custom-color/comment.svg/" + palette.windowText
                     sourceSize.width: scrollContentsColumn.rowIconWidth
                     sourceSize.height: scrollContentsColumn.rowIconWidth
                 }
 
-                NCInputTextEdit {
-                    id: noteTextEdit
+                NCInputTextArea {
+                    id: noteTextArea
 
                     Layout.fillWidth: true
-                    height: visible ? Math.max(Style.talkReplyTextFieldPreferredHeight, contentHeight) : 0
+                    // no height here -- let the textarea figure it out how much it needs
                     submitButton.height: Math.min(Style.talkReplyTextFieldPreferredHeight, height - 2)
 
                     text: root.note
-                    enabled: root.noteEnabled &&
-                             !root.waitingForNoteChange &&
-                             !root.waitingForNoteEnabledChange
+                    placeholderText: qsTr("Enter a note for the recipient")
+                    enabled: noteEnabledMenuItem.checked && !root.waitingForNoteChange
 
-                    onEditingFinished: if(text !== root.note) {
+                    onEditingFinished: if (text !== "" && text !== root.note) {
                         root.setNote(text);
                         root.waitingForNoteChange = true;
                     }
 
                     NCBusyIndicator {
                         anchors.fill: parent
-                        visible: root.waitingForNoteChange ||
-                                 root.waitingForNoteEnabledChange
+                        visible: root.waitingForNoteChange && noteEnabledMenuItem.checked
                         running: visible
                         z: 1
                     }
                 }
             }
 
-            CustomButton {
+            Button {
                 height: Style.standardPrimaryButtonHeight
-
-                icon.source: "image://svgimage-custom-color/close.svg/" + Style.errorBoxBackgroundColor
-                imageSourceHover: "image://svgimage-custom-color/close.svg/" + palette.brightText
+                icon.source: "image://svgimage-custom-color/close.svg/" + palette.buttonText
+                icon.height: Style.extraSmallIconSize
                 text: qsTr("Unshare")
-                textColor: Style.errorBoxBackgroundColor
-                textColorHovered: "white"
-                contentsFont.bold: true
-                bgNormalColor: palette.button
-                bgHoverColor: Style.errorBoxBackgroundColor
-                bgNormalOpacity: 1.0
-                bgHoverOpacity: 1.0
-
                 onClicked: root.deleteShare()
             }
 
-            CustomButton {
+            Button {
                 height: Style.standardPrimaryButtonHeight
-
-                icon.source: "image://svgimage-custom-color/add.svg/" + root.accentColor
-                imageSourceHover: "image://svgimage-custom-color/add.svg/" + palette.brightText
+                icon.source: "image://svgimage-custom-color/add.svg/" + palette.buttonText
+                icon.height: Style.extraSmallIconSize
                 text: qsTr("Add another link")
-                textColor: root.accentColor
-                textColorHovered: palette.brightText
-                contentsFont.bold: true
-                bgNormalColor: palette.button
-                bgHoverColor: root.accentColor
-                bgNormalOpacity: 1.0
-                bgHoverOpacity: 1.0
-
                 visible: root.isLinkShare && root.canCreateLinkShares
                 enabled: visible
-
                 onClicked: root.createNewLinkShare()
             }
         }
@@ -914,7 +743,9 @@ Page {
         contentWidth: (contentItem as ListView).contentWidth
         visible: copyShareLinkButton.visible
 
-        CustomButton {
+        background: Rectangle { color: "transparent" }
+
+        Button {
             id: copyShareLinkButton
 
             function copyShareLink() {
@@ -931,26 +762,18 @@ Page {
 
             height: Style.standardPrimaryButtonHeight
 
-            icon.source: "image://svgimage-custom-color/copy.svg/" + palette.brightText
-            text: shareLinkCopied ? qsTr("Share link copied!") : qsTr("Copy share link")
-            textColor: palette.brightText
-            contentsFont.bold: true
-            bgColor: shareLinkCopied ? Style.positiveColor : root.accentColor
-            bgNormalOpacity: 1.0
-            bgHoverOpacity: shareLinkCopied ? 1.0 : Style.hoverOpacity
+            Layout.preferredWidth: Style.activityListButtonWidth
+            Layout.preferredHeight: Style.activityListButtonHeight
+            Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
 
+            icon.source: "image://svgimage-custom-color/copy.svg/" + palette.brightText
+            icon.width: Style.smallIconSize
+            icon.height: Style.smallIconSize
+            text: shareLinkCopied ? qsTr("Share link copied!") : qsTr("Copy share link")
             visible: root.isLinkShare
             enabled: visible
 
             onClicked: copyShareLink()
-
-            Behavior on bgColor {
-                ColorAnimation { duration: Style.shortAnimationDuration }
-            }
-
-            Behavior on bgHoverOpacity {
-                NumberAnimation { duration: Style.shortAnimationDuration }
-            }
 
             Behavior on Layout.preferredWidth {
                 SmoothedAnimation { duration: Style.shortAnimationDuration }

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2021 Nextcloud GmbH and Nextcloud contributors
+# SPDX-License-Identifier: GPL-2.0-or-later
 if (LINUX)
     set(vfs_xattr_SRCS
         vfs_xattr.h
@@ -11,6 +13,8 @@ if (LINUX)
     )
 
     target_link_libraries(nextcloudsync_vfs_xattr PRIVATE Nextcloud::sync)
+
+    target_compile_definitions(nextcloudsync_vfs_xattr PRIVATE QT_NO_KEYWORDS)
 
     set_target_properties(nextcloudsync_vfs_xattr
       PROPERTIES
@@ -54,4 +58,8 @@ if (LINUX)
       LIBRARY DESTINATION "${vfs_installdir}"
       RUNTIME DESTINATION "${vfs_installdir}"
     )
+
+    if (WIN32)
+        install(FILES $<TARGET_PDB_FILE:nextcloudsync_vfs_xattr> DESTINATION bin OPTIONAL)
+    endif()
 endif()

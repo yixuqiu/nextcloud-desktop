@@ -1,15 +1,6 @@
 /*
- * Copyright (C) by Claudio Cambra <claudio.cambra@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2021 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "activitylistmodeltestutils.h"
@@ -18,10 +9,12 @@
 
 #include <QAbstractItemModelTester>
 #include <QDesktopServices>
+#include <QElapsedTimer>
 #include <QSignalSpy>
 #include <QTest>
 
 using namespace ActivityListModelTestUtils;
+using namespace Qt::StringLiterals;
 
 class TestActivityListModel : public QObject
 {
@@ -41,7 +34,6 @@ public:
     OCC::Activity testNotificationActivity;
     OCC::Activity testSyncResultErrorActivity;
     OCC::Activity testSyncFileItemActivity;
-    OCC::Activity testFileIgnoredActivity;
 
     static constexpr int searchResultsReplyDelay = 100;
 
@@ -86,9 +78,14 @@ public:
         QVERIFY(index.isValid());
     }
 
-private slots:
+private Q_SLOTS:
     void initTestCase()
     {
+        OCC::Logger::instance()->setLogFlush(true);
+        OCC::Logger::instance()->setLogDebug(true);
+
+        QStandardPaths::setTestModeEnabled(true);
+
         fakeQnam.reset(new FakeQNAM({}));
         account = OCC::Account::create();
         account->setCredentials(new FakeCredentials{fakeQnam.data()});
@@ -114,7 +111,6 @@ private slots:
         testNotificationActivity = exampleNotificationActivity(accName);
         testSyncResultErrorActivity = exampleSyncResultErrorActivity(accName);
         testSyncFileItemActivity = exampleSyncFileItemActivity(accName, accUrl);
-        testFileIgnoredActivity = exampleFileIgnoredActivity(accName, accUrl);
     };
 
     // Test receiving activity from server
@@ -142,9 +138,54 @@ private slots:
         testActivityAdd(&TestingALM::addErrorToActivityList, testSyncResultErrorActivity, OCC::ActivityListModel::ErrorType::SyncError);
     };
 
-    void testAddIgnoredFile() {
-        testActivityAdd(&TestingALM::addIgnoredFileToList, testFileIgnoredActivity);
-    };
+    void testRemoveOutdatedNotifications() {
+        const auto model = testingALM();
+        QCOMPARE(model->rowCount(), 0);
+
+        const auto removeAndAddNotifications = [&model](const OCC::ActivityList &activities) -> void {
+            // this is pretty much the core logic of dealing with the retrieved notifications from User::slotBuildNotificationDisplay
+            model->removeOutdatedNotifications(activities);
+
+            for (const auto &activity : activities) {
+                model->addNotificationToActivityList(activity);
+            }
+        };
+
+        const auto accName = accountState->account()->displayName();
+        const auto notificationOne = exampleNotificationActivity(accName, 1);
+        const auto notificationTwo = exampleNotificationActivity(accName, 2);
+        const auto notificationThree = exampleNotificationActivity(accName, 3);
+
+        removeAndAddNotifications({notificationOne});
+        QCOMPARE(model->rowCount(), 1);
+        QCOMPARE(model->activityList().count(notificationOne), 1);
+        QCOMPARE(model->activityList().count(notificationTwo), 0);
+        QCOMPARE(model->activityList().count(notificationThree), 0);
+
+        removeAndAddNotifications({notificationOne, notificationTwo});
+        QCOMPARE(model->rowCount(), 2);
+        QCOMPARE(model->activityList().count(notificationOne), 1);
+        QCOMPARE(model->activityList().count(notificationTwo), 1);
+        QCOMPARE(model->activityList().count(notificationThree), 0);
+
+        removeAndAddNotifications({notificationOne, notificationThree});
+        QCOMPARE(model->rowCount(), 2);
+        QCOMPARE(model->activityList().count(notificationOne), 1);
+        QCOMPARE(model->activityList().count(notificationTwo), 0);
+        QCOMPARE(model->activityList().count(notificationThree), 1);
+
+        removeAndAddNotifications({notificationThree});
+        QCOMPARE(model->rowCount(), 1);
+        QCOMPARE(model->activityList().count(notificationOne), 0);
+        QCOMPARE(model->activityList().count(notificationTwo), 0);
+        QCOMPARE(model->activityList().count(notificationThree), 1);
+
+        removeAndAddNotifications({});
+        QCOMPARE(model->rowCount(), 0);
+        QCOMPARE(model->activityList().count(notificationOne), 0);
+        QCOMPARE(model->activityList().count(notificationTwo), 0);
+        QCOMPARE(model->activityList().count(notificationThree), 0);
+    }
 
     // Test removing activity from list
     void testRemoveActivityWithRow() {
@@ -202,11 +243,8 @@ private slots:
         model->addErrorToActivityList(testSyncResultErrorActivity, OCC::ActivityListModel::ErrorType::SyncError);
         QCOMPARE(model->rowCount(), 52);
 
-        model->addIgnoredFileToList(testFileIgnoredActivity);
-        QCOMPARE(model->rowCount(), 53);
-
         model->addNotificationToActivityList(testNotificationActivity);
-        QCOMPARE(model->rowCount(), 54);
+        QCOMPARE(model->rowCount(), 53);
 
         // Test all rows for things in common
         for (int i = 0; i < model->rowCount(); i++) {
@@ -220,8 +258,7 @@ private slots:
 
             QVERIFY(!index.data(OCC::ActivityListModel::AccountRole).toString().isEmpty());
             QVERIFY(!index.data(OCC::ActivityListModel::ActionTextColorRole).toString().isEmpty());
-            QVERIFY(!index.data(OCC::ActivityListModel::DarkIconRole).toString().isEmpty());
-            QVERIFY(!index.data(OCC::ActivityListModel::LightIconRole).toString().isEmpty());
+            QVERIFY(!index.data(OCC::ActivityListModel::IconRole).toString().isEmpty());
             QVERIFY(!index.data(OCC::ActivityListModel::PointInTimeRole).toString().isEmpty());
 
             QVERIFY(index.data(OCC::ActivityListModel::ObjectTypeRole).canConvert<int>());
@@ -274,9 +311,13 @@ private slots:
                     QVERIFY(actionsLinksContextMenu.isEmpty() || actionsLinksContextMenu.size() < actionsLinks.size());
 
                     // context menu must not contain the primary action
-                    QVERIFY(std::find_if(std::begin(actionsLinksContextMenu), std::end(actionsLinksContextMenu),
-                                [](const QVariant &entry) { return entry.value<OCC::ActivityLink>()._primary; })
-                        == std::end(actionsLinksContextMenu));
+                    QVERIFY(std::all_of(std::begin(actionsLinksContextMenu), std::end(actionsLinksContextMenu),
+                        [&actionsLinks](const QVariant &entry) {
+                            auto ok = false;
+                            const auto actionIndex = entry.toMap().value(QStringLiteral("actionIndex")).toInt(&ok);
+                            return ok && actionIndex >= 0 && actionIndex < actionsLinks.size()
+                                && !actionsLinks[actionIndex].value<OCC::ActivityLink>()._primary;
+                        }));
 
                     const auto objectType = index.data(OCC::ActivityListModel::ObjectTypeRole).toString();
 
@@ -315,7 +356,7 @@ private slots:
 
                         // both action links and buttons must contain a "REPLY" verb element as secondary action
                         QVERIFY(actionsLinks[replyActionPos].value<OCC::ActivityLink>()._verb == QStringLiteral("REPLY"));
-                        //QVERIFY(actionButtonsLinks[replyActionPos].value<OCC::ActivityLink>()._verb == QStringLiteral("REPLY"));
+                        QCOMPARE(actionButtonsLinks[replyActionPos].toMap().value(QStringLiteral("verb")).toString(), QStringLiteral("REPLY"));
 
                         // the first action button for chat must have image set
                         //QVERIFY(!actionButtonsLinks[replyActionPos].value<OCC::ActivityLink>()._imageSource.isEmpty());
@@ -326,7 +367,7 @@ private slots:
                                 || (objectType != QStringLiteral("room") && objectType != QStringLiteral("call")))) {
 
                             // button's label for "chat" must be renamed to "Reply"
-                            QVERIFY(actionButtonsLinks[0].value<OCC::ActivityLink>()._label == QObject::tr("Reply"));
+                            QCOMPARE(actionButtonsLinks[0].toMap().value(QStringLiteral("label")).toString(), QObject::tr("Reply"));
 
                             if (static_cast<quint32>(actionsLinks.size()) > OCC::ActivityListModel::maxActionButtons()) {
                                 QCOMPARE(actionButtonsLinks.size(), OCC::ActivityListModel::maxActionButtons());
@@ -334,7 +375,7 @@ private slots:
                                 QCOMPARE(actionButtonsLinks.size() + actionsLinksContextMenu.size(), actionsLinks.size());
                             }
                         } else if ((objectType == QStringLiteral("call"))) {
-                            QVERIFY(actionButtonsLinks[0].value<OCC::ActivityLink>()._label == QStringLiteral("Call back"));
+                            QCOMPARE(actionButtonsLinks[0].toMap().value(QStringLiteral("label")).toString(), QStringLiteral("Call back"));
                         }
                     }
                 }
@@ -342,6 +383,157 @@ private slots:
 
         } while (prevModelRowCount < model->rowCount());
     };
+
+    // Every sync reports the same ignored files again
+    void testAddError_sameErrorTwice_listedOnce()
+    {
+        const auto model = testingALM();
+        const auto ignoredFile = exampleFileIgnoredActivity(accountState->account()->displayName());
+
+        model->addErrorToActivityList(ignoredFile, OCC::ActivityListModel::ErrorType::SyncError);
+        model->addErrorToActivityList(ignoredFile, OCC::ActivityListModel::ErrorType::SyncError);
+
+        QCOMPARE(model->rowCount(), 1);
+        QCOMPARE(model->errorsList().size(), 1);
+    }
+
+    void testAddError_differentErrors_allListed()
+    {
+        const auto model = testingALM();
+        const auto ignoredFile = exampleFileIgnoredActivity(accountState->account()->displayName());
+        auto otherFile = ignoredFile;
+        otherFile._id = ignoredFile._id + 1;
+        otherFile._file = u"other.txt"_s;
+        auto sameFileInOtherFolder = ignoredFile;
+        sameFileInOtherFolder._folder = u"otherFolder"_s;
+
+        model->addErrorToActivityList(ignoredFile, OCC::ActivityListModel::ErrorType::SyncError);
+        model->addErrorToActivityList(otherFile, OCC::ActivityListModel::ErrorType::SyncError);
+        model->addErrorToActivityList(sameFileInOtherFolder, OCC::ActivityListModel::ErrorType::SyncError);
+
+        QCOMPARE(model->rowCount(), 3);
+        QCOMPARE(model->errorsList().size(), 3);
+    }
+
+    void testAddError_sameErrorAfterRemoval_listedAgain()
+    {
+        const auto model = testingALM();
+        const auto ignoredFile = exampleFileIgnoredActivity(accountState->account()->displayName());
+
+        model->addErrorToActivityList(ignoredFile, OCC::ActivityListModel::ErrorType::SyncError);
+        model->removeActivityFromActivityList(ignoredFile);
+        model->addErrorToActivityList(ignoredFile, OCC::ActivityListModel::ErrorType::SyncError);
+
+        QCOMPARE(model->rowCount(), 1);
+        QCOMPARE(model->errorsList().size(), 1);
+    }
+
+    void testPreviewData_syncIssuesAdded_previewsStillUpdated()
+    {
+        const auto model = testingALM();
+        const auto accountName = accountState->account()->displayName();
+
+        model->addErrorToActivityList(exampleFileIgnoredActivity(accountName), OCC::ActivityListModel::ErrorType::SyncError);
+        QVERIFY(model->recentActivityPreviewData().isEmpty());
+        QVERIFY(model->notificationPreviewData().isEmpty());
+
+        model->addSyncFileItemToActivityList(testSyncFileItemActivity);
+        QCOMPARE(model->recentActivityPreviewData().size(), 1);
+        model->addNotificationToActivityList(testNotificationActivity);
+        QCOMPARE(model->notificationPreviewData().size(), 1);
+
+        auto secondIgnoredFile = exampleFileIgnoredActivity(accountName, {}, 5);
+        secondIgnoredFile._file = u"second.txt"_s;
+        model->addErrorToActivityList(secondIgnoredFile, OCC::ActivityListModel::ErrorType::SyncError);
+        QCOMPARE(model->recentActivityPreviewData().size(), 1);
+        QCOMPARE(model->notificationPreviewData().size(), 1);
+    }
+
+    // A first sync can report thousands of ignored files, each added on its own
+    void testAddError_manyIgnoredFiles_benchmark()
+    {
+        constexpr auto ignoredFileCount = 5000;
+        constexpr auto maximumDurationMsecs = 2000;
+
+        const auto model = testingALM();
+        model->addSyncFileItemToActivityList(testSyncFileItemActivity);
+        model->addNotificationToActivityList(testNotificationActivity);
+        const auto accountName = accountState->account()->displayName();
+
+        auto timer = QElapsedTimer{};
+        timer.start();
+        for (auto i = 0; i < ignoredFileCount; ++i) {
+            auto ignoredFile = exampleFileIgnoredActivity(accountName, {}, 100 + i);
+            ignoredFile._file = u"file%1.txt"_s.arg(i);
+            model->addErrorToActivityList(ignoredFile, OCC::ActivityListModel::ErrorType::SyncError);
+        }
+        const auto durationMsecs = timer.elapsed();
+        QTest::setBenchmarkResult(static_cast<qreal>(durationMsecs), QTest::WalltimeMilliseconds);
+
+        QCOMPARE(model->rowCount(), ignoredFileCount + 2);
+        QVERIFY2(durationMsecs < maximumDurationMsecs, qPrintable(u"took %1 ms"_s.arg(durationMsecs)));
+    }
+
+    void testRemoveActivities_someListed_removesOnlyThose()
+    {
+        const auto model = testingALM();
+        const auto accountName = accountState->account()->displayName();
+        auto ignoredFiles = OCC::ActivityList{};
+        for (auto i = 0; i < 3; ++i) {
+            auto ignoredFile = exampleFileIgnoredActivity(accountName, {}, 100 + i);
+            ignoredFile._file = u"file%1.txt"_s.arg(i);
+            model->addErrorToActivityList(ignoredFile, OCC::ActivityListModel::ErrorType::SyncError);
+            ignoredFiles.append(ignoredFile);
+        }
+        auto notListed = exampleFileIgnoredActivity(accountName, {}, 200);
+
+        model->removeActivitiesFromActivityList({ignoredFiles.at(0), ignoredFiles.at(2), notListed});
+
+        QCOMPARE(model->rowCount(), 1);
+        QCOMPARE(model->errorsList(), OCC::ActivityList{ignoredFiles.at(1)});
+    }
+
+    void testRemoveActivities_rowsBeforePreviewedActivity_previewRowUpdated()
+    {
+        const auto model = testingALM();
+        const auto ignoredFile = exampleFileIgnoredActivity(accountState->account()->displayName());
+        model->addErrorToActivityList(ignoredFile, OCC::ActivityListModel::ErrorType::SyncError);
+        model->addSyncFileItemToActivityList(testSyncFileItemActivity);
+        QCOMPARE(model->recentActivityPreviewData().first().toMap().value(u"activityIndex"_s).toInt(), 1);
+
+        model->removeActivitiesFromActivityList({ignoredFile});
+
+        QCOMPARE(model->rowCount(), 1);
+        QCOMPARE(model->recentActivityPreviewData().first().toMap().value(u"activityIndex"_s).toInt(), 0);
+    }
+
+    // The next sync removes the ignored files of the previous sync before reporting them again
+    void testRemoveActivities_manyIgnoredFiles_benchmark()
+    {
+        constexpr auto ignoredFileCount = 5000;
+        constexpr auto maximumDurationMsecs = 2000;
+
+        const auto model = testingALM();
+        model->addSyncFileItemToActivityList(testSyncFileItemActivity);
+        const auto accountName = accountState->account()->displayName();
+        auto ignoredFiles = OCC::ActivityList{};
+        for (auto i = 0; i < ignoredFileCount; ++i) {
+            auto ignoredFile = exampleFileIgnoredActivity(accountName, {}, 100 + i);
+            ignoredFile._file = u"file%1.txt"_s.arg(i);
+            model->addErrorToActivityList(ignoredFile, OCC::ActivityListModel::ErrorType::SyncError);
+            ignoredFiles.append(ignoredFile);
+        }
+
+        auto timer = QElapsedTimer{};
+        timer.start();
+        model->removeActivitiesFromActivityList(ignoredFiles);
+        const auto durationMsecs = timer.elapsed();
+        QTest::setBenchmarkResult(static_cast<qreal>(durationMsecs), QTest::WalltimeMilliseconds);
+
+        QCOMPARE(model->rowCount(), 1);
+        QVERIFY(model->errorsList().isEmpty());
+        QVERIFY2(durationMsecs < maximumDurationMsecs, qPrintable(u"took %1 ms"_s.arg(durationMsecs)));
+    }
 };
 
 QTEST_MAIN(TestActivityListModel)

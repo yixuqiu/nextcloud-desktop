@@ -1,16 +1,7 @@
 /*
- * Copyright (C) by Olivier Goffart <ogoffart@owncloud.com>
- * Copyright (C) by Klaas Freitag <freitag@owncloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2020 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2014 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #pragma once
@@ -29,6 +20,19 @@ constexpr auto contentMd5HeaderC = "Content-MD5";
 constexpr auto checksumRecalculateOnServerHeaderC = "X-Recalculate-Hash";
 
 /**
+ * Whether @p path sits inside the already removed directory @p deletedDir.
+ * Compares with a trailing slash so a sibling such as "A/BC" is not mistaken
+ * for a child of "A/B".
+ */
+[[nodiscard]] inline bool isPathInsideDeletedDir(const QString &path, const QString &deletedDir)
+{
+    return !deletedDir.isEmpty()
+        && path.size() > deletedDir.size()
+        && path[deletedDir.size()] == QLatin1Char('/')
+        && path.startsWith(deletedDir);
+}
+
+/**
  * @brief Declaration of the other propagation jobs
  * @ingroup libsync
  */
@@ -40,11 +44,19 @@ public:
         : PropagateItemJob(propagator, item)
     {
     }
+
+    void willDeleteItemToClientTrashBin(const QString &itemFilePath)
+    {
+        _deleteToClientTrashBin.insert(itemFilePath);
+    }
+
     void start() override;
 
 private:
     bool removeRecursively(const QString &path);
-    QString _error;
+
+    QSet<QString> _deleteToClientTrashBin;
+
     bool _moveToTrash = false;
 };
 

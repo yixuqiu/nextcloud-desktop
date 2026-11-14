@@ -1,22 +1,65 @@
 /*
- *    This software is in the public domain, furnished "as is", without technical
- *    support, and with no warranty, express or implied, as to its usefulness for
- *    any purpose.
+ * SPDX-FileCopyrightText: 2021 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2018 ownCloud GmbH
+ * SPDX-License-Identifier: CC0-1.0
  *
+ * This software is in the public domain, furnished "as is", without technical
+ * support, and with no warranty, express or implied, as to its usefulness for
+ * any purpose.
  */
 
 #include <QtTest>
 #include "syncenginetestutils.h"
 #include <syncengine.h>
+#include <discoveryphase.h>
 #include <localdiscoverytracker.h>
+#include <QFile>
+#include <QSignalSpy>
+#include <QThreadPool>
+#include <QTemporaryDir>
+
+#include <owncloudpropagator.h>
+
+#include <filesystem>
+#include <functional>
+#include <system_error>
 
 using namespace OCC;
+using namespace Qt::StringLiterals;
+
+namespace
+{
+using FolderChange = std::function<void(FakeFolder &)>;
+}
 
 class TestLocalDiscovery : public QObject
 {
     Q_OBJECT
 
-private slots:
+private Q_SLOTS:
+    void initTestCase()
+    {
+        OCC::Logger::instance()->setLogFlush(true);
+        OCC::Logger::instance()->setLogDebug(true);
+
+        QStandardPaths::setTestModeEnabled(true);
+    }
+
+    void testFileOpenedAsDirectoryCompletesDiscoveryJob()
+    {
+        QTemporaryDir temporaryDirectory;
+        QVERIFY(temporaryDirectory.isValid());
+
+        QFile file(temporaryDirectory.filePath(QStringLiteral("file")));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+
+        const auto job = new DiscoverySingleLocalDirectoryJob({}, file.fileName(), nullptr, false);
+        QSignalSpy finishedSpy(job, &DiscoverySingleLocalDirectoryJob::finished);
+        QThreadPool::globalInstance()->start(job);
+
+        QTRY_COMPARE_WITH_TIMEOUT(finishedSpy.count(), 1, 5000);
+    }
+
     void testSelectiveSyncQuotaExceededDataLoss()
     {
         FakeFolder fakeFolder{FileInfo{}};
@@ -286,16 +329,94 @@ private slots:
         QVERIFY(!fakeFolder.currentRemoteState().find("C/bar"));
     }
 
-    void testCreateFileWithTrailingSpaces_localAndRemoteTrimmedDoNotExist_renameAndUploadFile()
+    // Tests the behavior of forbidden filename detection
+    void testServerForbiddenFilenames()
+    {
+        FakeFolder fakeFolder { FileInfo::A12_B12_C12_S12() };
+        QCOMPARE(fakeFolder.currentLocalState(), fakeFolder.currentRemoteState());
+
+        fakeFolder.syncEngine().account()->setCapabilities({
+            { "files", QVariantMap {
+                { "forbidden_filenames", QVariantList { ".foo", "bar" } },
+                { "forbidden_filename_characters", QVariantList { "_" } },
+                { "forbidden_filename_basenames", QVariantList { "base" } },
+                { "forbidden_filename_extensions", QVariantList { "ext" } }
+            } }
+        });
+
+        fakeFolder.localModifier().insert("C/.foo");
+        fakeFolder.localModifier().insert("C/bar");
+        fakeFolder.localModifier().insert("C/moo");
+        fakeFolder.localModifier().insert("C/.moo");
+        fakeFolder.localModifier().insert("C/potatopotato.txt");
+        fakeFolder.localModifier().insert("C/potato_potato.txt");
+        fakeFolder.localModifier().insert("C/basefilename.txt");
+        fakeFolder.localModifier().insert("C/base.txt");
+        fakeFolder.localModifier().insert("C/filename.txt");
+        fakeFolder.localModifier().insert("C/filename.ext");
+
+        QVERIFY(fakeFolder.syncOnce());
+        QVERIFY(fakeFolder.currentRemoteState().find("C/moo"));
+        QVERIFY(fakeFolder.currentRemoteState().find("C/.moo"));
+        QVERIFY(!fakeFolder.currentRemoteState().find("C/.foo"));
+        QVERIFY(!fakeFolder.currentRemoteState().find("C/bar"));
+        QVERIFY(fakeFolder.currentRemoteState().find("C/potatopotato.txt"));
+        QVERIFY(!fakeFolder.currentRemoteState().find("C/potato_potato.txt"));
+        QVERIFY(fakeFolder.currentRemoteState().find("C/basefilename.txt"));
+        QVERIFY(!fakeFolder.currentRemoteState().find("C/base.txt"));
+        QVERIFY(fakeFolder.currentRemoteState().find("C/filename.txt"));
+        QVERIFY(!fakeFolder.currentRemoteState().find("C/filename.ext"));
+    }
+
+    void testRedownloadDeletedLivePhotoMov()
     {
         FakeFolder fakeFolder{FileInfo{}};
         QCOMPARE(fakeFolder.currentLocalState(), fakeFolder.currentRemoteState());
+        const auto livePhotoImg = QStringLiteral("IMG_0001.heic");
+        const auto livePhotoMov = QStringLiteral("IMG_0001.mov");
+        fakeFolder.localModifier().insert(livePhotoImg);
+        fakeFolder.localModifier().insert(livePhotoMov);
+
+        ItemCompletedSpy completeSpy(fakeFolder);
+        QVERIFY(fakeFolder.syncOnce());
+
+        QCOMPARE(completeSpy.findItem(livePhotoImg)->_status, SyncFileItem::Status::Success);
+        QCOMPARE(completeSpy.findItem(livePhotoMov)->_status, SyncFileItem::Status::Success);
+
+        fakeFolder.remoteModifier().setIsLivePhoto(livePhotoImg, true);
+        fakeFolder.remoteModifier().setIsLivePhoto(livePhotoMov, true);
+        QVERIFY(fakeFolder.syncOnce());
+
+        SyncJournalFileRecord imgRecord;
+        QVERIFY(fakeFolder.syncJournal().getFileRecord(livePhotoImg, &imgRecord));
+        QVERIFY(imgRecord._isLivePhoto);
+
+        SyncJournalFileRecord movRecord;
+        QVERIFY(fakeFolder.syncJournal().getFileRecord(livePhotoMov, &movRecord));
+        QVERIFY(movRecord._isLivePhoto);
+
+        completeSpy.clear();
+        fakeFolder.localModifier().remove(livePhotoMov);
+        QVERIFY(fakeFolder.syncOnce());
+        QCOMPARE(completeSpy.findItem(livePhotoMov)->_status, SyncFileItem::Status::Success);
+        QCOMPARE(completeSpy.findItem(livePhotoMov)->_instruction, CSYNC_INSTRUCTION_SYNC);
+        QCOMPARE(completeSpy.findItem(livePhotoMov)->_direction, SyncFileItem::Direction::Down);
+    }
+
+    void testCreateFileWithTrailingSpaces_localAndRemoteTrimmedDoNotExist_renameAndUploadFile()
+    {
+        FakeFolder fakeFolder{FileInfo{}};
+        fakeFolder.enableEnforceWindowsFileNameCompatibility();
+
+        QCOMPARE(fakeFolder.currentLocalState(), fakeFolder.currentRemoteState());
+
         const QString fileWithSpaces1(" foo");
         const QString fileWithSpaces2(" bar ");
         const QString fileWithSpaces3("bla ");
         const QString fileWithSpaces4("A/ foo");
         const QString fileWithSpaces5("A/ bar ");
         const QString fileWithSpaces6("A/bla ");
+        const auto extraFileNameWithSpaces = QStringLiteral(" with spaces ");
 
         fakeFolder.localModifier().insert(fileWithSpaces1);
         fakeFolder.localModifier().insert(fileWithSpaces2);
@@ -304,20 +425,20 @@ private slots:
         fakeFolder.localModifier().insert(fileWithSpaces4);
         fakeFolder.localModifier().insert(fileWithSpaces5);
         fakeFolder.localModifier().insert(fileWithSpaces6);
-        fakeFolder.localModifier().mkdir(QStringLiteral(" with spaces "));
+        fakeFolder.localModifier().mkdir(extraFileNameWithSpaces);
 
         ItemCompletedSpy completeSpy(fakeFolder);
         completeSpy.clear();
 
         QVERIFY(fakeFolder.syncOnce());
 
-        QCOMPARE(completeSpy.findItem(fileWithSpaces1)->_status, SyncFileItem::Status::FileNameInvalid);
+        QCOMPARE(completeSpy.findItem(fileWithSpaces1)->_status, SyncFileItem::Status::Success);
         QCOMPARE(completeSpy.findItem(fileWithSpaces2)->_status, SyncFileItem::Status::FileNameInvalid);
         QCOMPARE(completeSpy.findItem(fileWithSpaces3)->_status, SyncFileItem::Status::FileNameInvalid);
-        QCOMPARE(completeSpy.findItem(fileWithSpaces4)->_status, SyncFileItem::Status::FileNameInvalid);
+        QCOMPARE(completeSpy.findItem(fileWithSpaces4)->_status, SyncFileItem::Status::Success);
         QCOMPARE(completeSpy.findItem(fileWithSpaces5)->_status, SyncFileItem::Status::FileNameInvalid);
         QCOMPARE(completeSpy.findItem(fileWithSpaces6)->_status, SyncFileItem::Status::FileNameInvalid);
-        QCOMPARE(completeSpy.findItem(QStringLiteral(" with spaces "))->_status, SyncFileItem::Status::FileNameInvalid);
+        QCOMPARE(completeSpy.findItem(extraFileNameWithSpaces)->_status, SyncFileItem::Status::FileNameInvalid);
 
         fakeFolder.syncEngine().addAcceptedInvalidFileName(fakeFolder.localPath() + fileWithSpaces1);
         fakeFolder.syncEngine().addAcceptedInvalidFileName(fakeFolder.localPath() + fileWithSpaces2);
@@ -325,20 +446,22 @@ private slots:
         fakeFolder.syncEngine().addAcceptedInvalidFileName(fakeFolder.localPath() + fileWithSpaces4);
         fakeFolder.syncEngine().addAcceptedInvalidFileName(fakeFolder.localPath() + fileWithSpaces5);
         fakeFolder.syncEngine().addAcceptedInvalidFileName(fakeFolder.localPath() + fileWithSpaces6);
-        fakeFolder.syncEngine().addAcceptedInvalidFileName(fakeFolder.localPath() + QStringLiteral(" with spaces "));
+        fakeFolder.syncEngine().addAcceptedInvalidFileName(fakeFolder.localPath() + extraFileNameWithSpaces);
 
         completeSpy.clear();
 
         fakeFolder.syncEngine().setLocalDiscoveryOptions(LocalDiscoveryStyle::DatabaseAndFilesystem, {QStringLiteral("foo"), QStringLiteral("bar"), QStringLiteral("bla"), QStringLiteral("A/foo"), QStringLiteral("A/bar"), QStringLiteral("A/bla")});
         QVERIFY(fakeFolder.syncOnce());
 
-        QCOMPARE(completeSpy.findItem(fileWithSpaces1)->_status, SyncFileItem::Status::Success);
-        QCOMPARE(completeSpy.findItem(fileWithSpaces2)->_status, SyncFileItem::Status::Success);
-        QCOMPARE(completeSpy.findItem(fileWithSpaces3)->_status, SyncFileItem::Status::Success);
-        QCOMPARE(completeSpy.findItem(fileWithSpaces4)->_status, SyncFileItem::Status::Success);
-        QCOMPARE(completeSpy.findItem(fileWithSpaces5)->_status, SyncFileItem::Status::Success);
-        QCOMPARE(completeSpy.findItem(fileWithSpaces6)->_status, SyncFileItem::Status::Success);
-        QCOMPARE(completeSpy.findItem(QStringLiteral(" with spaces "))->_status, SyncFileItem::Status::Success);
+#if !defined Q_OS_WINDOWS
+        QCOMPARE(completeSpy.findItem(fileWithSpaces1)->_status, SyncFileItem::Status::NoStatus);
+        QCOMPARE(completeSpy.findItem(QStringLiteral(" bar"))->_status, SyncFileItem::Status::Success);
+        QCOMPARE(completeSpy.findItem(QStringLiteral("bla"))->_status, SyncFileItem::Status::Success);
+        QCOMPARE(completeSpy.findItem(fileWithSpaces4)->_status, SyncFileItem::Status::NoStatus);
+        QCOMPARE(completeSpy.findItem(QStringLiteral("A/ bar"))->_status, SyncFileItem::Status::Success);
+        QCOMPARE(completeSpy.findItem(QStringLiteral("A/bla"))->_status, SyncFileItem::Status::Success);
+        QCOMPARE(completeSpy.findItem(QStringLiteral(" with spaces"))->_status, SyncFileItem::Status::Success);
+#endif
     }
 
     void testCreateFileWithTrailingSpaces_remoteDontGetRenamedAutomatically()
@@ -360,15 +483,52 @@ private slots:
 
         QVERIFY(fakeFolder.syncOnce());
 
-        if (Utility::isWindows()) {
-            QCOMPARE(completeSpy.findItem(fileWithSpaces4)->_status, SyncFileItem::Status::FileNameInvalid);
+#if defined Q_OS_WINDOWS
+            QCOMPARE(completeSpy.findItem(fileWithSpaces4)->_status, SyncFileItem::Status::Success);
             QCOMPARE(completeSpy.findItem(fileWithSpaces5)->_status, SyncFileItem::Status::FileNameInvalid);
             QCOMPARE(completeSpy.findItem(fileWithSpaces6)->_status, SyncFileItem::Status::FileNameInvalid);
-        } else {
+#else
             QCOMPARE(completeSpy.findItem(fileWithSpaces4)->_status, SyncFileItem::Status::Success);
             QCOMPARE(completeSpy.findItem(fileWithSpaces5)->_status, SyncFileItem::Status::Success);
             QCOMPARE(completeSpy.findItem(fileWithSpaces6)->_status, SyncFileItem::Status::Success);
-        }
+#endif
+    }
+
+    void testCreateLocalPathsWithLeadingAndTrailingSpaces_syncOnSupportingOs()
+    {
+        FakeFolder fakeFolder{FileInfo()};
+        fakeFolder.enableEnforceWindowsFileNameCompatibility();
+        fakeFolder.localModifier().mkdir("A");
+        QVERIFY(fakeFolder.syncOnce());
+        QCOMPARE(fakeFolder.currentLocalState(), fakeFolder.currentRemoteState());
+
+        const QString fileWithSpaces1("A/ space");
+        const QString fileWithSpaces2("A/ space ");
+        const QString fileWithSpaces3("A/space ");
+        const QString folderWithSpaces1("A ");
+        const QString folderWithSpaces2(" B ");
+
+        fakeFolder.localModifier().insert(fileWithSpaces1);
+        fakeFolder.localModifier().insert(fileWithSpaces2);
+        fakeFolder.localModifier().insert(fileWithSpaces3);
+        fakeFolder.localModifier().mkdir(folderWithSpaces1);
+        fakeFolder.localModifier().mkdir(folderWithSpaces2);
+
+        ItemCompletedSpy completeSpy(fakeFolder);
+        completeSpy.clear();
+
+        QVERIFY(fakeFolder.syncOnce());
+
+        QCOMPARE(completeSpy.findItem(fileWithSpaces1)->_status, SyncFileItem::Status::Success);
+        QCOMPARE(completeSpy.findItem(fileWithSpaces2)->_status, SyncFileItem::Status::FileNameInvalid);
+        QCOMPARE(completeSpy.findItem(fileWithSpaces3)->_status, SyncFileItem::Status::FileNameInvalid);
+        QCOMPARE(completeSpy.findItem(folderWithSpaces1)->_status, SyncFileItem::Status::FileNameInvalid);
+        QCOMPARE(completeSpy.findItem(folderWithSpaces2)->_status, SyncFileItem::Status::FileNameInvalid);
+        QVERIFY(fakeFolder.remoteModifier().find(fileWithSpaces1));
+        QVERIFY(!fakeFolder.remoteModifier().find(fileWithSpaces2));
+        QVERIFY(!fakeFolder.remoteModifier().find(fileWithSpaces3));
+        QVERIFY(!fakeFolder.remoteModifier().find(folderWithSpaces1));
+        QVERIFY(!fakeFolder.remoteModifier().find(folderWithSpaces2));
     }
 
     void testCreateFileWithTrailingSpaces_remoteGetRenamedManually()
@@ -392,17 +552,17 @@ private slots:
         ItemCompletedSpy completeSpy(fakeFolder);
         completeSpy.clear();
 
-        QVERIFY(fakeFolder.syncOnce());        
+        QVERIFY(fakeFolder.syncOnce());
 
-        if (Utility::isWindows()) {
-            QCOMPARE(completeSpy.findItem(fileWithSpaces4)->_status, SyncFileItem::Status::FileNameInvalid);
+#if defined Q_OS_WINDOWS
+            QCOMPARE(completeSpy.findItem(fileWithSpaces4)->_status, SyncFileItem::Status::Success);
             QCOMPARE(completeSpy.findItem(fileWithSpaces5)->_status, SyncFileItem::Status::FileNameInvalid);
             QCOMPARE(completeSpy.findItem(fileWithSpaces6)->_status, SyncFileItem::Status::FileNameInvalid);
-        } else {
+#else
             QCOMPARE(completeSpy.findItem(fileWithSpaces4)->_status, SyncFileItem::Status::Success);
             QCOMPARE(completeSpy.findItem(fileWithSpaces5)->_status, SyncFileItem::Status::Success);
             QCOMPARE(completeSpy.findItem(fileWithSpaces6)->_status, SyncFileItem::Status::Success);
-        }
+#endif
 
         fakeFolder.remoteModifier().rename(fileWithSpaces4, fileWithoutSpaces4);
         fakeFolder.remoteModifier().rename(fileWithSpaces5, fileWithoutSpaces5);
@@ -420,8 +580,9 @@ private slots:
     void testCreateFileWithTrailingSpaces_localTrimmedAlsoCreated_dontRenameAutomaticallyAndDontUploadFile()
     {
         FakeFolder fakeFolder{FileInfo{}};
+        fakeFolder.enableEnforceWindowsFileNameCompatibility();
         QCOMPARE(fakeFolder.currentLocalState(), fakeFolder.currentRemoteState());
-        const QString fileWithSpaces(" foo");
+        const QString fileWithSpaces("foo ");
         const QString fileTrimmed("foo");
 
         fakeFolder.localModifier().insert(fileTrimmed);
@@ -430,7 +591,10 @@ private slots:
         QVERIFY(fakeFolder.syncOnce());
 
         QVERIFY(fakeFolder.currentRemoteState().find(fileTrimmed));
+
+        // no file with spaces on Windows
         QVERIFY(!fakeFolder.currentRemoteState().find(fileWithSpaces));
+
         QVERIFY(fakeFolder.currentLocalState().find(fileWithSpaces));
         QVERIFY(fakeFolder.currentLocalState().find(fileTrimmed));
     }
@@ -476,9 +640,11 @@ private slots:
 
         QVERIFY(fakeFolder.syncOnce());
 
+#if !defined Q_OS_WINDOWS
         auto expectedState = fakeFolder.currentLocalState();
         qDebug() << expectedState;
         QCOMPARE(fakeFolder.currentRemoteState(), expectedState);
+#endif
     }
 
     void testBlockInvalidMtimeSyncRemote()
@@ -537,8 +703,9 @@ private slots:
 
         int nGET = 0;
         fakeFolder.setServerOverride([&](QNetworkAccessManager::Operation op, const QNetworkRequest &, QIODevice *) {
-            if (op == QNetworkAccessManager::GetOperation)
+            if (op == QNetworkAccessManager::GetOperation) {
                 ++nGET;
+            }
             return nullptr;
         });
 
@@ -731,6 +898,458 @@ private slots:
         SyncJournalFileRecord fileRecordAfter;
         QVERIFY(fakeFolder.syncJournal().getFileRecord(QStringLiteral("bar"), &fileRecordAfter));
         QVERIFY(!fileRecordAfter._lockstate._locked);
+    }
+
+    void testDiscoveryUsesCorrectQuotaSource()
+    {
+        //setup sync folder
+        FakeFolder fakeFolder{FileInfo{}};
+
+        // create folder
+        const QString folderA("A");
+        fakeFolder.localModifier().mkdir(folderA);
+        fakeFolder.remoteModifier().mkdir(folderA);
+        fakeFolder.remoteModifier().setFolderQuota(folderA, {0, 500});
+
+        // sync folderA
+        ItemCompletedSpy syncSpy(fakeFolder);
+        QVERIFY(fakeFolder.syncOnce());
+        QCOMPARE(syncSpy.findItem(folderA)->_status, SyncFileItem::Status::NoStatus);
+
+        // check db quota for folderA - bytesAvailable is 500
+        SyncJournalFileRecord recordFolderA;
+        QVERIFY(fakeFolder.syncJournal().getFileRecord(folderA, &recordFolderA));
+        QCOMPARE(recordFolderA._folderQuota.bytesAvailable, 500);
+
+        // add fileNameA to folderA - size < quota in db
+        const QString fileNameA("A/A.data");
+        fakeFolder.localModifier().insert(fileNameA, 200);
+
+        // set different quota for folderA - remote change does not change etag yet
+        fakeFolder.remoteModifier().setFolderQuota(folderA, {0, 0});
+
+        // sync filenameA - size == quota => success
+        syncSpy.clear();
+        QVERIFY(fakeFolder.syncOnce());
+        QCOMPARE(syncSpy.findItem(fileNameA)->_status, SyncFileItem::Status::Success);
+
+        // add smallFile to folderA - size < quota in db
+        const QString smallFile("A/smallFile.data");
+        fakeFolder.localModifier().insert(smallFile, 100);
+
+        // sync smallFile - size < quota in db => success => update quota in db
+        syncSpy.clear();
+        QVERIFY(fakeFolder.syncOnce());
+        QCOMPARE(syncSpy.findItem(smallFile)->_status, SyncFileItem::Status::Success);
+
+        // create remoteFileA - size > bytes available
+        const QString remoteFileA("A/remoteA.data");
+        fakeFolder.remoteModifier().insert(remoteFileA, 200);
+
+        // sync remoteFile - it is a download
+        syncSpy.clear();
+        QVERIFY(fakeFolder.syncOnce());
+        QCOMPARE(syncSpy.findItem(remoteFileA)->_status, SyncFileItem::Status::Success);
+
+        // check db quota for folderA - bytesAvailable have changed to 0 due to new PROPFIND
+        QVERIFY(fakeFolder.syncJournal().getFileRecord(folderA, &recordFolderA));
+        QCOMPARE(recordFolderA._folderQuota.bytesAvailable, 0);
+
+        // create local fileNameB - size < quota in db
+        const QString fileNameB("A/B.data");
+        fakeFolder.localModifier().insert(fileNameB, 0);
+
+        // set different quota for folderA - remote change does not change etag yet
+        fakeFolder.remoteModifier().setFolderQuota(folderA, {500, 600});
+
+        // sync fileNameB - size < quota in db => success
+        syncSpy.clear();
+        QVERIFY(fakeFolder.syncOnce());
+        QCOMPARE(syncSpy.findItem(fileNameB)->_status, SyncFileItem::Status::Success);
+
+        // create remoteFileB - it is a download
+        const QString remoteFileB("A/remoteB.data");
+        fakeFolder.remoteModifier().insert(remoteFileA, 100);
+
+        // create local fileNameC - size < quota in db
+        const QString fileNameC("A/C.data");
+        fakeFolder.localModifier().insert(fileNameC, 0);
+
+        // sync filenameC - size < quota in db => success
+        syncSpy.clear();
+        QVERIFY(fakeFolder.syncOnce());
+        QCOMPARE(syncSpy.findItem(fileNameC)->_status, SyncFileItem::Status::Success);
+
+        // check db quota for folderA - bytesAvailable have changed to 600 due to new PROPFIND
+        QVERIFY(fakeFolder.syncJournal().getFileRecord(folderA, &recordFolderA));
+        QCOMPARE(recordFolderA._folderQuota.bytesAvailable, 600);
+
+        QCOMPARE(syncSpy.findItem(remoteFileB)->_status, SyncFileItem::Status::NoStatus);
+
+        // create local fileNameD - size > quota in db
+        const QString fileNameD("A/D.data");
+        fakeFolder.localModifier().insert(fileNameD, 700);
+
+        // sync fileNameD - size > quota in db => error
+        syncSpy.clear();
+        QVERIFY(!fakeFolder.syncOnce());
+        QCOMPARE(syncSpy.findItem(fileNameD)->_status, SyncFileItem::Status::NormalError);
+
+        // create local fileNameE - size < quota in db
+        const QString fileNameE("A/E.data");
+        fakeFolder.localModifier().insert(fileNameE, 400);
+
+        // sync fileNameE - size < quota in db => success
+        syncSpy.clear();
+        QVERIFY(!fakeFolder.syncOnce());
+        QCOMPARE(syncSpy.findItem(fileNameE)->_status, SyncFileItem::Status::Success);
+    }
+
+    void testMissingInodeAndFixThem()
+    {
+        FakeFolder fakeFolder{FileInfo{}};
+
+        fakeFolder.remoteModifier().mkdir(u"A"_s);
+        fakeFolder.remoteModifier().mkdir(u"A/B"_s);
+        fakeFolder.remoteModifier().insert(u"textFile.txt"_s);
+        fakeFolder.remoteModifier().insert(u"document.md"_s);
+        fakeFolder.remoteModifier().insert(u"A/B/sub-folder.md"_s);
+
+        QVERIFY(fakeFolder.syncOnce());
+
+        auto documentFileRecord = SyncJournalFileRecord{};
+        QVERIFY(fakeFolder.syncJournal().getFileRecord(u"document.md"_s, &documentFileRecord));
+        QCOMPARE_GT(documentFileRecord._inode, 0);
+        documentFileRecord._inode = 0;
+        QVERIFY(fakeFolder.syncJournal().setFileRecord(documentFileRecord).isValid());
+
+        auto textFileFileRecord = SyncJournalFileRecord{};
+        QVERIFY(fakeFolder.syncJournal().getFileRecord(u"textFile.txt"_s, &textFileFileRecord));
+        QCOMPARE_GT(textFileFileRecord._inode, 0);
+        textFileFileRecord._inode = 0;
+        QVERIFY(fakeFolder.syncJournal().setFileRecord(textFileFileRecord).isValid());
+
+        auto aFolderFileRecord = SyncJournalFileRecord{};
+        QVERIFY(fakeFolder.syncJournal().getFileRecord(u"A"_s, &aFolderFileRecord));
+        QCOMPARE_GT(aFolderFileRecord._inode, 0);
+        aFolderFileRecord._inode = 0;
+        QVERIFY(fakeFolder.syncJournal().setFileRecord(aFolderFileRecord).isValid());
+
+        auto bFolderFileRecord = SyncJournalFileRecord{};
+        QVERIFY(fakeFolder.syncJournal().getFileRecord(u"A/B"_s, &bFolderFileRecord));
+        QCOMPARE_GT(bFolderFileRecord._inode, 0);
+        bFolderFileRecord._inode = 0;
+        QVERIFY(fakeFolder.syncJournal().setFileRecord(bFolderFileRecord).isValid());
+
+        auto subFolderFileRecord = SyncJournalFileRecord{};
+        QVERIFY(fakeFolder.syncJournal().getFileRecord(u"A/B/sub-folder.md"_s, &subFolderFileRecord));
+        QCOMPARE_GT(subFolderFileRecord._inode, 0);
+        subFolderFileRecord._inode = 0;
+        QVERIFY(fakeFolder.syncJournal().setFileRecord(subFolderFileRecord).isValid());
+
+        fakeFolder.syncEngine().setLocalDiscoveryOptions(LocalDiscoveryStyle::FilesystemOnly);
+        QVERIFY(fakeFolder.syncOnce());
+
+        documentFileRecord = SyncJournalFileRecord{};
+        QVERIFY(fakeFolder.syncJournal().getFileRecord(u"document.md"_s, &documentFileRecord));
+        QCOMPARE_GT(documentFileRecord._inode, 0);
+
+        textFileFileRecord = SyncJournalFileRecord{};
+        QVERIFY(fakeFolder.syncJournal().getFileRecord(u"textFile.txt"_s, &textFileFileRecord));
+        QCOMPARE_GT(textFileFileRecord._inode, 0);
+
+        aFolderFileRecord = SyncJournalFileRecord{};
+        QVERIFY(fakeFolder.syncJournal().getFileRecord(u"A"_s, &aFolderFileRecord));
+        QCOMPARE_GT(aFolderFileRecord._inode, 0);
+
+        bFolderFileRecord = SyncJournalFileRecord{};
+        QVERIFY(fakeFolder.syncJournal().getFileRecord(u"A/B"_s, &bFolderFileRecord));
+        QCOMPARE_GT(bFolderFileRecord._inode, 0);
+
+        subFolderFileRecord = SyncJournalFileRecord{};
+        QVERIFY(fakeFolder.syncJournal().getFileRecord(u"A/B/sub-folder.md"_s, &subFolderFileRecord));
+        QCOMPARE_GT(subFolderFileRecord._inode, 0);
+    }
+
+    void testSymlinksDoNotSync_data()
+    {
+        QTest::addColumn<bool>("fullLocalDiscovery");
+
+        QTest::newRow("partial local discovery") << false;
+        QTest::newRow("full local discovery") << true;
+    }
+
+    void testSymlinksDoNotSync()
+    {
+        QFETCH(bool, fullLocalDiscovery);
+
+        FakeFolder fakeFolder{FileInfo{}};
+        QTemporaryDir outside;
+        if (!createDirectorySymlink(outside.path(), fakeFolder.localPath() + u"target"_s)) {
+            QSKIP("Cannot create symlinks on this system");
+        }
+
+        fakeFolder.remoteModifier().mkdir(u"target"_s);
+        fakeFolder.remoteModifier().insert(u"target/file.txt"_s);
+        fakeFolder.syncEngine().setLocalDiscoveryOptions(fullLocalDiscovery ? LocalDiscoveryStyle::FilesystemOnly : LocalDiscoveryStyle::DatabaseAndFilesystem);
+        ItemCompletedSpy completeSpy(fakeFolder);
+        QVERIFY(fakeFolder.syncOnce());
+
+        QVERIFY(QDir(outside.path()).isEmpty(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System));
+        QVERIFY(!fakeFolder.dbState().find(u"target"_s));
+        QCOMPARE(completeSpy.findItem(u"target"_s)->_errorString, OwncloudPropagator::symlinkNotSupportedMessage());
+    }
+
+    void testJunctionsDoNotSync()
+    {
+#ifndef Q_OS_WIN
+        QSKIP("Junctions only exist on Windows");
+#else
+        FakeFolder fakeFolder{FileInfo{}};
+        QTemporaryDir outside;
+        QVERIFY(createDirectoryJunction(outside.path(), fakeFolder.localPath() + u"target"_s));
+
+        fakeFolder.remoteModifier().mkdir(u"target"_s);
+        fakeFolder.remoteModifier().insert(u"target/file.txt"_s);
+        fakeFolder.syncEngine().setLocalDiscoveryOptions(LocalDiscoveryStyle::DatabaseAndFilesystem);
+        ItemCompletedSpy completeSpy(fakeFolder);
+        QVERIFY(fakeFolder.syncOnce());
+
+        QVERIFY(QDir(outside.path()).isEmpty(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System));
+        QVERIFY(!fakeFolder.dbState().find(u"target"_s));
+        QCOMPARE(completeSpy.findItem(u"target"_s)->_errorString, OwncloudPropagator::symlinkNotSupportedMessage());
+#endif
+    }
+
+    void testRemoteMoveOfSymlinkedFolder_data()
+    {
+        testSymlinksDoNotSync_data();
+    }
+
+    void testRemoteMoveOfSymlinkedFolder()
+    {
+        QFETCH(bool, fullLocalDiscovery);
+
+        FakeFolder fakeFolder{FileInfo{}};
+        fakeFolder.remoteModifier().mkdir(u"old"_s);
+        fakeFolder.remoteModifier().insert(u"old/file.txt"_s);
+        QVERIFY(fakeFolder.syncOnce());
+
+        QTemporaryDir outside;
+        QVERIFY(QFile(outside.filePath(u"secret.txt"_s)).open(QIODevice::WriteOnly));
+        QVERIFY(QDir(fakeFolder.localPath() + u"old"_s).removeRecursively());
+        if (!createDirectorySymlink(outside.path(), fakeFolder.localPath() + u"old"_s)) {
+            QSKIP("Cannot create symlinks on this system");
+        }
+
+        fakeFolder.remoteModifier().rename(u"old"_s, u"new"_s);
+        const auto remoteBefore = fakeFolder.currentRemoteState();
+        fakeFolder.syncEngine().setLocalDiscoveryOptions(fullLocalDiscovery ? LocalDiscoveryStyle::FilesystemOnly : LocalDiscoveryStyle::DatabaseAndFilesystem);
+        QVERIFY(fakeFolder.syncOnce());
+
+        QCOMPARE(fakeFolder.currentRemoteState(), remoteBefore);
+        QCOMPARE(QDir(outside.path()).entryList(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System), QStringList{u"secret.txt"_s});
+        QVERIFY(fakeFolder.currentLocalState().find(u"new/file.txt"_s));
+    }
+
+    void testStaleRecordForSymlinkIsDropped_data()
+    {
+        testSymlinksDoNotSync_data();
+    }
+
+    void testStaleRecordForSymlinkIsDropped()
+    {
+        QFETCH(bool, fullLocalDiscovery);
+
+        FakeFolder fakeFolder{FileInfo{}};
+        QTemporaryDir outside;
+        if (!createDirectorySymlink(outside.path(), fakeFolder.localPath() + u"target"_s)) {
+            QSKIP("Cannot create symlinks on this system");
+        }
+
+        SyncJournalFileRecord staleRecord;
+        staleRecord._path = "target"_ba;
+        staleRecord._type = ItemTypeDirectory;
+        staleRecord._etag = "stale"_ba;
+        staleRecord._modtime = QDateTime::currentSecsSinceEpoch();
+        QVERIFY(fakeFolder.syncJournal().setFileRecord(staleRecord).isValid());
+
+        fakeFolder.remoteModifier().mkdir(u"target"_s);
+        fakeFolder.remoteModifier().insert(u"target/file.txt"_s);
+        fakeFolder.syncEngine().setLocalDiscoveryOptions(fullLocalDiscovery ? LocalDiscoveryStyle::FilesystemOnly : LocalDiscoveryStyle::DatabaseAndFilesystem);
+        QVERIFY(fakeFolder.syncOnce());
+
+        QVERIFY(QDir(outside.path()).isEmpty(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System));
+        QVERIFY(!fakeFolder.dbState().find(u"target"_s));
+    }
+
+    void testStaleFolderPutBackKeepsNewerServerFile_data()
+    {
+        testSymlinksDoNotSync_data();
+    }
+
+    void testStaleFolderPutBackKeepsNewerServerFile()
+    {
+        QFETCH(bool, fullLocalDiscovery);
+
+        FakeFolder fakeFolder{FileInfo{}};
+        fakeFolder.remoteModifier().mkdir(u"Docs"_s);
+        fakeFolder.remoteModifier().mkdir(u"Docs/Photos"_s);
+        fakeFolder.remoteModifier().insert(u"Docs/Photos/a.jpg"_s);
+        QVERIFY(fakeFolder.syncOnce());
+
+        QTemporaryDir outside;
+        const auto localFolder = fakeFolder.localPath() + u"Docs/Photos"_s;
+        const auto movedFolder = outside.filePath(u"Photos"_s);
+        QVERIFY(QDir().rename(localFolder, movedFolder));
+        if (!createDirectorySymlink(movedFolder, localFolder)) {
+            QSKIP("Cannot create symlinks on this system");
+        }
+        const auto syncLocalChange = [&] {
+            fakeFolder.syncEngine().setLocalDiscoveryOptions(fullLocalDiscovery ? LocalDiscoveryStyle::FilesystemOnly
+                                                                                : LocalDiscoveryStyle::DatabaseAndFilesystem,
+                                                             {u"Docs/Photos"_s});
+            return fakeFolder.syncOnce();
+        };
+
+        fakeFolder.remoteModifier().appendByte(u"Docs/Photos/a.jpg"_s);
+        const auto newerSize = fakeFolder.currentRemoteState().find(u"Docs/Photos/a.jpg"_s)->size;
+        QVERIFY(syncLocalChange());
+
+        QVERIFY(FileSystem::remove(localFolder));
+        QVERIFY(QDir().rename(movedFolder, localFolder));
+        QVERIFY(syncLocalChange());
+
+        QCOMPARE(fakeFolder.currentRemoteState().find(u"Docs/Photos/a.jpg"_s)->size, newerSize);
+    }
+
+    void testRemovedSymlinkBringsBackServerFolder_data()
+    {
+        testSymlinksDoNotSync_data();
+    }
+
+    void testRemovedSymlinkBringsBackServerFolder()
+    {
+        QFETCH(bool, fullLocalDiscovery);
+
+        FakeFolder fakeFolder{FileInfo{}};
+        fakeFolder.remoteModifier().mkdir(u"Docs"_s);
+        fakeFolder.remoteModifier().mkdir(u"Docs/Photos"_s);
+        fakeFolder.remoteModifier().insert(u"Docs/Photos/a.jpg"_s);
+        QVERIFY(fakeFolder.syncOnce());
+
+        QTemporaryDir outside;
+        const auto localFolder = fakeFolder.localPath() + u"Docs/Photos"_s;
+        QVERIFY(QDir(localFolder).removeRecursively());
+        if (!createDirectorySymlink(outside.path(), localFolder)) {
+            QSKIP("Cannot create symlinks on this system");
+        }
+        const auto syncLocalChange = [&] {
+            fakeFolder.syncEngine().setLocalDiscoveryOptions(fullLocalDiscovery ? LocalDiscoveryStyle::FilesystemOnly
+                                                                                : LocalDiscoveryStyle::DatabaseAndFilesystem,
+                                                             {u"Docs/Photos"_s});
+            return fakeFolder.syncOnce();
+        };
+        QVERIFY(syncLocalChange());
+
+        QVERIFY(FileSystem::remove(localFolder));
+        QVERIFY(syncLocalChange());
+
+        QCOMPARE(fakeFolder.currentLocalState(), fakeFolder.currentRemoteState());
+    }
+
+    void testFolderReplacedBySymlinkBeforePropagation_data()
+    {
+        QTest::addColumn<FolderChange>("change");
+        QTest::addColumn<QString>("changedPath");
+
+        QTest::newRow("remote mkdir") << FolderChange{[](FakeFolder &folder) {
+            folder.remoteModifier().mkdir(u"A/sub"_s);
+        }} << u"A/sub"_s;
+        QTest::newRow("download") << FolderChange{[](FakeFolder &folder) {
+            folder.remoteModifier().insert(u"A/new"_s);
+        }} << u"A/new"_s;
+        QTest::newRow("remote delete") << FolderChange{[](FakeFolder &folder) {
+            folder.remoteModifier().remove(u"A/a1"_s);
+        }} << u"A/a1"_s;
+        QTest::newRow("remote move into folder") << FolderChange{[](FakeFolder &folder) {
+            folder.remoteModifier().rename(u"B/b1"_s, u"A/b1"_s);
+        }} << u"A/b1"_s;
+        QTest::newRow("upload") << FolderChange{[](FakeFolder &folder) {
+            folder.localModifier().appendByte(u"A/a1"_s);
+        }} << u"A/a1"_s;
+    }
+
+    void testFolderReplacedBySymlinkBeforePropagation()
+    {
+        QFETCH(FolderChange, change);
+        QFETCH(QString, changedPath);
+
+        FakeFolder fakeFolder{FileInfo::A12_B12_C12_S12()};
+        QTemporaryDir outside;
+        DiskFileModifier{outside.path()}.insert(u"a1"_s);
+        QTemporaryDir probe;
+        if (!createDirectorySymlink(outside.path(), probe.filePath(u"link"_s))) {
+            QSKIP("Cannot create symlinks on this system");
+        }
+
+        const auto localFolder = fakeFolder.localPath() + u"A"_s;
+        connect(&fakeFolder.syncEngine(), &SyncEngine::aboutToPropagate, this, [&] {
+            QVERIFY(QDir(localFolder).removeRecursively());
+            QVERIFY(createDirectorySymlink(outside.path(), localFolder));
+        });
+
+        change(fakeFolder);
+        const auto remoteBefore = fakeFolder.currentRemoteState();
+        ItemCompletedSpy completeSpy(fakeFolder);
+        QVERIFY(fakeFolder.syncOnce());
+
+        QCOMPARE(QDir(outside.path()).entryList(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System), QStringList{u"a1"_s});
+        QCOMPARE(fakeFolder.currentRemoteState(), remoteBefore);
+        QCOMPARE(completeSpy.findItem(changedPath)->_status, SyncFileItem::FileIgnored);
+    }
+
+    void testFolderReplacedBySymlinkDuringDownload()
+    {
+#ifdef Q_OS_WIN
+        QSKIP("Windows does not allow moving a folder while the download keeps a file in it open");
+#else
+        FakeFolder fakeFolder{FileInfo::A12_B12_C12_S12()};
+        fakeFolder.remoteModifier().mkdir(u"A/sub"_s);
+        QVERIFY(fakeFolder.syncOnce());
+
+        QTemporaryDir outside;
+        QTemporaryDir probe;
+        if (!createDirectorySymlink(outside.path(), probe.filePath(u"link"_s))) {
+            QSKIP("Cannot create symlinks on this system");
+        }
+
+        const auto localFolder = fakeFolder.localPath() + u"A"_s;
+        const auto movedFolder = outside.filePath(u"A"_s);
+        const auto movedSubFolder = FileSystem::toFilesystemPath(outside.filePath(u"A/sub"_s));
+        constexpr auto readOnlyForOwner = std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec | std::filesystem::perms::group_all
+            | std::filesystem::perms::others_read | std::filesystem::perms::others_exec;
+        auto folderReplaced = false;
+        fakeFolder.setServerOverride([&](QNetworkAccessManager::Operation operation, const QNetworkRequest &request, QIODevice *) -> QNetworkReply * {
+            if (operation == QNetworkAccessManager::GetOperation && request.url().path().endsWith(u"A/sub/new"_s)) {
+                auto error = std::error_code{};
+                std::filesystem::permissions(FileSystem::toFilesystemPath(localFolder + u"/sub"_s), readOnlyForOwner, error);
+                folderReplaced = !error && QDir().rename(localFolder, movedFolder) && createDirectorySymlink(movedFolder, localFolder);
+            }
+            return nullptr;
+        });
+
+        fakeFolder.remoteModifier().insert(u"A/sub/new"_s);
+        ItemCompletedSpy completeSpy(fakeFolder);
+        QVERIFY(fakeFolder.syncOnce());
+
+        auto error = std::error_code{};
+        const auto movedSubFolderPermissions = std::filesystem::status(movedSubFolder, error).permissions();
+        std::filesystem::permissions(movedSubFolder, std::filesystem::perms::owner_write, std::filesystem::perm_options::add, error);
+        QVERIFY(folderReplaced);
+        QCOMPARE(movedSubFolderPermissions, readOnlyForOwner);
+        QCOMPARE(completeSpy.findItem(u"A/sub/new"_s)->_status, SyncFileItem::FileIgnored);
+#endif
     }
 };
 

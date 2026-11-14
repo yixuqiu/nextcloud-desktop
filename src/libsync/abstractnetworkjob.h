@@ -1,16 +1,7 @@
 /*
- * Copyright (C) by Klaas Freitag <freitag@owncloud.com>
- * Copyright (C) by Daniel Molkentin <danimo@owncloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2018 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2015 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #pragma once
@@ -27,12 +18,14 @@
 #include <QElapsedTimer>
 #include <QDateTime>
 #include <QTimer>
+#include <optional>
 
 class QUrl;
 
 namespace OCC {
 
 class AbstractSslErrorHandler;
+class AccessManager;
 
 /**
  * @brief The AbstractNetworkJob class
@@ -44,6 +37,8 @@ class OWNCLOUDSYNC_EXPORT AbstractNetworkJob : public QObject
 public:
     explicit AbstractNetworkJob(const AccountPtr &account, const QString &path, QObject *parent = nullptr);
     ~AbstractNetworkJob() override;
+
+    static bool enableTimeout;
 
     virtual void start();
 
@@ -75,8 +70,7 @@ public:
     /* Content of the X-Request-ID header. (Only set after the request is sent) */
     QByteArray requestId();
 
-    [[nodiscard]] qint64 timeoutMsec() const { return _timer.interval(); }
-    [[nodiscard]] bool timedOut() const { return _timedout; }
+    [[nodiscard]] qint64 timeoutMsec() const { return _timeoutDuration; }
 
     /** Returns an error message, if any. */
     [[nodiscard]] virtual QString errorString() const;
@@ -112,10 +106,12 @@ public:
      */
     static int httpTimeout;
 
-public slots:
+    /// Returns a standardised error message in case of HSTS errors
+    [[nodiscard]] static std::optional<QString> hstsErrorStringFromReply(QNetworkReply *reply);
+
+public Q_SLOTS:
     void setTimeout(qint64 msec);
-    void resetTimeout();
-signals:
+Q_SIGNALS:
     /** Emitted on network error.
      *
      * \a reply is never null
@@ -193,7 +189,6 @@ protected:
     virtual void onTimedOut();
 
     QByteArray _responseTimestamp;
-    bool _timedout = false; // set to true when the timeout slot is received
 
     // Automatically follows redirects. Note that this only works for
     // GET requests that don't set up any HTTP body or other flags.
@@ -201,21 +196,23 @@ protected:
 
     QString replyStatusString();
 
-private slots:
+private Q_SLOTS:
     void slotFinished();
-    void slotTimeout();
+
+    void maybeTimedOut(QNetworkReply::NetworkError error);
 
 protected:
     AccountPtr _account;
 
 private:
-    QNetworkReply *addTimer(QNetworkReply *reply);
     bool _ignoreCredentialFailure = false;
     QPointer<QNetworkReply> _reply; // (QPointer because the NetworkManager may be destroyed before the jobs at exit)
+    bool _wasRetriedAfterConnectionClosed = false;
     QString _path;
-    QTimer _timer;
     int _redirectCount = 0;
     int _http2ResendCount = 0;
+    qint64 _timeoutDuration = (AbstractNetworkJob::httpTimeout != 0 ? AbstractNetworkJob::httpTimeout : 300000);
+    bool _timedout = false;
 
     // Set by the xyzRequest() functions and needed to be able to redirect
     // requests, should it be required.
@@ -223,20 +220,6 @@ private:
     // Reparented to the currently running QNetworkReply.
     QPointer<QIODevice> _requestBody;
 };
-
-/**
- * @brief Internal Helper class
- */
-class NetworkJobTimeoutPauser
-{
-public:
-    NetworkJobTimeoutPauser(QNetworkReply *reply);
-    ~NetworkJobTimeoutPauser();
-
-private:
-    QPointer<QTimer> _timer;
-};
-
 
 /** Gets the SabreDAV-style error message from an error response.
  *

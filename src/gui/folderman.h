@@ -1,17 +1,8 @@
 /*
- * Copyright (C) by Klaas Freitag <freitag@owncloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2018 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2014 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
-
 
 #ifndef FOLDERMAN_H
 #define FOLDERMAN_H
@@ -23,15 +14,23 @@
 
 #include "folder.h"
 #include "folderwatcher.h"
+#ifdef Q_OS_WIN
 #include "navigationpanehelper.h"
+#endif
 #include "syncfileitem.h"
 
 class TestFolderMan;
 class TestCfApiShellExtensionsIPC;
 class TestShareModel;
+class TestFolderStatusModel;
 class ShareTestHelper;
 class EndToEndTestHelper;
 class TestSyncConflictsModel;
+class TestRemoteWipe;
+class FolderManTestHelper;
+class TestFileActionsModel;
+class TestBrowserReAuthController;
+class TestMigration;
 
 namespace OCC {
 
@@ -40,6 +39,7 @@ class SyncResult;
 class SocketApi;
 class LockWatcher;
 class UpdateE2eeFolderUsersMetadataJob;
+class Migration;
 
 /**
  * @brief The FolderMan class
@@ -83,7 +83,9 @@ public:
     };
 
     ~FolderMan() override;
+
     static FolderMan *instance();
+    static void resetInstance();
 
     int setupFolders();
     int setupFoldersMigration();
@@ -101,7 +103,7 @@ public:
     Folder *addFolder(AccountState *accountState, const FolderDefinition &folderDefinition);
 
     /** Removes a folder */
-    void removeFolder(Folder *);
+    void removeFolder(Folder *folderToRemove);
 
     /** Returns the folder which the file or directory stored in path is in */
     Folder *folderForPath(const QString &path);
@@ -133,15 +135,11 @@ public:
      */
     static bool ensureJournalGone(const QString &journalDbFile);
 
-    /** Creates a new and empty local directory. */
-    bool startFromScratch(const QString &);
-
     /// Produce text for use in the tray tooltip
-    static QString trayTooltipStatusString(SyncResult::Status syncStatus, bool hasUnresolvedConflicts, bool paused);
+    static QString trayTooltipStatusString(SyncResult::Status syncStatus, bool hasUnresolvedConflicts, bool paused, ProgressInfo *progress);
 
     /// Compute status summarizing multiple folders
-    static void trayOverallStatus(const QList<Folder *> &folders,
-        SyncResult::Status *status, bool *unresolvedConflicts);
+    static void trayOverallStatus(const QList<Folder *> &folders, SyncResult::Status *status, bool *unresolvedConflicts, ProgressInfo **overallProgressInfo);
 
     // Escaping of the alias which is used in QSettings AND the file
     // system, thus need to be escaped.
@@ -149,7 +147,10 @@ public:
     static QString unescapeAlias(const QString &);
 
     SocketApi *socketApi();
+
+#ifdef Q_OS_WIN
     NavigationPaneHelper &navigationPaneHelper() { return _navigationPaneHelper; }
+#endif
 
     /**
      * Check if @a path is a valid path for a new folder considering the already sync'ed items.
@@ -227,11 +228,17 @@ public:
 
     void setDirtyProxy();
     void setDirtyNetworkLimits();
+    void setDirtyNetworkLimits(const AccountPtr &account) const;
 
     /** removes current user from the share **/
     void leaveShare(const QString &localFile);
 
-signals:
+    /** Whether or not vfs is supported in the location. */
+    [[nodiscard]] bool checkVfsAvailability(const QString &path, Vfs::Mode mode = bestAvailableVfsMode()) const;
+
+    /** If the folder configuration is no longer supported this will return an error string */
+    [[nodiscard]] Result<void, QString> unsupportedConfiguration(const QString &path) const;
+Q_SIGNALS:
     /**
       * signal to indicate a folder has changed its sync state.
       *
@@ -254,7 +261,7 @@ signals:
      */
     void wipeDone(OCC::AccountState *account, bool success);
 
-public slots:
+public Q_SLOTS:
 
     /**
      * Schedules folders of newly connected accounts, terminates and
@@ -285,7 +292,9 @@ public slots:
 
     void removeE2eFiles(const OCC::AccountPtr &account) const;
 
-private slots:
+    void slotServerVersionChanged(const OCC::AccountPtr &account);
+
+private Q_SLOTS:
     void slotFolderSyncPaused(OCC::Folder *, bool paused);
     void slotFolderCanSyncChanged();
     void slotFolderSyncStarted();
@@ -306,8 +315,6 @@ private slots:
     // FolderMan::folderSyncStateChange(Folder*) signal.
     void slotForwardFolderSyncStateChange();
 
-    void slotServerVersionChanged(OCC::Account *account);
-
     /**
      * A file whose locks were being monitored has become unlocked.
      *
@@ -326,7 +333,8 @@ private slots:
 
     void slotSetupPushNotifications(const OCC::Folder::Map &);
     void slotProcessFilesPushNotification(OCC::Account *account);
-    void slotConnectToPushNotifications(OCC::Account *account);
+    void slotProcessFileIdsPushNotification(OCC::Account *account, const QList<qint64> &fileIds);
+    void slotConnectToPushNotifications(const OCC::AccountPtr &account);
 
     void slotLeaveShare(const QString &localFile, const QByteArray &folderToken = {});
 
@@ -343,10 +351,6 @@ private:
     /** Will start a sync after a bit of delay. */
     void startScheduledSyncSoon();
 
-    // finds all folder configuration files
-    // and create the folders
-    [[nodiscard]] QString getBackupName(QString fullPathName) const;
-
     // makes the folder known to the socket api
     void registerFolderWithSocketApi(Folder *folder);
 
@@ -358,7 +362,12 @@ private:
     void runEtagJobsIfPossible(const QList<Folder *> &folderMap);
     void runEtagJobIfPossible(Folder *folder);
 
-    bool pushNotificationsFilesReady(Account *account);
+#ifdef BUILD_FILE_PROVIDER_MODULE
+    /** @brief Returns whether the account state permits File Provider ETag polling. */
+    [[nodiscard]] static bool canPollFileProviderEtag(const AccountState &accountState);
+#endif
+
+    bool pushNotificationsFilesReady(const OCC::AccountPtr &account);
 
     [[nodiscard]] bool isSwitchToVfsNeeded(const FolderDefinition &folderDefinition) const;
 
@@ -394,20 +403,27 @@ private:
     bool _nextSyncShouldStartImmediately = false;
 
     QScopedPointer<SocketApi> _socketApi;
+#ifdef Q_OS_WIN
     NavigationPaneHelper _navigationPaneHelper;
-
-    QPointer<UpdateE2eeFolderUsersMetadataJob> _removeE2eeShareJob;
+#endif
 
     bool _appRestartRequired = false;
 
-    static FolderMan *_instance;
     explicit FolderMan(QObject *parent = nullptr);
-    friend class OCC::Application;
+
+    static std::unique_ptr<FolderMan> _instance;
+
     friend class ::TestFolderMan;
     friend class ::TestSyncConflictsModel;
     friend class ::TestCfApiShellExtensionsIPC;
     friend class ::ShareTestHelper;
     friend class ::EndToEndTestHelper;
+    friend class ::TestFolderStatusModel;
+    friend class ::TestRemoteWipe;
+    friend class ::FolderManTestHelper;
+    friend class ::TestFileActionsModel;
+    friend class ::TestBrowserReAuthController;
+    friend class ::TestMigration;
 };
 
 } // namespace OCC

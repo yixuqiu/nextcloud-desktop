@@ -9,6 +9,7 @@ Icon=@APPLICATION_ICON_NAME@
 Keywords=@APPLICATION_NAME@;syncing;file;sharing;
 X-GNOME-Autostart-Delay=3
 MimeType=application/vnd.@APPLICATION_EXECUTABLE@;x-scheme-handler/@APPLICATION_URI_HANDLER_SCHEME@;
+SingleMainWindow=true
 Actions=Quit;
 
 # Translations
@@ -21,5 +22,7 @@ Icon=@APPLICATION_EXECUTABLE@
 
 
 # Translations
+Name[es_CO]=@APPLICATION_NAME@ Escritorio
 Comment[es_CO]=@APPLICATION_NAME@ Cliente de sincronización de escritorio
 GenericName[es_CO]=Sincronización de carpeta
+Icon[es_CO]=@NOMBRE_ICONO_APLICACION@

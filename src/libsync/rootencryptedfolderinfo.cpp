@@ -1,15 +1,6 @@
 /*
- * Copyright (C) 2023 by Oleksandr Zolotov <alex@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2023 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "rootencryptedfolderinfo.h"
@@ -27,8 +18,8 @@ RootEncryptedFolderInfo::RootEncryptedFolderInfo(const QString &remotePath,
                                                                  const QSet<QByteArray> &checksums,
                                                                  const quint64 counter)
     : path(remotePath)
-    , keyForEncryption(encryptionKey)
-    , keyForDecryption(decryptionKey)
+    , binaryKeyForEncryption(encryptionKey)
+    , binaryKeyForDecryption(decryptionKey)
     , keyChecksums(checksums)
     , counter(counter)
 {
@@ -49,6 +40,6 @@ QString RootEncryptedFolderInfo::createRootPath(const QString &currentPath, cons
 
 bool RootEncryptedFolderInfo::keysSet() const
 {
-    return !keyForEncryption.isEmpty() && !keyForDecryption.isEmpty() && !keyChecksums.isEmpty();
+    return !binaryKeyForEncryption.isEmpty() && !binaryKeyForDecryption.isEmpty() && !keyChecksums.isEmpty();
 }
 }

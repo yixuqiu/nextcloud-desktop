@@ -1,22 +1,9 @@
 /* This file is part of the KDE libraries
  *
- * Copyright (c) 2011 Aurélien Gâteau <agateau@kde.org>
- * Copyright (c) 2014 Dominik Haumann <dhaumann@kde.org>
- *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
- * 02110-1301  USA
+ * SPDX-FileCopyrightText: 2019 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2011 Aurélien Gâteau <agateau@kde.org>
+ * SPDX-FileCopyrightText: 2014 Dominik Haumann <dhaumann@kde.org>
+ * SPDX-License-Identifier: LGPL-2.0-or-later
  */
 #include "kmessagewidget.h"
 
@@ -154,7 +141,7 @@ void KMessageWidgetPrivate::createLayout()
         layout->addWidget(iconLabel);
         layout->addWidget(textLabel);
 
-        for (QToolButton *button : qAsConst(buttons)) {
+        for (QToolButton *button : std::as_const(buttons)) {
             layout->addWidget(button);
         }
 
@@ -254,11 +241,11 @@ void KMessageWidgetPrivate::slotTimeLineFinished()
         content->setGeometry(0, 0, q->width(), bestContentHeight());
 
         // notify about finished animation
-        emit q->showAnimationFinished();
+        Q_EMIT q->showAnimationFinished();
     } else {
         // hide and notify about finished animation
         q->hide();
-        emit q->hideAnimationFinished();
+        Q_EMIT q->hideAnimationFinished();
     }
 }
 
@@ -417,18 +404,18 @@ void KMessageWidget::animatedShow()
     // Test before styleHint, as there might have been a style change while animation was running
     if (isHideAnimationRunning()) {
         d->timeLine->stop();
-        emit hideAnimationFinished();
+        Q_EMIT hideAnimationFinished();
     }
 
     if (!style()->styleHint(QStyle::SH_Widget_Animate, nullptr, this)
      || (parentWidget() && !parentWidget()->isVisible())) {
         show();
-        emit showAnimationFinished();
+        Q_EMIT showAnimationFinished();
         return;
     }
 
     if (isVisible() && (d->timeLine->state() == QTimeLine::NotRunning) && (height() == d->bestContentHeight()) && (d->content->pos().y() == 0)) {
-        emit showAnimationFinished();
+        Q_EMIT showAnimationFinished();
         return;
     }
 
@@ -454,19 +441,19 @@ void KMessageWidget::animatedHide()
     // And before styleHint, as there might have been a style change while animation was running
     if (isShowAnimationRunning()) {
         d->timeLine->stop();
-        emit showAnimationFinished();
+        Q_EMIT showAnimationFinished();
     }
 
     if (!style()->styleHint(QStyle::SH_Widget_Animate, nullptr, this)) {
         hide();
-        emit hideAnimationFinished();
+        Q_EMIT hideAnimationFinished();
         return;
     }
 
     if (!isVisible()) {
         // explicitly hide it, so it stays hidden in case it is only not visible due to the parents
         hide();
-        emit hideAnimationFinished();
+        Q_EMIT hideAnimationFinished();
         return;
     }
 

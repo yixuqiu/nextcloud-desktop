@@ -1,16 +1,8 @@
 /*
- * Copyright (C) by Oleksandr Zolotov <alex@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2023 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
+
 #include "account.h"
 #include "accountstate.h"
 #include "clientstatusreportingcommon.h"
@@ -38,9 +30,14 @@ public:
     QString dbFilePath;
     QVariantMap bodyReceivedAndParsed;
 
-private slots:
+private Q_SLOTS:
     void initTestCase()
     {
+        OCC::Logger::instance()->setLogFlush(true);
+        OCC::Logger::instance()->setLogDebug(true);
+
+        QStandardPaths::setTestModeEnabled(true);
+
         OCC::ClientStatusReportingNetwork::clientStatusReportingTrySendTimerInterval = 1000;
         OCC::ClientStatusReportingNetwork::repordSendIntervalMs = 2000;
 

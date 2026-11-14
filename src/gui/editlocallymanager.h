@@ -1,15 +1,6 @@
 /*
- * Copyright (C) by Claudio Cambra <claudio.cambra@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2022 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #pragma once
@@ -17,7 +8,13 @@
 #include <QObject>
 #include <QHash>
 
+#include "config.h"
 #include "editlocallyjob.h"
+#include "editlocallyverificationjob.h"
+
+#ifdef BUILD_FILE_PROVIDER_MODULE
+#include "macOS/fileprovidereditlocallyjob.h"
+#endif
 
 namespace OCC {
 
@@ -27,14 +24,25 @@ class EditLocallyManager : public QObject
 
 public:
     [[nodiscard]] static EditLocallyManager *instance();
+    static void showError(const QString &message, const QString &informativeText);
 
-public slots:
-    void editLocally(const QUrl &url);
+public Q_SLOTS:
+    void handleRequest(const QUrl &url);
 
-private slots:
-    void createJob(const QString &userId,
-                   const QString &relPath,
-                   const QString &token);
+private Q_SLOTS:
+    void verify(const OCC::AccountStatePtr &accountState,
+                const QString &relPath,
+                const QString &token);
+    void editLocally(const OCC::AccountStatePtr &accountState,
+                     const QString &relPath,
+                     const QString &token);
+    
+#ifdef BUILD_FILE_PROVIDER_MODULE
+    void editLocallyFileProvider(const OCC::AccountStatePtr &accountState,
+                                 const QString &relPath,
+                                 const QString &token);
+#endif
+
 
 private:
     explicit EditLocallyManager(QObject *parent = nullptr);
@@ -46,9 +54,16 @@ private:
         QString token;
     };
 
+    static void showErrorNotification(const QString &message, const QString &informativeText);
+    static void showErrorMessageBox(const QString &message, const QString &informativeText);
     [[nodiscard]] static EditLocallyInputData parseEditLocallyUrl(const QUrl &url);
 
-    QHash<QString, EditLocallyJobPtr> _jobs;
+    QHash<QString, EditLocallyVerificationJobPtr> _verificationJobs;
+    QHash<QString, EditLocallyJobPtr> _editLocallyJobs;
+
+#ifdef BUILD_FILE_PROVIDER_MODULE
+    QHash<QString, Mac::FileProviderEditLocallyJobPtr> _editLocallyFpJobs;
+#endif
 };
 
 }

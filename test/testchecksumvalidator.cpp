@@ -1,8 +1,11 @@
 /*
+ * SPDX-FileCopyrightText: 2020 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2016 ownCloud GmbH
+ * SPDX-License-Identifier: CC0-1.0
+ *
  * This software is in the public domain, furnished "as is", without technical
  * support, and with no warranty, express or implied, as to its usefulness for
  * any purpose.
- *
  */
 
 #include <QtTest>
@@ -15,6 +18,7 @@
 #include "common/checksumconsts.h"
 #include "common/utility.h"
 #include "filesystem.h"
+#include "logger.h"
 #include "propagatorjobs.h"
 
 using namespace OCC;
@@ -33,7 +37,7 @@ using namespace OCC::Utility;
         bool           _successDown = false;
         bool           _errorSeen = false;
 
-    public slots:
+    public Q_SLOTS:
 
     void slotUpValidated(const QByteArray& type, const QByteArray& checksum) {
          qDebug() << "Checksum: " << checksum;
@@ -46,7 +50,7 @@ using namespace OCC::Utility;
     }
 
     void slotDownError(const QString &errMsg, const QByteArray &calculatedChecksumType,
-        const QByteArray &calculatedChecksum, const ValidateChecksumHeader::FailureReason reason)
+        const QByteArray &calculatedChecksum, const OCC::ValidateChecksumHeader::FailureReason reason)
     {
         Q_UNUSED(calculatedChecksumType);
         Q_UNUSED(calculatedChecksum);
@@ -72,9 +76,14 @@ using namespace OCC::Utility;
         return sumShell;
     }
 
-    private slots:
+private Q_SLOTS:
+    void initTestCase()
+    {
+        OCC::Logger::instance()->setLogFlush(true);
+        OCC::Logger::instance()->setLogDebug(true);
 
-    void initTestCase() {
+        QStandardPaths::setTestModeEnabled(true);
+
         _testfile = _root.path()+"/csFile";
         Utility::writeRandomFile( _testfile);
     }
@@ -91,8 +100,9 @@ using namespace OCC::Utility;
         const auto sum = checksumCalculator.calculate();
 
         QByteArray sSum = shellSum("md5sum", file);
-        if (sSum.isEmpty())
+        if (sSum.isEmpty()) {
             QSKIP("Couldn't execute md5sum to calculate checksum, executable missing?", SkipSingle);
+        }
 
         QVERIFY(!sum.isEmpty());
         QCOMPARE(sSum, sum);
@@ -110,8 +120,9 @@ using namespace OCC::Utility;
         const auto sum = checksumCalculator.calculate();
 
         QByteArray sSum = shellSum("sha1sum", file);
-        if (sSum.isEmpty())
+        if (sSum.isEmpty()) {
             QSKIP("Couldn't execute sha1sum to calculate checksum, executable missing?", SkipSingle);
+        }
 
         QVERIFY(!sum.isEmpty());
         QCOMPARE(sSum, sum);
@@ -216,6 +227,20 @@ using namespace OCC::Utility;
 #endif
     }
 
+#ifdef Q_OS_LINUX
+    void testDeletingComputeChecksumBeforeCalculationCompletionDoesNotCrash()
+    {
+        // Running this multiple times in a loop makes it easier to run into a crash
+        for (auto i = 0; i < 4096; i++) {
+            auto computeChecksum = new ComputeChecksum();
+            computeChecksum->setChecksumType("MD5");
+            computeChecksum->start("/dev/zero");
+            delete computeChecksum;
+        }
+
+        QVERIFY(true); // no crash occurred
+    }
+#endif
 
     void cleanupTestCase() {
     }

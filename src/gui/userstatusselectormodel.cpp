@@ -1,15 +1,6 @@
 /*
- * Copyright (C) by Felix Weilbach <felix.weilbach@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2021 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "userstatusselectormodel.h"
@@ -24,6 +15,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <iterator>
 
 namespace OCC {
 
@@ -33,16 +25,14 @@ UserStatusSelectorModel::UserStatusSelectorModel(QObject *parent)
     : QObject(parent)
     , _dateTimeProvider(new DateTimeProvider)
 {
-    _userStatus.setIcon("😀");
 }
 
 UserStatusSelectorModel::UserStatusSelectorModel(std::shared_ptr<UserStatusConnector> userStatusConnector, QObject *parent)
     : QObject(parent)
     , _userStatusConnector(userStatusConnector)
-    , _userStatus("no-id", "", "😀", UserStatus::OnlineStatus::Online, false, {})
+    , _userStatus("no-id", "", "", UserStatus::OnlineStatus::Online, false, {})
     , _dateTimeProvider(new DateTimeProvider)
 {
-    _userStatus.setIcon("😀");
     init();
 }
 
@@ -53,7 +43,6 @@ UserStatusSelectorModel::UserStatusSelectorModel(std::shared_ptr<UserStatusConne
     , _userStatusConnector(userStatusConnector)
     , _dateTimeProvider(std::move(dateTimeProvider))
 {
-    _userStatus.setIcon("😀");
     init();
 }
 
@@ -63,7 +52,6 @@ UserStatusSelectorModel::UserStatusSelectorModel(const UserStatus &userStatus,
     , _userStatus(userStatus)
     , _dateTimeProvider(std::move(dateTimeProvider))
 {
-    _userStatus.setIcon("😀");
 }
 
 UserStatusSelectorModel::UserStatusSelectorModel(const UserStatus &userStatus,
@@ -71,7 +59,6 @@ UserStatusSelectorModel::UserStatusSelectorModel(const UserStatus &userStatus,
     : QObject(parent)
     , _userStatus(userStatus)
 {
-    _userStatus.setIcon("😀");
 }
 
 int UserStatusSelectorModel::userIndex() const
@@ -89,7 +76,7 @@ void UserStatusSelectorModel::setUserIndex(const int userIndex)
     reset();
 
     _userIndex = userIndex;
-    emit userIndexChanged();
+    Q_EMIT userIndexChanged();
 
     qCDebug(lcUserStatusDialogModel) << "Loading user status connector for user with index: " << _userIndex;
     _userStatusConnector = UserModel::instance()->userStatusConnector(_userIndex);
@@ -112,6 +99,17 @@ void UserStatusSelectorModel::reset()
             &UserStatusSelectorModel::onMessageCleared);
     }
     _userStatusConnector = nullptr;
+    _setUserStatusOperations.clear();
+    _userStatus = {};
+    _predefinedStatuses.clear();
+    _errorMessage.clear();
+
+    setUserStatusLoaded(false);
+    Q_EMIT userStatusChanged();
+    Q_EMIT clearAtDisplayStringChanged();
+    Q_EMIT predefinedStatusesChanged();
+    Q_EMIT errorMessageChanged();
+    Q_EMIT busyStatusSupportedChanged();
 }
 
 void UserStatusSelectorModel::init()
@@ -134,16 +132,30 @@ void UserStatusSelectorModel::init()
 
     _userStatusConnector->fetchUserStatus();
     _userStatusConnector->fetchPredefinedStatuses();
+    
+    Q_EMIT busyStatusSupportedChanged();
 }
 
 void UserStatusSelectorModel::onUserStatusSet()
 {
-    emit finished();
+    auto operation = SetUserStatusOperation::Message;
+    if (!_setUserStatusOperations.empty()) {
+        operation = _setUserStatusOperations.front();
+        _setUserStatusOperations.pop_front();
+    } else if (!_finishOnOnlineStatusSet) {
+        return;
+    }
+
+    if (operation == SetUserStatusOperation::OnlineStatus && !_finishOnOnlineStatusSet) {
+        return;
+    }
+
+    Q_EMIT finished();
 }
 
 void UserStatusSelectorModel::onMessageCleared()
 {
-    emit finished();
+    Q_EMIT finished();
 }
 
 void UserStatusSelectorModel::onError(UserStatusConnector::Error error)
@@ -156,10 +168,18 @@ void UserStatusSelectorModel::onError(UserStatusConnector::Error error)
         return;
 
     case UserStatusConnector::Error::CouldNotFetchUserStatus:
+        _userStatus = {};
+        setUserStatusLoaded(false);
+        Q_EMIT userStatusChanged();
+        Q_EMIT clearAtDisplayStringChanged();
         setError(tr("Could not fetch status. Make sure you are connected to the server."));
         return;
 
     case UserStatusConnector::Error::UserStatusNotSupported:
+        _userStatus = {};
+        setUserStatusLoaded(false);
+        Q_EMIT userStatusChanged();
+        Q_EMIT clearAtDisplayStringChanged();
         setError(tr("Status feature is not supported. You will not be able to set your status."));
         return;
 
@@ -168,6 +188,9 @@ void UserStatusSelectorModel::onError(UserStatusConnector::Error error)
         return;
 
     case UserStatusConnector::Error::CouldNotSetUserStatus:
+        if (!_setUserStatusOperations.empty()) {
+            _setUserStatusOperations.pop_front();
+        }
         setError(tr("Could not set status. Make sure you are connected to the server."));
         return;
 
@@ -182,7 +205,7 @@ void UserStatusSelectorModel::onError(UserStatusConnector::Error error)
 void UserStatusSelectorModel::setError(const QString &reason)
 {
     _errorMessage = reason;
-    emit errorMessageChanged();
+    Q_EMIT errorMessageChanged();
 }
 
 void UserStatusSelectorModel::clearError()
@@ -190,15 +213,45 @@ void UserStatusSelectorModel::clearError()
     setError("");
 }
 
+bool UserStatusSelectorModel::finishOnOnlineStatusSet() const
+{
+    return _finishOnOnlineStatusSet;
+}
+
+bool UserStatusSelectorModel::userStatusLoaded() const
+{
+    return _userStatusLoaded;
+}
+
+void UserStatusSelectorModel::setUserStatusLoaded(bool userStatusLoaded)
+{
+    if (_userStatusLoaded == userStatusLoaded) {
+        return;
+    }
+
+    _userStatusLoaded = userStatusLoaded;
+    Q_EMIT userStatusLoadedChanged();
+}
+
+void UserStatusSelectorModel::setFinishOnOnlineStatusSet(bool finishOnOnlineStatusSet)
+{
+    if (_finishOnOnlineStatusSet == finishOnOnlineStatusSet) {
+        return;
+    }
+
+    _finishOnOnlineStatusSet = finishOnOnlineStatusSet;
+    Q_EMIT finishOnOnlineStatusSetChanged();
+}
+
 void UserStatusSelectorModel::setOnlineStatus(UserStatus::OnlineStatus status)
 {
-    if (!_userStatusConnector || status == _userStatus.state()) {
+    if (!_userStatusLoaded || !_userStatusConnector || status == _userStatus.state()) {
         return;
     }
 
     _userStatus.setState(status);
-    _userStatusConnector->setUserStatus(_userStatus);
-    emit userStatusChanged();
+    setUserStatus(SetUserStatusOperation::OnlineStatus);
+    Q_EMIT userStatusChanged();
 }
 
 QUrl UserStatusSelectorModel::onlineIcon() const
@@ -209,6 +262,10 @@ QUrl UserStatusSelectorModel::onlineIcon() const
 QUrl UserStatusSelectorModel::awayIcon() const
 {
     return Theme::instance()->statusAwayImageSource();
+}
+QUrl UserStatusSelectorModel::busyIcon() const
+{
+    return Theme::instance()->statusBusyImageSource();
 }
 QUrl UserStatusSelectorModel::dndIcon() const
 {
@@ -231,16 +288,24 @@ QString UserStatusSelectorModel::userStatusMessage() const
 
 void UserStatusSelectorModel::setUserStatusMessage(const QString &message)
 {
+    if (!_userStatusLoaded) {
+        return;
+    }
+
     _userStatus.setMessage(message);
     _userStatus.setMessagePredefined(false);
-    emit userStatusChanged();
+    Q_EMIT userStatusChanged();
 }
 
 void UserStatusSelectorModel::setUserStatusEmoji(const QString &emoji)
 {
+    if (!_userStatusLoaded) {
+        return;
+    }
+
     _userStatus.setIcon(emoji);
     _userStatus.setMessagePredefined(false);
-    emit userStatusChanged();
+    Q_EMIT userStatusChanged();
 }
 
 QString UserStatusSelectorModel::userStatusEmoji() const
@@ -256,12 +321,11 @@ void UserStatusSelectorModel::onUserStatusFetched(const UserStatus &userStatus)
     _userStatus.setId(userStatus.id());
     _userStatus.setClearAt(userStatus.clearAt());
 
-    if (!userStatus.icon().isEmpty()) {
-        _userStatus.setIcon(userStatus.icon());
-    }
+    _userStatus.setIcon(userStatus.icon());
 
-    emit userStatusChanged();
-    emit clearAtDisplayStringChanged();
+    Q_EMIT userStatusChanged();
+    Q_EMIT clearAtDisplayStringChanged();
+    setUserStatusLoaded(true);
 }
 
 Optional<ClearAt> UserStatusSelectorModel::clearStageTypeToDateTime(ClearStageType type) const
@@ -312,17 +376,30 @@ Optional<ClearAt> UserStatusSelectorModel::clearStageTypeToDateTime(ClearStageTy
 
 void UserStatusSelectorModel::setUserStatus()
 {
-    if (!_userStatusConnector) {
+    if (!_userStatusLoaded || !_userStatusConnector) {
         return;
     }
 
     clearError();
-    _userStatusConnector->setUserStatus(_userStatus);
+    setUserStatus(SetUserStatusOperation::Message);
+}
+
+void UserStatusSelectorModel::setUserStatus(SetUserStatusOperation operation)
+{
+    _setUserStatusOperations.push_back(operation);
+    if (_userStatusConnector->setUserStatus(_userStatus)) {
+        return;
+    }
+
+    const auto queuedOperation = std::find(_setUserStatusOperations.rbegin(), _setUserStatusOperations.rend(), operation);
+    if (queuedOperation != _setUserStatusOperations.rend()) {
+        _setUserStatusOperations.erase(std::next(queuedOperation).base());
+    }
 }
 
 void UserStatusSelectorModel::clearUserStatus()
 {
-    if (!_userStatusConnector) {
+    if (!_userStatusLoaded || !_userStatusConnector) {
         return;
     }
 
@@ -333,7 +410,7 @@ void UserStatusSelectorModel::clearUserStatus()
 void UserStatusSelectorModel::onPredefinedStatusesFetched(const QVector<UserStatus> &statuses)
 {
     _predefinedStatuses = statuses;
-    emit predefinedStatusesChanged();
+    Q_EMIT predefinedStatusesChanged();
 }
 
 QVector<UserStatus> UserStatusSelectorModel::predefinedStatuses() const
@@ -343,14 +420,18 @@ QVector<UserStatus> UserStatusSelectorModel::predefinedStatuses() const
 
 void UserStatusSelectorModel::setPredefinedStatus(const UserStatus &predefinedStatus)
 {
+    if (!_userStatusLoaded) {
+        return;
+    }
+
     _userStatus.setMessagePredefined(true);
     _userStatus.setId(predefinedStatus.id());
     _userStatus.setMessage(predefinedStatus.message());
     _userStatus.setIcon(predefinedStatus.icon());
     _userStatus.setClearAt(predefinedStatus.clearAt());
 
-    emit userStatusChanged();
-    emit clearAtDisplayStringChanged();
+    Q_EMIT userStatusChanged();
+    Q_EMIT clearAtDisplayStringChanged();
 }
 
 QString UserStatusSelectorModel::clearAtStageToString(ClearStageType stage) const
@@ -395,8 +476,12 @@ QVariantList UserStatusSelectorModel::clearStageTypes() const
 
 void UserStatusSelectorModel::setClearAt(const ClearStageType clearStageType)
 {
+    if (!_userStatusLoaded) {
+        return;
+    }
+
     _userStatus.setClearAt(clearStageTypeToDateTime(clearStageType));
-    emit clearAtDisplayStringChanged();
+    Q_EMIT clearAtDisplayStringChanged();
 }
 
 QString UserStatusSelectorModel::errorMessage() const
@@ -404,31 +489,27 @@ QString UserStatusSelectorModel::errorMessage() const
     return _errorMessage;
 }
 
+bool UserStatusSelectorModel::busyStatusSupported() const
+{
+    if (!_userStatusConnector) {
+        return false;
+    }
+    return _userStatusConnector->supportsBusyStatus();
+}
+
 QString UserStatusSelectorModel::timeDifferenceToString(int differenceSecs) const
 {
     if (differenceSecs < 60) {
         return tr("Less than a minute");
     } else if (differenceSecs < 60 * 60) {
-        const auto minutesLeft = std::ceil(differenceSecs / 60.0);
-        if (minutesLeft == 1) {
-            return tr("1 minute");
-        } else {
-            return tr("%1 minutes").arg(minutesLeft);
-        }
+        const auto minutesLeft = static_cast<int>(std::ceil(differenceSecs / 60.0));
+        return tr("%n minute(s)", "", minutesLeft);
     } else if (differenceSecs < 60 * 60 * 24) {
-        const auto hoursLeft = std::ceil(differenceSecs / 60.0 / 60.0);
-        if (hoursLeft == 1) {
-            return tr("1 hour");
-        } else {
-            return tr("%1 hours").arg(hoursLeft);
-        }
+        const auto hoursLeft = static_cast<int>(std::ceil(differenceSecs / 60.0 / 60.0));
+        return tr("%n hour(s)", "", hoursLeft);
     } else {
-        const auto daysLeft = std::ceil(differenceSecs / 60.0 / 60.0 / 24.0);
-        if (daysLeft == 1) {
-            return tr("1 day");
-        } else {
-            return tr("%1 days").arg(daysLeft);
-        }
+        const auto daysLeft = static_cast<int>(std::ceil(differenceSecs / 60.0 / 60.0 / 24.0));
+        return tr("%n day(s)", "", daysLeft);
     }
 }
 

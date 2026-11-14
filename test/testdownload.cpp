@@ -1,8 +1,11 @@
 /*
- *    This software is in the public domain, furnished "as is", without technical
- *    support, and with no warranty, express or implied, as to its usefulness for
- *    any purpose.
+ * SPDX-FileCopyrightText: 2020 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2019 ownCloud GmbH
+ * SPDX-License-Identifier: CC0-1.0
  *
+ * This software is in the public domain, furnished "as is", without technical
+ * support, and with no warranty, express or implied, as to its usefulness for
+ * any purpose.
  */
 
 #include <QtTest>
@@ -24,8 +27,9 @@ public:
 
     [[nodiscard]] qint64 bytesAvailable() const override
     {
-        if (aborted)
+        if (aborted) {
             return 0;
+        }
         return std::min(size, fakeSize) + QIODevice::bytesAvailable(); // NOLINT: This is intended to simulate the brokenness
     }
 
@@ -44,8 +48,9 @@ SyncFileItemPtr getItem(const QSignalSpy &spy, const QString &path)
 {
     for (const QList<QVariant> &args : spy) {
         auto item = args[0].value<SyncFileItemPtr>();
-        if (item->destination() == path)
+        if (item->destination() == path) {
             return item;
+        }
     }
     return {};
 }
@@ -55,7 +60,14 @@ class TestDownload : public QObject
 {
     Q_OBJECT
 
-private slots:
+private Q_SLOTS:
+    void initTestCase()
+    {
+        OCC::Logger::instance()->setLogFlush(true);
+        OCC::Logger::instance()->setLogDebug(true);
+
+        QStandardPaths::setTestModeEnabled(true);
+    }
 
     void testResume()
     {
@@ -75,7 +87,7 @@ private slots:
 
         QVERIFY(!fakeFolder.syncOnce()); // The sync must fail because not all the file was downloaded
         QCOMPARE(getItem(completeSpy, "A/a0")->_status, SyncFileItem::SoftError);
-        QCOMPARE(getItem(completeSpy, "A/a0")->_errorString, QString("The file could not be downloaded completely."));
+        QCOMPARE(getItem(completeSpy, "A/a0")->_errorString, QStringLiteral("The file could not be downloaded completely."));
         QVERIFY(fakeFolder.syncEngine().isAnotherSyncNeeded());
 
         // Now, we need to restart, this time, it should resume.
@@ -167,8 +179,9 @@ private slots:
         auto transProgress = connect(&fakeFolder.syncEngine(), &SyncEngine::transmissionProgress,
                                      [&](const ProgressInfo &pi) {
             auto propagator = fakeFolder.syncEngine().getPropagator();
-            if (pi.status() != ProgressInfo::Propagation || propConnected || !propagator)
+            if (pi.status() != ProgressInfo::Propagation || propConnected || !propagator) {
                 return;
+            }
             propConnected = true;
             connect(propagator.data(), &OwncloudPropagator::touchedFile, [&](const QString &s) {
                 if (s.contains("conflicted copy")) {
@@ -193,8 +206,9 @@ private slots:
 
         QObject::disconnect(transProgress);
         fakeFolder.setServerOverride([&](QNetworkAccessManager::Operation op, const QNetworkRequest &, QIODevice *) -> QNetworkReply * {
-            if (op == QNetworkAccessManager::GetOperation)
+            if (op == QNetworkAccessManager::GetOperation) {
                 QTest::qFail("There shouldn't be any download", __FILE__, __LINE__);
+            }
             return nullptr;
         });
         QVERIFY(fakeFolder.syncOnce());
@@ -211,7 +225,7 @@ private slots:
         FakeFolder fakeFolder{FileInfo::A12_B12_C12_S12()};
         fakeFolder.remoteModifier().insert("A/resendme", 300);
 
-        QByteArray serverMessage = "Needs to be resend on a new connection!";
+        QByteArray serverMessage = "An unexpected error occurred. Please try syncing again or contact your server administrator if the issue continues.";
         int resendActual = 0;
         int resendExpected = 2;
 

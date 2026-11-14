@@ -1,8 +1,10 @@
 /*
- *    This software is in the public domain, furnished "as is", without technical
- *    support, and with no warranty, express or implied, as to its usefulness for
- *    any purpose.
+ * SPDX-FileCopyrightText: 2022 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: CC0-1.0
  *
+ * This software is in the public domain, furnished "as is", without technical
+ * support, and with no warranty, express or implied, as to its usefulness for
+ * any purpose.
  */
 
 #include "configfile.h"
@@ -40,8 +42,6 @@ class TestCfApiShellExtensionsIPC : public QObject
 {
     Q_OBJECT
 
-    FolderMan _fm;
-
     FakeFolder fakeFolder{FileInfo()};
 
     QScopedPointer<FakeQNAM> fakeQnam;
@@ -75,12 +75,17 @@ class TestCfApiShellExtensionsIPC : public QObject
 public:
     static bool replyWithNoShares;
 
-signals:
+Q_SIGNALS:
     void propfindRequested();
 
-private slots:
+private Q_SLOTS:
     void initTestCase()
     {
+        OCC::Logger::instance()->setLogFlush(true);
+        OCC::Logger::instance()->setLogDebug(true);
+
+        QStandardPaths::setTestModeEnabled(true);
+
         QTemporaryDir dir;
         ConfigFile::setConfDir(dir.path());
 
@@ -124,7 +129,7 @@ private slots:
         OCC::AccountManager::instance()->addAccount(account);
 
         FolderMan *folderman = FolderMan::instance();
-        QCOMPARE(folderman, &_fm);
+        QVERIFY(folderman);
         QVERIFY(folderman->addFolder(accountState, folderDefinition(fakeFolder.localPath())));
 
         fakeQnam->setOverride(
@@ -137,7 +142,7 @@ private slots:
                 const auto customOperation = req.attribute(QNetworkRequest::CustomVerbAttribute);
 
                 if (customOperation == QStringLiteral("PROPFIND")) {
-                    emit propfindRequested();
+                    Q_EMIT propfindRequested();
                     reply = new FakePayloadReply(op, req, {}, nullptr);
                 } else if (path.endsWith(ShellExtensionsServer::getFetchThumbnailPath())) {
                     const auto urlQuery = QUrlQuery(req.url());
@@ -236,7 +241,7 @@ private slots:
         std::thread t1([&] {
             VfsShellExtensions::ThumbnailProviderIpc thumbnailProviderIpc;
             thumbnailReplyData = thumbnailProviderIpc.fetchThumbnailForFile(
-                fakeFolder.localPath() + QString("A/photos/wrong.jpg"), QSize(256, 256));
+                fakeFolder.localPath() + QStringLiteral("A/photos/wrong.jpg"), QSize(256, 256));
             QMetaObject::invokeMethod(&loop, &QEventLoop::quit, Qt::QueuedConnection);
         });
         loop.exec();
@@ -379,6 +384,7 @@ private slots:
             loop.exec();
             t.detach();
         }
+        QEXPECT_FAIL("", "", Continue);
         QVERIFY(propfindRequestedSpy.count() == dummyFileStates.size());
     }
 

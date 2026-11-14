@@ -1,15 +1,7 @@
 /*
- * Copyright (C) by Daniel Molkentin <danimo@owncloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2018 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2013 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #ifndef SETTINGSDIALOG_H
@@ -24,13 +16,11 @@
 class QAction;
 class QActionGroup;
 class QToolBar;
+class QStackedWidget;
 class QStandardItemModel;
+class QResizeEvent;
 
 namespace OCC {
-
-namespace Ui {
-    class SettingsDialog;
-}
 
 class AccountState;
 class AccountSettings;
@@ -53,34 +43,50 @@ public:
 
     QWidget* currentPage();
 
-public slots:
+public Q_SLOTS:
     void showFirstPage();
+    void showAccount(OCC::AccountState *account);
+    void setInitialAccount(OCC::AccountState *account);
     void showIssuesList(OCC::AccountState *account);
+    /** @brief Requests the Online status window for the user associated with @p account. */
+    void showUserStatus(OCC::AccountState *account);
+    /** @brief Requests the Assistant window for the user associated with @p account. */
+    void showAssistant(OCC::AccountState *account);
+    /** @brief Requests the Search window for the user associated with @p account. */
+    void showSearch(OCC::AccountState *account);
     void slotSwitchPage(QAction *action);
     void slotAccountAvatarChanged();
     void slotAccountDisplayNameChanged();
 
-signals:
+Q_SIGNALS:
     void styleChanged();
     void onActivate();
     void currentPageChanged();
 
 protected:
+    /** @brief Refreshes styled surfaces after application palette changes. */
+    bool event(QEvent *event) override;
     void reject() override;
     void accept() override;
     void changeEvent(QEvent *) override;
+    void showEvent(QShowEvent *event) override;
 
-private slots:
+private Q_SLOTS:
     void accountAdded(OCC::AccountState *);
     void accountRemoved(OCC::AccountState *);
 
 private:
     void customizeStyle();
+    void requestStyleUpdate();
+    /** @brief Shows the Add account action only when an account may be configured. */
+    void updateAddAccountActionVisibility();
+    /** @brief Returns the current user-model index for @p account, or -1 if it is not found. */
+    [[nodiscard]] int userIndexForAccount(OCC::AccountState *account) const;
+    void updateAccountAvatar(const Account *account);
+    void addSettingsPage(const QString &iconPath, const QString &title, QWidget *settingsPage, bool updateChannelAware = false);
 
     QAction *createColorAwareAction(const QString &iconName, const QString &fileName);
     QAction *createActionWithIcon(const QIcon &icon, const QString &text, const QString &iconPath = QString());
-
-    Ui::SettingsDialog *const _ui;
 
     QActionGroup *_actionGroup;
     // Maps the actions from the action group to the corresponding widgets
@@ -88,11 +94,19 @@ private:
 
     // Maps the action in the dialog to their according account. Needed in
     // case the account avatar changes
-    QHash<Account *, QAction *> _actionForAccount;
+    QHash<const Account *, QAction *> _actionForAccount;
 
     QToolBar *_toolBar;
+    QStackedWidget *_stack = nullptr;
+    QAction *_addAccountAction = nullptr;
+    QAction *_firstNonAccountAction = nullptr;
 
     ownCloudGui *_gui;
+    bool _styleUpdatePending = false;
+    bool _updatingStyle = false;
+    OCC::AccountState *_initialAccount = nullptr;
+
+    void setupUi();
 };
 }
 

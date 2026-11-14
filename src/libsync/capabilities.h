@@ -1,17 +1,8 @@
 /*
- * Copyright (C) by Roeland Jago Douma <roeland@famdouma.nl>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2017 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2015 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
-
 
 #ifndef CAPABILITIES_H
 #define CAPABILITIES_H
@@ -26,6 +17,7 @@
 namespace OCC {
 
 class DirectEditor;
+struct ServerManagedSettings;
 
 enum PushNotificationType {
     None = 0,
@@ -47,11 +39,8 @@ public:
     Capabilities(const QVariantMap &capabilities);
 
     [[nodiscard]] bool shareAPI() const;
-    [[nodiscard]] bool shareEmailPasswordEnabled() const;
     [[nodiscard]] bool shareEmailPasswordEnforced() const;
     [[nodiscard]] bool sharePublicLink() const;
-    [[nodiscard]] bool sharePublicLinkAllowUpload() const;
-    [[nodiscard]] bool sharePublicLinkSupportsUploadOnly() const;
     [[nodiscard]] bool sharePublicLinkAskOptionalPassword() const;
     [[nodiscard]] bool sharePublicLinkEnforcePassword() const;
     [[nodiscard]] bool sharePublicLinkEnforceExpireDate() const;
@@ -60,15 +49,19 @@ public:
     [[nodiscard]] int shareInternalExpireDateDays() const;
     [[nodiscard]] bool shareRemoteEnforceExpireDate() const;
     [[nodiscard]] int shareRemoteExpireDateDays() const;
-    [[nodiscard]] bool sharePublicLinkMultiple() const;
     [[nodiscard]] bool shareResharing() const;
     [[nodiscard]] int shareDefaultPermissions() const;
+    [[nodiscard]] bool unifiedSharingAvailable() const;
     [[nodiscard]] bool chunkingNg() const;
+    [[nodiscard]] qint64 maxChunkSize() const;
+    [[nodiscard]] int maxConcurrentChunkUploads() const;
     [[nodiscard]] bool bulkUpload() const;
     [[nodiscard]] bool filesLockAvailable() const;
     [[nodiscard]] bool filesLockTypeAvailable() const;
     [[nodiscard]] bool userStatus() const;
     [[nodiscard]] bool userStatusSupportsEmoji() const;
+    [[nodiscard]] bool userStatusSupportsBusy() const;
+    [[nodiscard]] bool ncAssistantEnabled() const;
     [[nodiscard]] QColor serverColor() const;
     [[nodiscard]] QColor serverTextColor() const;
 
@@ -81,8 +74,8 @@ public:
     /// disable parallel upload in chunking
     [[nodiscard]] bool chunkingParallelUploadDisabled() const;
 
-    /// Whether the "privatelink" DAV property is available
-    [[nodiscard]] bool privateLinkPropertyAvailable() const;
+    /// Returns the Global Scale instance token, or an empty string when unavailable.
+    [[nodiscard]] QString globalScaleToken() const;
 
     /// returns true if the capabilities report notifications
     [[nodiscard]] bool notificationsAvailable() const;
@@ -165,6 +158,11 @@ public:
      */
     [[nodiscard]] QStringList blacklistedFiles() const;
 
+    [[nodiscard]] QStringList forbiddenFilenameCharacters() const;
+    [[nodiscard]] QStringList forbiddenFilenameBasenames() const;
+    [[nodiscard]] QStringList forbiddenFilenameExtensions() const;
+    [[nodiscard]] QStringList forbiddenFilenames() const;
+
     /**
      * Whether conflict files should remain local (default) or should be uploaded.
      */
@@ -172,16 +170,24 @@ public:
 
     [[nodiscard]] bool groupFoldersAvailable() const;
 
+    [[nodiscard]] bool serverHasValidSubscription() const;
+    [[nodiscard]] QString desktopEnterpriseChannel() const;
+    [[nodiscard]] ServerManagedSettings desktopClientManagedSettings() const;
+
+    [[nodiscard]] bool serverHasClientIntegration() const;
+    [[nodiscard]] QList<QVariantMap> fileActionsByMimeType(const QMimeType &fileMimeType) const;
+
     // Direct Editing
     void addDirectEditor(DirectEditor* directEditor);
     DirectEditor* getDirectEditorForMimetype(const QMimeType &mimeType);
     DirectEditor* getDirectEditorForOptionalMimetype(const QMimeType &mimeType);
 
+    [[nodiscard]] bool governanceAvailable() const;
+
 private:
     [[nodiscard]] QMap<QString, QVariant> serverThemingMap() const;
 
     QVariantMap _capabilities;
-
     QList<DirectEditor*> _directEditors;
 };
 

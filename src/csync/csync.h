@@ -1,22 +1,10 @@
 /*
  * libcsync -- a library to sync a directory with another
  *
- * Copyright (c) 2008-2013 by Andreas Schneider <asn@cryptomilk.org>
- * Copyright (c) 2012-2013 by Klaas Freitag <freitag@owncloud.com>
- *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * SPDX-FileCopyrightText: 2020 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2012 ownCloud GmbH
+ * SPDX-FileCopyrightText: 2008-2013 Andreas Schneider <asn@cryptomilk.org>
+ * SPDX-License-Identifier: LGPL-2.1-or-later
  */
 
 /**
@@ -32,22 +20,24 @@
 #ifndef _CSYNC_H
 #define _CSYNC_H
 
-#include "std/c_private.h"
-#include "ocsynclib.h"
-
-#include <sys/stat.h>
-
-#include <cstdint>
-#include <sys/types.h>
-#include <config_csync.h>
-#include <functional>
-#include <memory>
 #include <QByteArray>
 #include <QVariant>
+#include <QLoggingCategory>
 
+#include <cstdint>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <functional>
+#include <memory>
+
+#include "ocsynclib.h"
+#include "config_csync.h"
+#include "std/c_private.h"
 #include "common/remotepermissions.h"
 
 namespace OCC {
+Q_DECLARE_LOGGING_CATEGORY(lcPermanentLog)
+
 class SyncJournalFileRecord;
 
 namespace EncryptionStatusEnums {
@@ -138,24 +128,25 @@ Q_ENUM_NS(csync_status_codes_e)
   * the csync state of a file.
   */
 enum SyncInstructions {
-    CSYNC_INSTRUCTION_NONE                = 0,       /* Nothing to do (UPDATE|RECONCILE) */
-    CSYNC_INSTRUCTION_EVAL                = 1 << 0,  /* There was changed compared to the DB (UPDATE) */
-    CSYNC_INSTRUCTION_REMOVE              = 1 << 1,  /* The file need to be removed (RECONCILE) */
-    CSYNC_INSTRUCTION_RENAME              = 1 << 2,  /* The file need to be renamed (RECONCILE) */
-    CSYNC_INSTRUCTION_EVAL_RENAME         = 1 << 11, /* The file is new, it is the destination of a rename (UPDATE) */
-    CSYNC_INSTRUCTION_NEW                 = 1 << 3,  /* The file is new compared to the db (UPDATE) */
-    CSYNC_INSTRUCTION_CONFLICT            = 1 << 4,  /* The file need to be downloaded because it is a conflict (RECONCILE) */
-    CSYNC_INSTRUCTION_IGNORE              = 1 << 5,  /* The file is ignored (UPDATE|RECONCILE) */
-    CSYNC_INSTRUCTION_SYNC                = 1 << 6,  /* The file need to be pushed to the other remote (RECONCILE) */
-    CSYNC_INSTRUCTION_STAT_ERROR          = 1 << 7,
-    CSYNC_INSTRUCTION_ERROR               = 1 << 8,
-    CSYNC_INSTRUCTION_TYPE_CHANGE         = 1 << 9,  /* Like NEW, but deletes the old entity first (RECONCILE)
-                                                        Used when the type of something changes from directory to file
-                                                        or back. */
-    CSYNC_INSTRUCTION_UPDATE_METADATA     = 1 << 10, /* If the etag has been updated and need to be writen to the db,
-                                                        but without any propagation (UPDATE|RECONCILE) */
-    CSYNC_INSTRUCTION_CASE_CLASH_CONFLICT = 1 << 12, /* The file need to be downloaded because it is a case clash conflict (RECONCILE) */
-    CSYNC_INSTRUCTION_UPDATE_VFS_METADATA = 1 << 13, /* vfs item metadata are out of sync and we need to tell operating system about it */
+    CSYNC_INSTRUCTION_NONE                       = 0,       /* Nothing to do (UPDATE|RECONCILE) */
+    CSYNC_INSTRUCTION_EVAL                       = 1 << 0,  /* There was changed compared to the DB (UPDATE) */
+    CSYNC_INSTRUCTION_REMOVE                     = 1 << 1,  /* The file need to be removed (RECONCILE) */
+    CSYNC_INSTRUCTION_RENAME                     = 1 << 2,  /* The file need to be renamed (RECONCILE) */
+    CSYNC_INSTRUCTION_EVAL_RENAME                = 1 << 11, /* The file is new, it is the destination of a rename (UPDATE) */
+    CSYNC_INSTRUCTION_NEW                        = 1 << 3,  /* The file is new compared to the db (UPDATE) */
+    CSYNC_INSTRUCTION_CONFLICT                   = 1 << 4,  /* The file need to be downloaded because it is a conflict (RECONCILE) */
+    CSYNC_INSTRUCTION_IGNORE                     = 1 << 5,  /* The file is ignored (UPDATE|RECONCILE) */
+    CSYNC_INSTRUCTION_SYNC                       = 1 << 6,  /* The file need to be pushed to the other remote (RECONCILE) */
+    CSYNC_INSTRUCTION_STAT_ERROR                 = 1 << 7,
+    CSYNC_INSTRUCTION_ERROR                      = 1 << 8,
+    CSYNC_INSTRUCTION_TYPE_CHANGE                = 1 << 9,  /* Like NEW, but deletes the old entity first (RECONCILE)
+                                                               Used when the type of something changes from directory to file
+                                                               or back. */
+    CSYNC_INSTRUCTION_UPDATE_METADATA            = 1 << 10, /* If the etag has been updated and need to be writen to the db,
+                                                               but without any propagation (UPDATE|RECONCILE) */
+    CSYNC_INSTRUCTION_CASE_CLASH_CONFLICT        = 1 << 12, /* The file need to be downloaded because it is a case clash conflict (RECONCILE) */
+    CSYNC_INSTRUCTION_UPDATE_VFS_METADATA        = 1 << 13, /* vfs item metadata are out of sync and we need to tell operating system about it */
+    CSYNC_INSTRUCTION_UPDATE_ENCRYPTION_METADATA = 1 << 14, /* encryption metadata needs update after certificate was migrated */
 };
 
 Q_ENUM_NS(SyncInstructions)
@@ -195,6 +186,8 @@ enum ItemType {
      * file dehydration without changing the pin state.
      */
     ItemTypeVirtualFileDehydration = 6,
+
+    ItemTypeVirtualDirectory = 7,
 };
 Q_ENUM_NS(ItemType)
 }
@@ -215,6 +208,7 @@ struct OCSYNC_EXPORT csync_file_stat_s {
   bool is_hidden BITFIELD(1); // Not saved in the DB, only used during discovery for local files.
   bool isE2eEncrypted BITFIELD(1);
   bool is_metadata_missing BITFIELD(1); // Indicates the file has missing metadata, f.ex. the file is not a placeholder in case of vfs.
+  bool isPermissionsInvalid BITFIELD(1);
 
   QByteArray path;
   QByteArray rename_path;
@@ -242,6 +236,7 @@ struct OCSYNC_EXPORT csync_file_stat_s {
     , is_hidden(false)
     , isE2eEncrypted(false)
     , is_metadata_missing(false)
+    , isPermissionsInvalid(false)
   { }
 };
 

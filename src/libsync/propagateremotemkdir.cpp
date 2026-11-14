@@ -1,15 +1,7 @@
 /*
- * Copyright (C) by Olivier Goffart <ogoffart@owncloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2018 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2014 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "propagateremotemkdir.h"
@@ -46,8 +38,9 @@ PropagateRemoteMkdir::PropagateRemoteMkdir(OwncloudPropagator *propagator, const
 
 void PropagateRemoteMkdir::start()
 {
-    if (propagator()->_abortRequested)
+    if (propagator()->_abortRequested) {
         return;
+    }
 
     qCDebug(lcPropagateRemoteMkdir) << _item->_file;
 
@@ -59,16 +52,18 @@ void PropagateRemoteMkdir::start()
     }
 
     _job = new DeleteJob(propagator()->account(),
-        propagator()->fullRemotePath(_item->_file),
-        this);
+                         propagator()->fullRemotePath(_item->_file),
+                         {},
+                         this);
     connect(qobject_cast<DeleteJob *>(_job), &DeleteJob::finishedSignal, this, &PropagateRemoteMkdir::slotMkdir);
     _job->start();
 }
 
 void PropagateRemoteMkdir::slotStartMkcolJob()
 {
-    if (propagator()->_abortRequested)
+    if (propagator()->_abortRequested) {
         return;
+    }
 
     qCDebug(lcPropagateRemoteMkdir) << _item->_file;
 
@@ -85,8 +80,9 @@ void PropagateRemoteMkdir::slotStartEncryptedMkcolJob(const QString &path, const
     Q_UNUSED(path)
     Q_UNUSED(size)
 
-    if (propagator()->_abortRequested)
+    if (propagator()->_abortRequested) {
         return;
+    }
 
     qDebug() << filename;
     qCDebug(lcPropagateRemoteMkdir) << filename;
@@ -103,11 +99,12 @@ void PropagateRemoteMkdir::slotStartEncryptedMkcolJob(const QString &path, const
 
 void PropagateRemoteMkdir::abort(PropagatorJob::AbortType abortType)
 {
-    if (_job && _job->reply())
+    if (_job && _job->reply()) {
         _job->reply()->abort();
+    }
 
     if (abortType == AbortType::Asynchronous) {
-        emit abortFinished();
+        Q_EMIT abortFinished();
     }
 }
 
@@ -191,8 +188,8 @@ void PropagateRemoteMkdir::slotMkdir()
             done(SyncFileItem::NormalError, renameError, ErrorCategory::GenericError);
             return;
         }
-        emit propagator()->touchedFile(existingFile);
-        emit propagator()->touchedFile(targetFile);
+        Q_EMIT propagator()->touchedFile(existingFile);
+        Q_EMIT propagator()->touchedFile(targetFile);
     }
 
     const auto path = _item->_file;
@@ -217,7 +214,11 @@ void PropagateRemoteMkdir::slotMkdir()
     connect(_uploadEncryptedHelper, &PropagateUploadEncrypted::finalized,
       this, &PropagateRemoteMkdir::slotStartEncryptedMkcolJob);
     connect(_uploadEncryptedHelper, &PropagateUploadEncrypted::error,
-      []{ qCDebug(lcPropagateRemoteMkdir) << "Error setting up encryption."; });
+      this, [this] {
+          qCWarning(lcPropagateRemoteMkdir) << "Error setting up encryption.";
+          propagator()->_activeJobList.removeOne(this);
+          done(SyncFileItem::FatalError, tr("Failed to create encrypted folder."), ErrorCategory::GenericError);
+      });
     _uploadEncryptedHelper->start();
 }
 
@@ -288,3 +289,5 @@ void PropagateRemoteMkdir::success()
     done(SyncFileItem::Success, {}, ErrorCategory::NoError);
 }
 }
+
+#include "moc_propagateremotemkdir.cpp"

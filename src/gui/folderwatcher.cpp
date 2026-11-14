@@ -1,15 +1,7 @@
 /*
- * Copyright (C) by Klaas Freitag <freitag@owncloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2017 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2014 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 // event masks
@@ -21,7 +13,7 @@
 
 #if defined(Q_OS_WIN)
 #include "folderwatcher_win.h"
-#elif defined(Q_OS_MAC)
+#elif defined(Q_OS_MACOS)
 #include "folderwatcher_mac.h"
 #elif defined(Q_OS_UNIX)
 #include "folderwatcher_linux.h"
@@ -42,6 +34,11 @@
 namespace
 {
 constexpr auto lockChangeDebouncingTimerIntervalMs = 500;
+
+bool isTraversableDir(const QString &path, const QFileInfo &fileInfo)
+{
+    return OCC::FileSystem::isDir(path, fileInfo) && !OCC::FileSystem::isSymLink(path);
+}
 }
 
 namespace OCC {
@@ -78,13 +75,19 @@ bool FolderWatcher::isReliable() const
     return _isReliable;
 }
 
-void FolderWatcher::appendSubPaths(QDir dir, QStringList& subPaths) {
+bool FolderWatcher::canSetPermissions() const
+{
+    return _canSetPermissions;
+}
+
+void FolderWatcher::appendSubPaths(QDir dir, QStringList &subPaths)
+{
     QStringList newSubPaths = dir.entryList(QDir::NoDotAndDotDot | QDir::Dirs | QDir::Files);
-    for (int i = 0; i < newSubPaths.size(); i++) {
-        QString path = dir.path() + "/" + newSubPaths[i];
+    for (auto &newSubPath : newSubPaths) {
+        QString path = dir.path() + "/" + newSubPath;
         QFileInfo fileInfo(path);
         subPaths.append(path);
-        if (fileInfo.isDir()) {
+        if (isTraversableDir(path, fileInfo)) {
             QDir dir(path);
             appendSubPaths(dir, subPaths);
         }
@@ -93,7 +96,7 @@ void FolderWatcher::appendSubPaths(QDir dir, QStringList& subPaths) {
 
 void FolderWatcher::startNotificatonTest(const QString &path)
 {
-#ifdef Q_OS_MAC
+#ifdef Q_OS_MACOS
     // Testing the folder watcher on OSX is harder because the watcher
     // automatically discards changes that were performed by our process.
     // It would still be useful to test but the OSX implementation
@@ -107,6 +110,43 @@ void FolderWatcher::startNotificatonTest(const QString &path)
     // Don't do the local file modification immediately:
     // wait for FolderWatchPrivate::_ready
     startNotificationTestWhenReady();
+}
+
+void FolderWatcher::performSetPermissionsTest(const QString &path)
+{
+    _canSetPermissions = true;
+
+    if (!QFile::exists(path)) {
+        QFile f(path);
+        const auto openResult = f.open(QIODevice::WriteOnly);
+        if (!openResult || !f.isOpen()) {
+            qCWarning(lcFolderWatcher()) << "Failed to create test file: " << path;
+            return;
+        }
+        f.write("test");
+        f.close();
+    }
+
+    if (!FileSystem::isWritable(path)) {
+        FileSystem::setFileReadOnly(path, false);
+        if (!FileSystem::isWritable(path)) {
+            qCWarning(lcFolderWatcher()) << "Cannot make file readable: " << path;
+            _canSetPermissions = false;
+            QFile(path).remove();
+            return;
+        }
+    }
+
+    FileSystem::setFileReadOnly(path, true);
+    if (FileSystem::isWritable(path)) {
+        qCWarning(lcFolderWatcher()) << "Cannot make file read-only: " << path;
+        _canSetPermissions = false;
+    }
+
+    qCInfo(lcFolderWatcher()) << "Permissions in file system for" << path << (_canSetPermissions ? "works as expected" : "are not reliable");
+
+    FileSystem::setFileReadOnly(path, false);
+    QFile(path).remove();
 }
 
 void FolderWatcher::startNotificationTestWhenReady()
@@ -123,13 +163,18 @@ void FolderWatcher::startNotificationTestWhenReady()
         FileSystem::setModTime(path, mtime + 1);
     } else {
         QFile f(path);
-        f.open(QIODevice::WriteOnly | QIODevice::Append);
+        const auto openResult = f.open(QIODevice::WriteOnly | QIODevice::Append);
+        if (!openResult || !f.isOpen()) {
+            qCWarning(lcFolderWatcher()) << "Failed to create test file: " << path;
+            return;
+        }
     }
     FileSystem::setFileHidden(path, true);
 
     QTimer::singleShot(5000, this, [this]() {
-        if (!_testNotificationPath.isEmpty())
-            emit becameUnreliable(tr("The watcher did not receive a test notification."));
+        if (!_testNotificationPath.isEmpty()) {
+            Q_EMIT becameUnreliable(tr("The watcher did not receive a test notification."));
+        }
         _testNotificationPath.clear();
     });
 }
@@ -138,13 +183,13 @@ void FolderWatcher::lockChangeDebouncingTimerTimedOut()
 {
     if (!_unlockedFiles.isEmpty()) {
         const auto unlockedFilesCopy = _unlockedFiles;
-        emit filesLockReleased(unlockedFilesCopy);
+        Q_EMIT filesLockReleased(unlockedFilesCopy);
         _unlockedFiles.clear();
     }
     if (!_lockedFiles.isEmpty()) {
         const auto lockedFilesCopy = _lockedFiles;
-        emit filesLockImposed(lockedFilesCopy);
-        emit lockedFilesFound(lockedFilesCopy);
+        Q_EMIT filesLockImposed(lockedFilesCopy);
+        Q_EMIT lockedFilesFound(lockedFilesCopy);
         _lockedFiles.clear();
     }
 }
@@ -176,9 +221,8 @@ int FolderWatcher::lockChangeDebouncingTimout() const
 
 void FolderWatcher::changeDetected(const QString &path)
 {
-    QFileInfo fileInfo(path);
     QStringList paths(path);
-    if (fileInfo.isDir()) {
+    if (isTraversableDir(path, QFileInfo{path})) {
         QDir dir(path);
         appendSubPaths(dir, paths);
     }
@@ -224,8 +268,6 @@ void FolderWatcher::changeDetected(const QStringList &paths)
             _lockedFiles.insert(checkResult.path);
         }
 
-        qCDebug(lcFolderWatcher) << "Locked files:" << _lockedFiles.values();
-
         // ------- handle ignores:
         if (pathIsIgnored(path)) {
             continue;
@@ -233,9 +275,6 @@ void FolderWatcher::changeDetected(const QStringList &paths)
 
         changedPaths.insert(path);
     }
-
-    qCDebug(lcFolderWatcher) << "Unlocked files:" << _unlockedFiles.values();
-    qCDebug(lcFolderWatcher) << "Locked files:" << _lockedFiles;
 
     if (!_lockedFiles.isEmpty() || !_unlockedFiles.isEmpty()) {
         if (_lockChangeDebouncingTimer.isActive()) {
@@ -250,9 +289,9 @@ void FolderWatcher::changeDetected(const QStringList &paths)
         return;
     }
 
-    qCInfo(lcFolderWatcher) << "Detected changes in paths:" << changedPaths;
     for (const auto &path : changedPaths) {
-        emit pathChanged(path);
+        qCInfo(lcFolderWatcher) << "change on path" << path;
+        Q_EMIT pathChanged(path);
     }
 }
 

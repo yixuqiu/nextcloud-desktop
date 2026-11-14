@@ -1,15 +1,7 @@
 /*
- * Copyright (C) by Klaas Freitag <freitag@owncloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2018 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2014 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "syncfileitem.h"
@@ -21,6 +13,8 @@
 
 #include <QLoggingCategory>
 #include "csync/vio/csync_vio_local.h"
+
+using namespace Qt::StringLiterals;
 
 namespace OCC {
 
@@ -104,8 +98,9 @@ SyncJournalFileRecord SyncFileItem::toSyncJournalFileRecordWithInode(const QStri
         rec._type = ItemTypeFile;
         qCInfo(lcFileItem) << "Changing item type from ItemTypeVirtualFileDownload to normal file to avoid wrong record type in database" << rec._path;
     }
-    if (rec._type == ItemTypeVirtualFileDehydration)
+    if (rec._type == ItemTypeVirtualFileDehydration) {
         rec._type = ItemTypeVirtualFile;
+    }
 
     rec._etag = _etag;
     rec._fileId = _fileId;
@@ -125,11 +120,15 @@ SyncJournalFileRecord SyncFileItem::toSyncJournalFileRecordWithInode(const QStri
     rec._lockstate._lockEditorApp = _lockEditorApp;
     rec._lockstate._lockTime = _lockTime;
     rec._lockstate._lockTimeout = _lockTimeout;
+    rec._lockstate._lockToken = _lockToken;
+    rec._isLivePhoto = _isLivePhoto;
+    rec._livePhotoFile = _livePhotoFile;
+    rec._folderQuota.bytesUsed = _folderQuota.bytesUsed;
+    rec._folderQuota.bytesAvailable = _folderQuota.bytesAvailable;
 
     // Update the inode if possible
     rec._inode = _inode;
     if (FileSystem::getInode(localFileName, &rec._inode)) {
-        qCDebug(lcFileItem) << localFileName << "Retrieved inode " << rec._inode << "(previous item inode: " << _inode << ")";
     } else {
         // use the "old" inode coming with the item for the case where the
         // filesystem stat fails. That can happen if the the file was removed
@@ -163,9 +162,14 @@ SyncFileItemPtr SyncFileItem::fromSyncJournalFileRecord(const SyncJournalFileRec
     item->_lockEditorApp = rec._lockstate._lockEditorApp;
     item->_lockTime = rec._lockstate._lockTime;
     item->_lockTimeout = rec._lockstate._lockTimeout;
+    item->_lockToken = rec._lockstate._lockToken;
     item->_sharedByMe = rec._sharedByMe;
     item->_isShared = rec._isShared;
     item->_lastShareStateFetchedTimestamp = rec._lastShareStateFetchedTimestamp;
+    item->_isLivePhoto = rec._isLivePhoto;
+    item->_livePhotoFile = rec._livePhotoFile;
+    item->_folderQuota.bytesUsed = rec._folderQuota.bytesUsed;
+    item->_folderQuota.bytesAvailable = rec._folderQuota.bytesAvailable;
     return item;
 }
 
@@ -192,35 +196,39 @@ SyncFileItemPtr SyncFileItem::fromProperties(const QString &filePath, const QMap
     item->_isShared = item->_remotePerm.hasPermission(RemotePermissions::IsShared);
     item->_lastShareStateFetchedTimestamp = QDateTime::currentMSecsSinceEpoch();
 
-    item->_e2eEncryptionStatus = (properties.value(QStringLiteral("is-encrypted")) == QStringLiteral("1") ? SyncFileItem::EncryptionStatus::Encrypted : SyncFileItem::EncryptionStatus::NotEncrypted);
+    item->_e2eEncryptionStatus = (properties.value("is-encrypted"_L1) == "1"_L1 ? SyncFileItem::EncryptionStatus::EncryptedMigratedV2_0 : SyncFileItem::EncryptionStatus::NotEncrypted);
     if (item->isEncrypted()) {
         item->_e2eEncryptionServerCapability = item->_e2eEncryptionStatus;
     }
     item->_locked =
-        properties.value(QStringLiteral("lock")) == QStringLiteral("1") ? SyncFileItem::LockStatus::LockedItem : SyncFileItem::LockStatus::UnlockedItem;
-    item->_lockOwnerDisplayName = properties.value(QStringLiteral("lock-owner-displayname"));
-    item->_lockOwnerId = properties.value(QStringLiteral("lock-owner"));
-    item->_lockEditorApp = properties.value(QStringLiteral("lock-owner-editor"));
+        properties.value("lock"_L1) == "1"_L1 ? SyncFileItem::LockStatus::LockedItem : SyncFileItem::LockStatus::UnlockedItem;
+    item->_lockOwnerDisplayName = properties.value("lock-owner-displayname"_L1);
+    item->_lockOwnerId = properties.value("lock-owner"_L1);
+    item->_lockEditorApp = properties.value("lock-owner-editor"_L1);
 
     {
         auto ok = false;
-        const auto intConvertedValue = properties.value(QStringLiteral("lock-owner-type")).toULongLong(&ok);
+        const auto intConvertedValue = properties.value("lock-owner-type"_L1).toULongLong(&ok);
         item->_lockOwnerType = ok ? static_cast<SyncFileItem::LockOwnerType>(intConvertedValue) : SyncFileItem::LockOwnerType::UserLock;
     }
 
     {
         auto ok = false;
-        const auto intConvertedValue = properties.value(QStringLiteral("lock-time")).toULongLong(&ok);
+        const auto intConvertedValue = properties.value("lock-time"_L1).toULongLong(&ok);
         item->_lockTime = ok ? intConvertedValue : 0;
     }
 
     {
         auto ok = false;
-        const auto intConvertedValue = properties.value(QStringLiteral("lock-timeout")).toULongLong(&ok);
+        const auto intConvertedValue = properties.value("lock-timeout"_L1).toULongLong(&ok);
         item->_lockTimeout = ok ? intConvertedValue : 0;
     }
 
-    const auto date = QDateTime::fromString(properties.value(QStringLiteral("getlastmodified")), Qt::RFC2822Date);
+    item->_lockToken = properties.value(QStringLiteral("lock-token"));
+
+    auto getlastmodifiedValue = properties.value(QStringLiteral("getlastmodified"));
+    getlastmodifiedValue.replace("GMT", "+0000");
+    const auto date = QDateTime::fromString(getlastmodifiedValue, Qt::RFC2822Date);
     Q_ASSERT(date.isValid());
     if (date.toSecsSinceEpoch() > 0) {
         item->_modtime = date.toSecsSinceEpoch();
@@ -232,6 +240,16 @@ SyncFileItemPtr SyncFileItem::fromProperties(const QString &filePath, const QMap
 
     if (properties.contains(QStringLiteral("checksums"))) {
         item->_checksumHeader = findBestChecksum(properties.value("checksums").toUtf8());
+    }
+
+    if (properties.contains(QStringLiteral("metadata-files-live-photo"))) {
+        item->_isLivePhoto = true;
+        item->_livePhotoFile = properties.value(QStringLiteral("metadata-files-live-photo"));
+    }
+
+    if (isDirectory && properties.contains(FolderQuota::usedBytesC) && properties.contains(FolderQuota::availableBytesC)) {
+        item->_folderQuota.bytesUsed = properties.value(FolderQuota::usedBytesC).toLongLong();
+        item->_folderQuota.bytesAvailable = properties.value(FolderQuota::availableBytesC).toLongLong();
     }
 
     // direction and instruction are decided later
@@ -250,6 +268,42 @@ void SyncFileItem::updateLockStateFromDbRecord(const SyncJournalFileRecord &dbRe
     _lockEditorApp = dbRecord._lockstate._lockEditorApp;
     _lockTime = dbRecord._lockstate._lockTime;
     _lockTimeout = dbRecord._lockstate._lockTimeout;
+    _lockToken = dbRecord._lockstate._lockToken;
+}
+
+SyncJournalFileRecord SyncFileItem::fromSyncFileItem(const SyncFileItem &syncFile)
+{
+    SyncJournalFileRecord rec(syncFile.destination().toUtf8(), {}, {}, syncFile._type, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {});
+    rec._modtime = syncFile._modtime;
+    rec._type = syncFile._type;
+
+    // Some types should never be written to the database when propagation completes
+    switch (syncFile._type) {
+    case CSyncEnums::ItemTypeVirtualFileDownload:
+        rec._type = ItemTypeFile;
+        break;
+    case CSyncEnums::ItemTypeVirtualFileDehydration:
+        rec._type = ItemTypeVirtualFile;
+        break;
+    case CSyncEnums::ItemTypeFile:
+    case CSyncEnums::ItemTypeSoftLink:
+    case CSyncEnums::ItemTypeDirectory:
+    case CSyncEnums::ItemTypeSkip:
+    case CSyncEnums::ItemTypeVirtualFile:
+    case CSyncEnums::ItemTypeVirtualDirectory:
+        break;
+    }
+
+    rec._etag = syncFile._etag;
+    rec._fileId = syncFile._fileId;
+    rec._fileSize = syncFile._size;
+    rec._inode = syncFile._inode;
+    rec._remotePerm = syncFile._remotePerm;
+    rec._serverHasIgnoredFiles = syncFile._serverHasIgnoredFiles;
+    rec._checksumHeader = syncFile._checksumHeader;
+    //Q_ASSERT(rec.validateRecord());
+
+    return rec;
 }
 
 }

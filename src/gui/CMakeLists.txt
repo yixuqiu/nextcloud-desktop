@@ -1,11 +1,12 @@
+# SPDX-FileCopyrightText: 2017 Nextcloud GmbH and Nextcloud contributors
+# SPDX-FileCopyrightText: 2014 ownCloud GmbH
+# SPDX-License-Identifier: GPL-2.0-or-later
 project(gui)
+include(CheckQmlWindowCloseShortcuts)
+
 find_package(Qt${QT_MAJOR_VERSION} REQUIRED COMPONENTS Widgets Svg Qml Quick QuickControls2 QuickWidgets Xml Network)
 find_package(KF6Archive REQUIRED)
 find_package(KF6GuiAddons)
-
-if (NOT TARGET Qt::GuiPrivate)
-    message(FATAL_ERROR "Could not find GuiPrivate component of Qt. It might be shipped as a separate package, please check that.")
-endif()
 
 if(CMAKE_BUILD_TYPE MATCHES Debug)
     add_definitions(-DQT_QML_DEBUG)
@@ -15,10 +16,27 @@ IF(BUILD_UPDATER)
     add_subdirectory(updater)
 endif()
 
+# Icon switch: if branding is done, use the neutral state icons
+set(STATE_SUBDIR "")
+if(APPLICATION_NAME STREQUAL "Nextcloud" OR APPLICATION_NAME STREQUAL "NextcloudDev")
+    set(STATE_SUBDIR "nextcloud/")
+endif()
+
+# Embed the call-notification ringtone only on platforms that actually play
+# it. macOS (AVAudioPlayer) and Windows (XAudio2) read the WAV from the
+# extracted QRC cache. The Linux libcanberra backend plays the XDG
+# "phone-incoming-call" sound-theme event by id and never reads this file,
+# so embedding it on Linux just bloats the binary by ~900 KB.
+if(APPLE OR WIN32)
+    set(CALL_NOTIFICATION_WAV_FILE_ENTRY "<file>theme/call-notification.wav</file>")
+else()
+    set(CALL_NOTIFICATION_WAV_FILE_ENTRY "")
+endif()
 configure_file(${CMAKE_SOURCE_DIR}/theme.qrc.in ${CMAKE_SOURCE_DIR}/theme.qrc)
 set(theme_dir ${CMAKE_SOURCE_DIR}/theme)
 
 set(client_UI_SRCS
+    advancedsettings.ui
     accountsettings.ui
     conflictdialog.ui
     invalidfilenamedialog.ui
@@ -27,24 +45,16 @@ set(client_UI_SRCS
     folderwizardsourcepage.ui
     folderwizardtargetpage.ui
     generalsettings.ui
+    infosettings.ui
     legalnotice.ui
     ignorelisteditor.ui
     ignorelisttablewidget.ui
     networksettings.ui
-    settingsdialog.ui
     sslerrordialog.ui
-    addcertificatedialog.ui
     passwordinputdialog.ui
     proxyauthdialog.ui
     mnemonicdialog.ui
     vfsdownloaderrordialog.ui
-    wizard/flow2authwidget.ui
-    wizard/owncloudadvancedsetuppage.ui
-    wizard/owncloudconnectionmethoddialog.ui
-    wizard/owncloudhttpcredspage.ui
-    wizard/owncloudsetupnocredspage.ui
-    wizard/webview.ui
-    wizard/welcomepage.ui
 )
 
 qt_add_resources(client_UI_SRCS ../../resources.qrc ${CMAKE_SOURCE_DIR}/theme.qrc)
@@ -52,6 +62,8 @@ qt_add_resources(client_UI_SRCS ../../resources.qrc ${CMAKE_SOURCE_DIR}/theme.qr
 set(client_SRCS
     accountmanager.h
     accountmanager.cpp
+    advancedsettings.h
+    advancedsettings.cpp
     accountsettings.h
     accountsettings.cpp
     accountsetupfromcommandlinejob.h
@@ -66,16 +78,22 @@ set(client_SRCS
     caseclashfilenamedialog.cpp
     callstatechecker.h
     callstatechecker.cpp
+    notificationsoundplayer.h
+    notificationsoundplayer.cpp
+    notificationsoundplayer_p.h
     conflictdialog.h
     conflictdialog.cpp
     conflictsolver.h
     conflictsolver.cpp
     connectionvalidator.h
     connectionvalidator.cpp
+    localnetworkpermission.h
     editlocallyjob.h
     editlocallyjob.cpp
     editlocallymanager.h
     editlocallymanager.cpp
+    editlocallyverificationjob.h
+    editlocallyverificationjob.cpp
     filetagmodel.h
     filetagmodel.cpp
     folder.h
@@ -96,6 +114,8 @@ set(client_SRCS
     folderwizard.cpp
     generalsettings.h
     generalsettings.cpp
+    infosettings.h
+    infosettings.cpp
     legalnotice.h
     legalnotice.cpp
     ignorelisteditor.h
@@ -106,8 +126,6 @@ set(client_SRCS
     lockwatcher.cpp
     logbrowser.h
     logbrowser.cpp
-    navigationpanehelper.h
-    navigationpanehelper.cpp
     networksettings.h
     networksettings.cpp
     ocsnavigationappsjob.h
@@ -130,6 +148,10 @@ set(client_SRCS
     selectivesyncdialog.cpp
     settingsdialog.h
     settingsdialog.cpp
+    settingspanelstyle.h
+    settingspanelstyle.cpp
+    settingsswitch.h
+    settingsswitch.cpp
     sharemanager.h
     sharemanager.cpp
     profilepagewidget.h
@@ -144,16 +166,12 @@ set(client_SRCS
     syncrunfilelog.cpp
     systray.h
     systray.cpp
-    thumbnailjob.h
-    thumbnailjob.cpp
     userinfo.h
     userinfo.cpp
     vfsdownloaderrordialog.h
     vfsdownloaderrordialog.cpp
     accountstate.h
     accountstate.cpp
-    addcertificatedialog.h
-    addcertificatedialog.cpp
     authenticationdialog.h
     authenticationdialog.cpp
     proxyauthhandler.h
@@ -162,6 +180,8 @@ set(client_SRCS
     proxyauthdialog.cpp
     tooltipupdater.h
     tooltipupdater.cpp
+    urischemehandler.h
+    urischemehandler.cpp
     notificationconfirmjob.h
     notificationconfirmjob.cpp
     guiutility.h
@@ -190,28 +210,49 @@ set(client_SRCS
     filedetails/shareemodel.cpp
     filedetails/sortedsharemodel.h
     filedetails/sortedsharemodel.cpp
+    governance/governancenetworkjob.h
+    governance/governancenetworkjob.cpp
+    governance/getgovernancelabels.h
+    governance/getgovernancelabels.cpp
+    governance/getavailablegovernancelabels.h
+    governance/getavailablegovernancelabels.cpp
+    governance/applygovernancelabel.h
+    governance/applygovernancelabel.cpp
+    governance/deletegovernancelabel.h
+    governance/deletegovernancelabel.cpp
+    governance/typedgovernancenetworkjob.h
+    governance/typedgovernancenetworkjob.cpp
+    governance/ocsgovernancejob.h
+    governance/ocsgovernancejob.cpp
+    governance/typedwithlabelidgovernancenetworkjob.h
+    governance/typedwithlabelidgovernancenetworkjob.cpp
+    governance/governancelabelinfo.h
+    governance/governancelabelinfo.cpp
+    governance/governancelabelslistmodel.h
+    governance/governancelabelslistmodel.cpp
+    governance/governancetypes.h
     tray/svgimageprovider.h
     tray/svgimageprovider.cpp
-    tray/syncstatussummary.h
-    tray/syncstatussummary.cpp
-    tray/activitydata.h
-    tray/activitydata.cpp
-    tray/activitylistmodel.h
-    tray/activitylistmodel.cpp
-    tray/unifiedsearchresult.h
+    activity/syncstatussummary.h
+    activity/syncstatussummary.cpp
+    activity/activitydata.h
+    activity/activitydata.cpp
+    activity/activitylistmodel.h
+    activity/activitylistmodel.cpp
     tray/asyncimageresponse.cpp
-    tray/unifiedsearchresult.cpp
-    tray/unifiedsearchresultslistmodel.h
     tray/trayimageprovider.cpp
-    tray/unifiedsearchresultslistmodel.cpp
+    tray/trayaccountmenupolicy.h
+    tray/trayactivationpolicy.h
+    tray/trayaccountappsmodel.h
+    tray/trayaccountappsmodel.cpp
     tray/usermodel.h
     tray/usermodel.cpp
-    tray/notificationhandler.h
-    tray/notificationhandler.cpp
-    tray/sortedactivitylistmodel.h
-    tray/sortedactivitylistmodel.cpp
+    activity/notificationhandler.h
+    activity/notificationhandler.cpp
+    activity/sortedactivitylistmodel.h
+    activity/sortedactivitylistmodel.cpp
     creds/credentialsfactory.h
-    tray/talkreply.cpp
+    activity/talkreply.cpp
     creds/credentialsfactory.cpp
     creds/httpcredentialsgui.h
     creds/httpcredentialsgui.cpp
@@ -219,43 +260,21 @@ set(client_SRCS
     creds/flow2auth.cpp
     creds/webflowcredentials.h
     creds/webflowcredentials.cpp
-    creds/webflowcredentialsdialog.h
-    creds/webflowcredentialsdialog.cpp
-    wizard/postfixlineedit.h
-    wizard/postfixlineedit.cpp
-    wizard/abstractcredswizardpage.h
-    wizard/abstractcredswizardpage.cpp
-    wizard/owncloudadvancedsetuppage.h
-    wizard/owncloudadvancedsetuppage.cpp
-    wizard/owncloudconnectionmethoddialog.h
-    wizard/owncloudconnectionmethoddialog.cpp
-    wizard/owncloudhttpcredspage.h
-    wizard/owncloudhttpcredspage.cpp
-    wizard/flow2authcredspage.h
-    wizard/flow2authcredspage.cpp
-    wizard/flow2authwidget.h
-    wizard/flow2authwidget.cpp
-    wizard/owncloudsetuppage.h
-    wizard/owncloudsetuppage.cpp
-    wizard/owncloudwizardcommon.h
-    wizard/owncloudwizardcommon.cpp
-    wizard/owncloudwizard.h
-    wizard/owncloudwizard.cpp
-    wizard/slideshow.h
-    wizard/slideshow.cpp
-    wizard/welcomepage.h
-    wizard/welcomepage.cpp
-    wizard/linklabel.h
-    wizard/linklabel.cpp
+    wizard/accountwizardcontroller.h
+    wizard/accountwizardcontroller.cpp
+    wizard/browserreauthcontroller.h
+    wizard/browserreauthcontroller.cpp
+    wizard/browserreauthwindow.h
+    wizard/browserreauthwindow.cpp
+    integration/fileactionsmodel.h
+    integration/fileactionsmodel.cpp
     )
 
-if (Qt${QT_MAJOR_VERSION}WebEngine_FOUND AND Qt${QT_MAJOR_VERSION}WebEngineWidgets_FOUND)
-  list(APPEND client_SRCS
-    wizard/webviewpage.h
-    wizard/webviewpage.cpp
-    wizard/webview.h
-    wizard/webview.cpp
-  )
+if (NOT DISABLE_ACCOUNT_MIGRATION)
+    list(APPEND client_SRCS
+        legacyaccountselectiondialog.h
+        legacyaccountselectiondialog.cpp
+    )
 endif()
 
 IF(BUILD_UPDATER)
@@ -269,43 +288,146 @@ IF(BUILD_UPDATER)
     )
 endif()
 
+add_subdirectory(search)
+add_subdirectory(sharing)
+include(assistant/CMakeLists.txt)
+list(APPEND client_SRCS ${assistant_SRCS})
+qt_add_resources(client_UI_SRCS ${assistant_QRC})
+
 IF( APPLE )
-    list(APPEND client_SRCS cocoainitializer_mac.mm)
-    list(APPEND client_SRCS systray_mac_common.mm)
-
-    if (CMAKE_OSX_DEPLOYMENT_TARGET VERSION_GREATER_EQUAL 10.14)
-        list(APPEND client_SRCS systray_mac_usernotifications.mm)
-    endif()
-
+    list(APPEND client_SRCS
+        cocoainitializer_mac.mm
+        systray_mac_common.mm
+        notificationsoundplayer_mac.mm
+        macOS/singleinstancemanager_mac.mm
+        systray_mac_usernotifications.mm
+        macOS/localnetworkpermission.mm
+        macOS/lowpowergpu_mac.h
+        macOS/lowpowergpu_mac.mm
+        macOS/macsandboxfolderpicker.h
+        macOS/macsandboxfolderpicker.mm
+        # macOS tray account popup: one type per header/implementation pair.
+        # Shared foundation first, then the base hover view, rows, popups and the
+        # public entry point (OCC::showMacOSTrayPopup / hideMacOSTrayPopup).
+        macOS/trayaccountpopup/trayaccountpopupgeometry.h
+        macOS/trayaccountpopup/trayaccountpopupmetrics.h
+        macOS/trayaccountpopup/trayaccountpopuppresentation.h
+        macOS/trayaccountpopup/trayaccountpopupimageutils.h
+        macOS/trayaccountpopup/trayaccountpopupimageutils.mm
+        macOS/trayaccountpopup/trayaccountpopupviewutils.h
+        macOS/trayaccountpopup/trayaccountpopupviewutils.mm
+        macOS/trayaccountpopup/nchoverview.h
+        macOS/trayaccountpopup/nchoverview.mm
+        macOS/trayaccountpopup/ncaccountrow.h
+        macOS/trayaccountpopup/ncaccountrow.mm
+        macOS/trayaccountpopup/ncactionrow.h
+        macOS/trayaccountpopup/ncactionrow.mm
+        macOS/trayaccountpopup/ncsectionheaderrow.h
+        macOS/trayaccountpopup/ncsectionheaderrow.mm
+        macOS/trayaccountpopup/ncstaticinforow.h
+        macOS/trayaccountpopup/ncstaticinforow.mm
+        macOS/trayaccountpopup/ncpointinghandbutton.h
+        macOS/trayaccountpopup/ncpointinghandbutton.mm
+        macOS/trayaccountpopup/ncalertboxrow.h
+        macOS/trayaccountpopup/ncalertboxrow.mm
+        macOS/trayaccountpopup/ncspacerview.h
+        macOS/trayaccountpopup/ncspacerview.mm
+        macOS/trayaccountpopup/ncappspopup.h
+        macOS/trayaccountpopup/ncappspopup.mm
+        macOS/trayaccountpopup/ncnotificationactionspopup.h
+        macOS/trayaccountpopup/ncnotificationactionspopup.mm
+        macOS/trayaccountpopup/ncaccountactionspopup.h
+        macOS/trayaccountpopup/ncaccountactionspopup.mm
+        macOS/trayaccountpopup/nctraypopup.h
+        macOS/trayaccountpopup/nctraypopup.mm
+        macOS/trayaccountpopup/trayaccountpopup_mac.mm
+        # FinderSync XPC is independent of File Provider — always built on macOS
+        ../../shell_integration/MacOSX/NextcloudIntegration/FinderSyncExt/Services/FinderSyncProtocol.h
+        ../../shell_integration/MacOSX/NextcloudIntegration/FinderSyncExt/Services/FinderSyncAppProtocol.h
+        ../../shell_integration/MacOSX/NextcloudIntegration/FinderSyncExt/Services/FinderSyncBrokerProtocol.h
+        ../../shell_integration/MacOSX/NextcloudIntegration/FinderSyncExt/Services/FinderSyncBrokerClientProtocol.h
+        macOS/findersyncbrokeridentity.h
+        macOS/findersyncbrokeridentity.cpp
+        macOS/findersyncbrokerregistrar.h
+        macOS/findersyncbrokerregistrar_mac.mm
+        macOS/findersyncxpc.h
+        macOS/findersyncxpc_mac.mm
+        macOS/findersyncservice.h
+        macOS/findersyncservice.mm
+        foregroundbackground_interface.h
+        foregroundbackground_mac.mm
+        foregroundbackground_cocoa.mm
+        nativetitlebar_mac.h
+        nativetitlebar_mac.mm
+        folderwatcher_mac.cpp)
+    set_property(SOURCE
+        cocoainitializer_mac.mm
+        macOS/localnetworkpermission.mm
+        macOS/findersyncxpc_mac.mm
+        macOS/findersyncservice.mm
+        macOS/fileproviderservice.mm
+        updater/sparkleupdater_mac.mm
+        macOS/trayaccountpopup/trayaccountpopupimageutils.mm
+        macOS/trayaccountpopup/trayaccountpopupviewutils.mm
+        macOS/trayaccountpopup/nchoverview.mm
+        macOS/trayaccountpopup/ncaccountrow.mm
+        macOS/trayaccountpopup/ncstaticinforow.mm
+        macOS/trayaccountpopup/ncsectionheaderrow.mm
+        systray_mac_common.mm
+        notificationsoundplayer_mac.mm
+        macOS/lowpowergpu_mac.mm
+        macOS/macsandboxfolderpicker.mm
+        macOS/trayaccountpopup/ncactionrow.mm
+        macOS/trayaccountpopup/ncpointinghandbutton.mm
+        macOS/trayaccountpopup/ncalertboxrow.mm
+        macOS/trayaccountpopup/ncspacerview.mm
+        macOS/trayaccountpopup/ncappspopup.mm
+        macOS/trayaccountpopup/ncnotificationactionspopup.mm
+        macOS/trayaccountpopup/ncaccountactionspopup.mm
+        macOS/trayaccountpopup/nctraypopup.mm
+        macOS/trayaccountpopup/trayaccountpopup_mac.mm
+        macOS/singleinstancemanager_mac.mm
+        systray_mac_usernotifications.mm
+        macOS/findersyncbrokerregistrar_mac.mm
+        macOS/fileprovider_mac.mm
+        macOS/fileproviderdomainmanager.mm
+        macOS/fileprovidereditlocallyjob_mac.mm
+        macOS/fileprovideritemmetadata_mac.mm
+        macOS/fileprovidersettingscontroller_mac.mm
+        macOS/fileproviderutils_mac.mm
+        macOS/fileproviderxpc_mac.mm
+        macOS/fileproviderxpc_mac_utils.mm
+        macOS/progressobserver.m
+        foregroundbackground_mac.mm
+        foregroundbackground_cocoa.mm
+        nativetitlebar_mac.mm
+        socketapi/socketapi_mac.mm
+        APPEND PROPERTY COMPILE_OPTIONS -fobjc-arc
+    )
     if (BUILD_FILE_PROVIDER_MODULE)
         list(APPEND client_SRCS
-            # Symlinks to files in shell_integration/MacOSX/NextcloudIntegration/
-            macOS/ClientCommunicationProtocol.h
-            # End of symlink files
+            # XPC Protocol files from shell_integration/MacOSX/NextcloudIntegration/
+            ../../shell_integration/MacOSX/NextcloudFileProviderKit/Sources/NextcloudFileProviderXPC/include/NextcloudFileProviderXPC.h
+            # End of XPC protocol files
             macOS/fileprovider.h
             macOS/fileprovider_mac.mm
             macOS/fileproviderdomainmanager.h
-            macOS/fileproviderdomainmanager_mac.mm
-            macOS/fileproviderdomainsyncstatus.h
-            macOS/fileproviderdomainsyncstatus_mac.mm
+            macOS/fileproviderdomainmanager.mm
+            macOS/fileprovidereditlocallyjob.h
+            macOS/fileprovidereditlocallyjob.cpp
+            macOS/fileprovidereditlocallyjob_mac.mm
             macOS/fileprovideritemmetadata.h
             macOS/fileprovideritemmetadata.cpp
             macOS/fileprovideritemmetadata_mac.mm
-            macOS/fileprovidermaterialiseditemsmodel.h
-            macOS/fileprovidermaterialiseditemsmodel.cpp
-            macOS/fileprovidermaterialiseditemsmodel_mac.mm
+            macOS/fileproviderservice.h
+            macOS/fileproviderservice.mm
             macOS/fileprovidersettingscontroller.h
             macOS/fileprovidersettingscontroller_mac.mm
-            macOS/fileprovidersocketcontroller.h
-            macOS/fileprovidersocketcontroller.cpp
-            macOS/fileprovidersocketserver.h
-            macOS/fileprovidersocketserver.cpp
-            macOS/fileprovidersocketserver_mac.mm
-            macOS/fileproviderstorageuseenumerationobserver.h
-            macOS/fileproviderstorageuseenumerationobserver.m
             macOS/fileproviderutils.h
+            macOS/fileproviderutils_mac.h
             macOS/fileproviderutils_mac.mm
             macOS/fileproviderxpc.h
+            macOS/fileproviderxpcconnection.h
             macOS/fileproviderxpc_mac.mm
             macOS/fileproviderxpc_mac_utils.h
             macOS/fileproviderxpc_mac_utils.mm
@@ -324,30 +446,27 @@ IF( APPLE )
         install(DIRECTORY "${SPARKLE_LIBRARY}"
                 DESTINATION "${OWNCLOUD_OSX_BUNDLE}/Contents/Frameworks" USE_SOURCE_PERMISSIONS)
 
-   endif()
+    endif()
+ENDIF()
+IF( NOT APPLE )
+    list(APPEND client_SRCS trayaccountpopup_qt.cpp localnetworkpermission.cpp)
 ENDIF()
 
 IF( NOT WIN32 AND NOT APPLE )
-set(client_SRCS ${client_SRCS} folderwatcher_linux.cpp)
+    set(client_SRCS ${client_SRCS} folderwatcher_linux.cpp notificationsoundplayer_linux.cpp)
 ENDIF()
 IF( WIN32 )
-set(client_SRCS ${client_SRCS} folderwatcher_win.cpp shellextensionsserver.cpp ${CMAKE_SOURCE_DIR}/src/common/shellextensionutils.cpp)
-ENDIF()
-IF( APPLE )
-list(APPEND client_SRCS folderwatcher_mac.cpp)
+    set(client_SRCS
+        ${client_SRCS}
+        folderwatcher_win.cpp
+        notificationsoundplayer_win.cpp
+        navigationpanehelper.h
+        navigationpanehelper.cpp
+        shellextensionsserver.cpp
+        ${CMAKE_SOURCE_DIR}/src/common/shellextensionutils.cpp)
 ENDIF()
 
 set(3rdparty_SRC
-    ../3rdparty/QProgressIndicator/QProgressIndicator.h
-    ../3rdparty/QProgressIndicator/QProgressIndicator.cpp
-    ../3rdparty/qtlockedfile/qtlockedfile.h
-    ../3rdparty/qtlockedfile/qtlockedfile.cpp
-    ../3rdparty/qtsingleapplication/qtlocalpeer.h
-    ../3rdparty/qtsingleapplication/qtlocalpeer.cpp
-    ../3rdparty/qtsingleapplication/qtsingleapplication.h
-    ../3rdparty/qtsingleapplication/qtsingleapplication.cpp
-    ../3rdparty/qtsingleapplication/qtsinglecoreapplication.h
-    ../3rdparty/qtsingleapplication/qtsinglecoreapplication.cpp
     ../3rdparty/kmessagewidget/kmessagewidget.h
     ../3rdparty/kmessagewidget/kmessagewidget.cpp
     ../3rdparty/kirigami/wheelhandler.h
@@ -356,14 +475,6 @@ set(3rdparty_SRC
 
 set_property(SOURCE ../3rdparty/kmessagewidget/kmessagewidget.cpp PROPERTY SKIP_UNITY_BUILD_INCLUSION ON)
 set_property(SOURCE ../3rdparty/kirigami/wheelhandler.cpp PROPERTY SKIP_UNITY_BUILD_INCLUSION ON)
-
-if(NOT WIN32)
-   list(APPEND 3rdparty_SRC ../3rdparty/qtlockedfile/qtlockedfile_unix.cpp)
-   set_property(SOURCE ../3rdparty/qtlockedfile/qtlockedfile_unix.cpp PROPERTY SKIP_UNITY_BUILD_INCLUSION ON)
-else()
-   list(APPEND 3rdparty_SRC ../3rdparty/qtlockedfile/qtlockedfile_win.cpp )
-   set_property(SOURCE ../3rdparty/qtlockedfile/qtlockedfile_win.cpp PROPERTY SKIP_UNITY_BUILD_INCLUSION ON)
-endif()
 
 find_package(Qt${QT_VERSION_MAJOR} ${REQUIRED_QT_VERSION} COMPONENTS LinguistTools)
 if(Qt${QT_MAJOR_VERSION}LinguistTools_FOUND)
@@ -432,15 +543,6 @@ if ((APPLICATION_ICON_SET MATCHES "PNG")
   file(TOUCH "${theme_dir}/colored/${APPLICATION_ICON_NAME}-icon.svg")
 endif()
 
-if(APPLE)
-  set(MACOS_SIDEBAR_ICON_SVG "${theme_dir}/colored/${APPLICATION_ICON_NAME}-sidebar.svg")
-  generate_sized_png_from_svg(${MACOS_SIDEBAR_ICON_SVG} 16)
-  generate_sized_png_from_svg(${MACOS_SIDEBAR_ICON_SVG} 32)
-  generate_sized_png_from_svg(${MACOS_SIDEBAR_ICON_SVG} 64)
-  generate_sized_png_from_svg(${MACOS_SIDEBAR_ICON_SVG} 128)
-  generate_sized_png_from_svg(${MACOS_SIDEBAR_ICON_SVG} 256)
-endif()
-
 if(WIN32)
   set(STARTMENU_ICON_SVG "${theme_dir}/colored/${APPLICATION_ICON_NAME}-w10startmenu.svg")
   generate_sized_png_from_svg(${STARTMENU_ICON_SVG} 70)
@@ -453,33 +555,6 @@ set(APP_ICON_SVG "${theme_dir}/colored/${APPLICATION_ICON_NAME}-icon.svg")
 set(APP_SECONDARY_ICONS "${theme_dir}/colored/icons")
 set(APP_ICON_WIN_FOLDER_SVG "${APP_SECONDARY_ICONS}/${APPLICATION_ICON_NAME}-icon-win-folder.svg")
 
-set(RC_DEPENDENCIES "")
-
-if(WIN32)
-    if (EXISTS ${APP_ICON_WIN_FOLDER_SVG})
-        get_filename_component(output_icon_name_win ${APP_ICON_WIN_FOLDER_SVG} NAME_WLE)
-        # Product icon (for smallest size)
-        foreach(size IN ITEMS 16;20)
-            generate_sized_png_from_svg(${APP_ICON_SVG} ${size} OUTPUT_ICON_NAME ${output_icon_name_win} OUTPUT_ICON_PATH "${APP_SECONDARY_ICONS}/")
-        endforeach()
-
-        # Product icon with Windows folder (for sizes larger than 20)
-        foreach(size IN ITEMS 24;32;40;48;64;128;256;512;1024)
-            generate_sized_png_from_svg(${APP_ICON_WIN_FOLDER_SVG} ${size} OUTPUT_ICON_NAME ${output_icon_name_win} OUTPUT_ICON_PATH "${APP_SECONDARY_ICONS}/")
-        endforeach()
-
-        file(GLOB_RECURSE OWNCLOUD_ICONS_WIN_FOLDER "${APP_SECONDARY_ICONS}/*-${APPLICATION_ICON_NAME}-icon*")
-        set(APP_ICON_WIN_FOLDER_ICO_NAME "${APPLICATION_ICON_NAME}-win-folder")
-        set(RC_DEPENDENCIES "${RC_DEPENDENCIES} ${APP_ICON_WIN_FOLDER_ICO_NAME}.ico")
-        ecm_add_app_icon(APP_ICON_WIN_FOLDER ICONS "${OWNCLOUD_ICONS_WIN_FOLDER}" SIDEBAR_ICONS "${OWNCLOUD_SIDEBAR_ICONS}" OUTFILE_BASENAME "${APP_ICON_WIN_FOLDER_ICO_NAME}" ICON_INDEX 2)
-    endif()
-endif()
-# --------------------------------------
-
-if (NOT ${RC_DEPENDENCIES} STREQUAL "")
-    string(STRIP ${RC_DEPENDENCIES} RC_DEPENDENCIES)
-endif()
-
 # generate primary icon from SVG (due to Win .ico vs .rc dependency issues, primary icon must always be generated last)--------------------------------------
 if(WIN32)
     foreach(size IN ITEMS 16;20;24;32;40;48;64;128;256;512;1024)
@@ -491,42 +566,43 @@ else()
     endforeach()
 endif()
 
-file(GLOB_RECURSE OWNCLOUD_ICONS "${theme_dir}/colored/*-${APPLICATION_ICON_NAME}-icon*")
+file(GLOB OWNCLOUD_ICONS "${theme_dir}/colored/*-${APPLICATION_ICON_NAME}-icon*")
 
-if(APPLE)
-    file(GLOB_RECURSE OWNCLOUD_SIDEBAR_ICONS "${theme_dir}/colored/*-${APPLICATION_ICON_NAME}-sidebar*")
-    MESSAGE(STATUS "OWNCLOUD_SIDEBAR_ICONS: ${APPLICATION_ICON_NAME}: ${OWNCLOUD_SIDEBAR_ICONS}")
+if(APPLE AND MACOS_USE_ICON_COMPOSER)
+    include(CompileAppleIconComposer)
+    compile_apple_icon_composer(
+        "${CMAKE_SOURCE_DIR}/theme/colored/AppIcon.icon"
+        "${CMAKE_CURRENT_BINARY_DIR}/AppIconCompiled"
+        APP_ICON)
+else()
+    ecm_add_app_icon(APP_ICON ICONS "${OWNCLOUD_ICONS}" OUTFILE_BASENAME "${APPLICATION_ICON_NAME}")
 endif()
 
-ecm_add_app_icon(APP_ICON RC_DEPENDENCIES ${RC_DEPENDENCIES} ICONS "${OWNCLOUD_ICONS}" SIDEBAR_ICONS "${OWNCLOUD_SIDEBAR_ICONS}" OUTFILE_BASENAME "${APPLICATION_ICON_NAME}" ICON_INDEX 1)
-# --------------------------------------
+if(WIN32 AND EXISTS ${APP_ICON_WIN_FOLDER_SVG})
+    get_filename_component(output_icon_name_win ${APP_ICON_WIN_FOLDER_SVG} NAME_WLE)
+    # Product icon (for smallest size)
+    foreach(size IN ITEMS 16;20)
+        generate_sized_png_from_svg(${APP_ICON_SVG} ${size} OUTPUT_ICON_NAME ${output_icon_name_win} OUTPUT_ICON_PATH "${APP_SECONDARY_ICONS}/")
+    endforeach()
 
-if(WIN32)
-# merge *.rc.in files for Windows (multiple ICON resources must be placed in a single file, otherwise, this won't work de to a bug in Windows compiler https://developercommunity.visualstudio.com/t/visual-studio-2017-prof-1557-cvt1100-duplicate-res/363156)
-    function(merge_files IN_FILE OUT_FILE)
-        file(READ ${IN_FILE} CONTENTS)
-        message("Merging ${IN_FILE} into ${OUT_FILE}")
-        file(APPEND ${OUT_FILE} "${CONTENTS}")
-    endfunction()
-    message("APP_ICON is: ${APP_ICON}")
-    if(APP_ICON)
-        get_filename_component(RC_IN_FOLDER ${APP_ICON}} DIRECTORY)
+    # Product icon with Windows folder (for sizes larger than 20)
+    foreach(size IN ITEMS 24;32;40;48;64;128;256;512;1024)
+        generate_sized_png_from_svg(${APP_ICON_WIN_FOLDER_SVG} ${size} OUTPUT_ICON_NAME ${output_icon_name_win} OUTPUT_ICON_PATH "${APP_SECONDARY_ICONS}/")
+    endforeach()
 
-        file(GLOB_RECURSE RC_IN_FILES "${RC_IN_FOLDER}/*rc.in")
+    file(GLOB OWNCLOUD_ICONS_WIN_FOLDER "${APP_SECONDARY_ICONS}/*-${APPLICATION_ICON_NAME}-icon*")
+    set(APP_ICON_WIN_FOLDER_ICO_NAME "${APPLICATION_ICON_NAME}-win-folder")
+    ecm_add_app_icon(APP_ICON ICONS ${OWNCLOUD_ICONS_WIN_FOLDER} OUTFILE_BASENAME "${APP_ICON_WIN_FOLDER_ICO_NAME}")
 
-        foreach(rc_in_file IN ITEMS ${RC_IN_FILES})
-          get_filename_component(rc_in_file_name ${rc_in_file} NAME)
-          get_filename_component(app_icon_name "${APP_ICON}.in" NAME)
-          if(NOT "${rc_in_file_name}" STREQUAL "${app_icon_name}")
-              merge_files(${rc_in_file} "${APP_ICON}.in")
-              if (DEFINED APPLICATION_FOLDER_ICON_INDEX)
-                  MATH(EXPR APPLICATION_FOLDER_ICON_INDEX "${APPLICATION_FOLDER_ICON_INDEX}+1")
-                  message("APPLICATION_FOLDER_ICON_INDEX is now set to: ${APPLICATION_FOLDER_ICON_INDEX}")
-              endif()
-          endif()
-        endforeach()
-    endif()
+    # We need to patch the resource files generated by `ecm_add_app_icon` to allow multiple icons in the same executable.
+    file(WRITE  "${CMAKE_CURRENT_BINARY_DIR}/${APP_ICON_WIN_FOLDER_ICO_NAME}.rc.in" "\n") # avoid resource linker complaining about duplicate icon resources
+    file(WRITE  "${CMAKE_CURRENT_BINARY_DIR}/${APPLICATION_ICON_NAME}.rc.in" "IDI_ICON1        ICON        DISCARDABLE    \"${CMAKE_CURRENT_BINARY_DIR}/${APPLICATION_ICON_NAME}.ico\"\n")
+    file(APPEND "${CMAKE_CURRENT_BINARY_DIR}/${APPLICATION_ICON_NAME}.rc.in" "IDI_ICON2        ICON        DISCARDABLE    \"${CMAKE_CURRENT_BINARY_DIR}/${APP_ICON_WIN_FOLDER_ICO_NAME}.ico\"\n")
+
+    # The icon index used in code is 0-indexed, whereas the resource starts indexing from 1.
+    set(APPLICATION_FOLDER_ICON_INDEX 1)
 endif()
+
 # --------------------------------------
 
 if(UNIX AND NOT APPLE)
@@ -540,12 +616,12 @@ if(CMAKE_SYSTEM_NAME STREQUAL "FreeBSD")
 endif()
 
 add_library(nextcloudCore STATIC ${final_src})
+add_qml_window_close_shortcut_check("${CMAKE_CURRENT_SOURCE_DIR}" nextcloudCore)
 
 target_link_libraries(nextcloudCore
   PUBLIC
   Nextcloud::sync
   Qt::Widgets
-  Qt::GuiPrivate
   Qt::Svg
   Qt::Network
   Qt::Xml
@@ -554,6 +630,7 @@ target_link_libraries(nextcloudCore
   Qt::QuickControls2
   Qt::QuickWidgets
   KF6::Archive
+  KDAB::kdsingleapplication
   )
 
 if(KF6GuiAddons_FOUND)
@@ -564,21 +641,22 @@ if(KF6GuiAddons_FOUND)
   add_definitions(-DHAVE_KGUIADDONS)
 endif()
 
+target_compile_definitions(nextcloudCore PRIVATE -DQT_NO_KEYWORDS)
+
+if(KF6DBusAddons_FOUND)
+    target_link_libraries(nextcloudCore PUBLIC KF6::DBusAddons)
+endif()
+
 add_subdirectory(socketapi)
 
 # skip unity inclusion for files which cause problems with a CMake unity build
 set_property(SOURCE
     ${CMAKE_CURRENT_SOURCE_DIR}/socketapi/socketapi.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/socketapi/socketuploadjob.cpp
     PROPERTY SKIP_UNITY_BUILD_INCLUSION ON)
 
 foreach(FILE IN LISTS client_UI_SRCS)
 	set_property(SOURCE ${FILE} PROPERTY SKIP_UNITY_BUILD_INCLUSION ON)
 endforeach()
-
-if(Qt6WebEngine_FOUND AND Qt6WebEngineWidgets_FOUND)
-  target_link_libraries(nextcloudCore PUBLIC Qt::WebEngineWidgets)
-endif()
 
 set_target_properties(nextcloudCore
   PROPERTIES
@@ -588,10 +666,7 @@ set_target_properties(nextcloudCore
 
 target_include_directories(nextcloudCore
   PUBLIC
-  ${CMAKE_SOURCE_DIR}/src/3rdparty/QProgressIndicator
-  ${CMAKE_SOURCE_DIR}/src/3rdparty/qtlockedfile
   ${CMAKE_SOURCE_DIR}/src/3rdparty/kirigami
-  ${CMAKE_SOURCE_DIR}/src/3rdparty/qtsingleapplication
   ${CMAKE_SOURCE_DIR}/src/3rdparty/kmessagewidget
   ${CMAKE_CURRENT_BINARY_DIR}
   ${CMAKE_CURRENT_SOURCE_DIR}
@@ -604,7 +679,7 @@ if(NOT BUILD_OWNCLOUD_OSX_BUNDLE)
             string(REPLACE "${theme_dir}/colored/" "" _res ${_file})
             string(REPLACE "-${APPLICATION_ICON_NAME}-icon.png" "" _res ${_res})
             install(FILES ${_file} RENAME ${APPLICATION_ICON_NAME}.png DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/${_res}x${_res}/apps)
-        endforeach(_file)
+        endforeach()
         install(FILES ${client_I18N} DESTINATION ${CMAKE_INSTALL_DATADIR}/${APPLICATION_EXECUTABLE}/i18n)
     else()
         file(GLOB_RECURSE VISUAL_ELEMENTS "${theme_dir}/colored/*-${APPLICATION_ICON_NAME}-w10startmenu*")
@@ -620,7 +695,15 @@ if(NOT BUILD_OWNCLOUD_OSX_BUNDLE)
     )
 else()
     # set(CMAKE_INSTALL_PREFIX ".") # Examples use /Applications. hurmpf.
-    set(MACOSX_BUNDLE_ICON_FILE "${APPLICATION_ICON_NAME}.icns")
+    if(MACOS_USE_ICON_COMPOSER)
+        set(MACOSX_BUNDLE_ICON_FILE "AppIcon")
+        # Modern Icon Composer path also publishes CFBundleIconName so Finder
+        # finds the asset in the bundle's Assets.car.
+        set(MACOSX_BUNDLE_ICON_NAME_BLOCK "<key>CFBundleIconName</key>\n    <string>AppIcon</string>")
+    else()
+        set(MACOSX_BUNDLE_ICON_FILE "${APPLICATION_ICON_NAME}.icns")
+        set(MACOSX_BUNDLE_ICON_NAME_BLOCK "")
+    endif()
 
     # we must add MACOSX_BUNDLE only if building a bundle
     add_executable(nextcloud WIN32 MACOSX_BUNDLE main.cpp ${APP_ICON})
@@ -653,6 +736,7 @@ IF(BUILD_UPDATER)
     target_link_libraries(updater Nextcloud::sync ${updater_DEPS} Qt::Widgets Qt::Svg Qt::Network Qt::Xml)
     target_include_directories(updater PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
     set_target_properties(updater PROPERTIES AUTOMOC ON)
+    target_compile_definitions(updater PRIVATE QT_NO_KEYWORDS)
     target_link_libraries(nextcloudCore PUBLIC updater)
 endif()
 
@@ -660,7 +744,14 @@ set_target_properties(nextcloud PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${BIN_OUTPUT_DIRECTORY}
 )
 
-target_link_libraries(nextcloud PRIVATE nextcloudCore)
+target_link_libraries(nextcloud PRIVATE
+    nextcloudCore
+    nextcloudGuiSearch
+    nextcloudGuiSearchplugin
+    nextcloudGuiSharing
+    nextcloudGuiSharingplugin
+)
+target_compile_definitions(nextcloud PRIVATE QT_NO_KEYWORDS)
 
 if(TARGET PkgConfig::CLOUDPROVIDERS)
     message("Building with libcloudproviderssupport")
@@ -671,7 +762,7 @@ if(TARGET PkgConfig::CLOUDPROVIDERS)
     string(REGEX REPLACE "[^A-z0-9]" "" DBUS_APPLICATION_NAME "${APPLICATION_SHORTNAME}")
     if(NOT DBUS_PREFIX)
         set(DBUS_PREFIX "com")
-    endif(NOT DBUS_PREFIX)
+    endif()
     set(LIBCLOUDPROVIDERS_DBUS_BUS_NAME "${DBUS_PREFIX}.${DBUS_VENDOR}.${DBUS_APPLICATION_NAME}")
     set(LIBCLOUDPROVIDERS_DBUS_OBJECT_PATH "/${DBUS_PREFIX}/${DBUS_VENDOR}/${DBUS_APPLICATION_NAME}")
 
@@ -696,27 +787,40 @@ if( UNIX AND NOT APPLE )
     find_package(Qt${QT_VERSION_MAJOR} ${REQUIRED_QT_VERSION} COMPONENTS DBus)
     target_link_libraries(nextcloudCore PUBLIC Qt::DBus)
     target_compile_definitions(nextcloudCore PUBLIC "USE_FDO_NOTIFICATIONS")
+
+    # libcanberra is the freedesktop event-sound API used to play the
+    # incoming-call ringtone. If the dev package is missing, we fall back to
+    # a no-op backend so the build still succeeds; distro packaging should
+    # treat libcanberra as a soft runtime dependency.
+    find_package(PkgConfig)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(CANBERRA IMPORTED_TARGET libcanberra)
+    endif()
+    if(CANBERRA_FOUND)
+        target_link_libraries(nextcloudCore PRIVATE PkgConfig::CANBERRA)
+        target_compile_definitions(nextcloudCore PRIVATE HAVE_LIBCANBERRA)
+    else()
+        message(STATUS "libcanberra not found; notification sounds will be silent on this build")
+    endif()
+    target_compile_definitions(nextcloudCore PRIVATE NEXTCLOUD_HAS_NATIVE_SOUND_BACKEND)
 endif()
 
 if (APPLE)
-    find_package(Qt${QT_MAJOR_VERSION} COMPONENTS MacExtras)
-
     if (BUILD_FILE_PROVIDER_MODULE)
-        target_link_libraries(nextcloudCore PUBLIC Qt::MacExtras "-framework UserNotifications -framework FileProvider")
-    elseif(CMAKE_OSX_DEPLOYMENT_TARGET VERSION_GREATER_EQUAL 10.14)
-        target_link_libraries(nextcloudCore PUBLIC Qt::MacExtras "-framework UserNotifications")
+        target_link_libraries(nextcloudCore PUBLIC "-framework UserNotifications -framework FileProvider")
     else()
-        target_link_libraries(nextcloudCore PUBLIC Qt::MacExtras)
+        target_link_libraries(nextcloudCore PUBLIC "-framework UserNotifications")
     endif()
+    target_link_libraries(nextcloudCore PRIVATE "-framework AVFoundation" "-framework AppKit" "-framework Foundation" "-framework Metal" "-framework Network")
+    # ServiceManagement for SMAppService, used to register the FinderSync broker login item.
+    # src/csync links it too, for utility_mac.mm, but PRIVATE — so it does not propagate here.
+    target_link_libraries(nextcloudCore PRIVATE "-framework ServiceManagement")
+    target_compile_definitions(nextcloudCore PRIVATE NEXTCLOUD_HAS_NATIVE_SOUND_BACKEND)
 endif()
 
-if(WITH_CRASHREPORTER)
-    target_link_libraries(nextcloudCore PUBLIC crashreporter-handler)
-
-    if(UNIX AND NOT MAC)
-        find_package(Threads REQUIRED)
-        target_link_libraries(nextcloudCore PUBLIC Threads::Threads)
-    endif()
+if (WIN32)
+    target_link_libraries(nextcloudCore PRIVATE xaudio2)
+    target_compile_definitions(nextcloudCore PRIVATE NEXTCLOUD_HAS_NATIVE_SOUND_BACKEND)
 endif()
 
 install(TARGETS nextcloud
@@ -726,6 +830,9 @@ install(TARGETS nextcloud
         BUNDLE  DESTINATION "."
  )
 
+if (WIN32)
+    install(FILES $<TARGET_PDB_FILE:nextcloud> DESTINATION bin OPTIONAL)
+endif()
 
 # FIXME: The following lines are dup in src/gui and src/cmd because it needs to be done after both are installed
 #FIXME: find a nice solution to make the second if(BUILD_OWNCLOUD_OSX_BUNDLE) unnecessary
@@ -734,9 +841,22 @@ install(TARGETS nextcloud
 #
 # OSX: Run macdeployqt for src/gui and for src/cmd using the -executable option
 if(BUILD_OWNCLOUD_OSX_BUNDLE AND NOT BUILD_LIBRARIES_ONLY)
+    # macdeployqt (POST_BUILD) replaces the build-tree RPATH with @loader_path/../Frameworks.
+    # Setting BUILD_WITH_INSTALL_RPATH prevents CMake from separately tracking the build-tree
+    # RPATH and then trying to delete it at cmake --install time (which would fail because
+    # macdeployqt has already removed it).
+    set_target_properties(nextcloud PROPERTIES BUILD_WITH_INSTALL_RPATH TRUE)
+
     get_target_property (QT_QMAKE_EXECUTABLE Qt::qmake IMPORTED_LOCATION)
     get_filename_component(QT_BIN_DIR "${QT_QMAKE_EXECUTABLE}" DIRECTORY)
     find_program(MACDEPLOYQT_EXECUTABLE macdeployqt HINTS "${QT_BIN_DIR}")
+    get_filename_component(MACDEPLOYQT_DIR "${MACDEPLOYQT_EXECUTABLE}" DIRECTORY)
+
+    execute_process(
+        COMMAND "${QT_QMAKE_EXECUTABLE}" -query QT_INSTALL_LIBS
+        OUTPUT_VARIABLE MACDEPLOYQT_LIB_DIR
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
 
     set(cmd_NAME ${APPLICATION_EXECUTABLE}cmd)
 
@@ -752,6 +872,8 @@ if(BUILD_OWNCLOUD_OSX_BUNDLE AND NOT BUILD_LIBRARIES_ONLY)
         -qmldir=${CMAKE_SOURCE_DIR}/src/gui
         -always-overwrite
         -executable="$<TARGET_FILE_DIR:nextcloud>/${cmd_NAME}"
+        -libpath=${MACDEPLOYQT_LIB_DIR}
+        -libpath=${BIN_OUTPUT_DIRECTORY}
         ${NO_STRIP}
         COMMAND "${CMAKE_COMMAND}"
         -E rm -rf "${BIN_OUTPUT_DIRECTORY}/${OWNCLOUD_OSX_BUNDLE}/Contents/PlugIns/bearer"
@@ -770,7 +892,7 @@ if(NOT BUILD_OWNCLOUD_OSX_BUNDLE AND NOT WIN32)
     find_package(SharedMimeInfo)
     if(SharedMimeInfo_FOUND)
         update_xdg_mimetypes( ${CMAKE_INSTALL_DATADIR}/mime/packages )
-    endif(SharedMimeInfo_FOUND)
+    endif()
 endif()
 
 configure_file(configgui.h.in ${CMAKE_CURRENT_BINARY_DIR}/configgui.h)

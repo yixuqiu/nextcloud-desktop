@@ -1,20 +1,14 @@
 /*
- * Copyright (C) by Olivier Goffart <ogoffart@woboq.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2021 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2018 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #pragma once
 
 #include <QObject>
+#include <cstdint>
+#include "csync_exclude.h"
 #include "discoveryphase.h"
 #include "syncfileitem.h"
 #include "common/asserts.h"
@@ -108,8 +102,8 @@ public:
         QueryMode queryLocal, QueryMode queryServer, qint64 lastSyncTimestamp,
         ProcessDirectoryJob *parent);
 
-    explicit ProcessDirectoryJob(DiscoveryPhase *data, PinState basePinState, const PathTuple &path, const SyncFileItemPtr &dirItem,
-        QueryMode queryLocal, qint64 lastSyncTimestamp, QObject *parent);
+    explicit ProcessDirectoryJob(DiscoveryPhase *data, PinState basePinState, const PathTuple &path, const SyncFileItemPtr &dirItem, const SyncFileItemPtr &parentDirItem,
+                                 QueryMode queryLocal, qint64 lastSyncTimestamp, QObject *parent);
 
     void start();
     /** Start up to nbJobs, return the number of job started; emit finished() when done */
@@ -126,6 +120,7 @@ public:
     }
 
     SyncFileItemPtr _dirItem;
+    SyncFileItemPtr _dirParentItem;
 
 private:
     struct Entries
@@ -146,7 +141,7 @@ private:
 
     // return true if the file is excluded.
     // path is the full relative path of the file. localName is the base name of the local entry.
-    bool handleExcluded(const QString &path, const Entries &entries, const std::map<QString, Entries> &allEntries, bool isHidden);
+    bool handleExcluded(const QString &path, const Entries &entries, const std::map<QString, Entries> &allEntries, bool isHidden, bool isBlacklisted);
 
     bool canRemoveCaseClashConflictedCopy(const QString &path, const std::map<QString, Entries> &allEntries);
 
@@ -254,6 +249,11 @@ private:
      */
     void setupDbPinStateActions(SyncJournalFileRecord &record);
 
+    bool maybeRenameForWindowsCompatibility(const QString &absoluteFileName,
+                                            CSYNC_EXCLUDE_TYPE excludeReason);
+
+    [[nodiscard]] bool checkNewDeleteConflict(const SyncFileItemPtr &item) const;
+
     qint64 _lastSyncTimestamp = 0;
 
     QueryMode _queryServer = QueryMode::NormalQuery;
@@ -299,9 +299,18 @@ private:
     PinState _pinState = PinState::Unspecified; // The directory's pin-state, see computePinState()
     bool _isInsideEncryptedTree = false; // this directory is encrypted or is within the tree of directories with root directory encrypted
 
-signals:
+    FolderQuota _folderQuota;
+
+    [[nodiscard]] int64_t folderBytesAvailable(const SyncFileItemPtr &item, const FolderQuota::ServerEntry serverEntry) const;
+
+Q_SIGNALS:
     void finished();
     // The root etag of this directory was fetched
     void etag(const QByteArray &, const QDateTime &time);
+    void updatedRootFolderQuota(const int64_t &bytesUsed, const int64_t &bytesAvailable);
+    void rootFileIdReceived(qint64 fileId);
+
+private Q_SLOTS:
+    void setFolderQuota(const OCC::FolderQuota &folderQuota);
 };
 }

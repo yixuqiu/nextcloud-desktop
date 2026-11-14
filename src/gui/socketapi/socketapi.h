@@ -1,15 +1,7 @@
 /*
- * Copyright (C) by Dominik Schmidt <dev@dominik-schmidt.de>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2018 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2013 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #ifndef SOCKETAPI_H
@@ -18,12 +10,13 @@
 #include "common/syncfilestatus.h"
 #include "common/syncjournalfilerecord.h"
 #include "syncfileitem.h"
+#include "accountfwd.h"
 
 #include "config.h"
 
 #include <QLocalServer>
 
-class QUrl;
+#include <QUrl>
 class QLocalSocket;
 class QFileInfo;
 
@@ -36,10 +29,14 @@ class DirectEditor;
 class SocketApiJob;
 class SocketApiJobV2;
 
+namespace Mac {
+    class FinderSyncService;
+}
+
 Q_DECLARE_LOGGING_CATEGORY(lcSocketApi)
 
 #ifdef Q_OS_MACOS
-QString socketApiSocketPath();
+QUrl socketApiSocketUrl();
 #endif
 
 /**
@@ -49,6 +46,8 @@ QString socketApiSocketPath();
 class SocketApi : public QObject
 {
     Q_OBJECT
+
+    Q_PROPERTY(QString socketPath READ socketPath NOTIFY socketPathChanged FINAL)
 
     enum SharingContextItemEncryptedFlag {
         EncryptedItem,
@@ -60,21 +59,32 @@ class SocketApi : public QObject
         NonRootEncryptedFolder
     };
 
+    // Allow FinderSyncService to access FileData for XPC communication
+    friend class Mac::FinderSyncService;
+
 public:
     explicit SocketApi(QObject *parent = nullptr);
     ~SocketApi() override;
 
-public slots:
+    [[nodiscard]] QString socketPath() const;
+
+public Q_SLOTS:
     void slotUpdateFolderView(OCC::Folder *f);
     void slotUnregisterPath(const QString &alias);
     void slotRegisterPath(const QString &alias);
     void broadcastStatusPushMessage(const QString &systemPath, OCC::SyncFileStatus fileStatus);
 
-signals:
-    void shareCommandReceived(const QString &localPath);
+Q_SIGNALS:
+    void shareCommandReceived(const QString &localPath, const QString &fileId);
     void fileActivityCommandReceived(const QString &localPath);
+    void fileActionsCommandReceived(const QString &localPath);
+    void governanceLabelsCommandReceived(OCC::AccountPtr account, const QString &filePath, const QString &fileId);
+    void resolveConflictCommandReceived(const QString &conflictedPath, const QString &basePath, const QString &baseName, const QString &folderAlias);
+    void moveItemCommandReceived(const QString &localPath, const QString &defaultTarget);
 
-private slots:
+    void socketPathChanged();
+
+private Q_SLOTS:
     void slotNewConnection();
     void onLostConnection();
     void slotSocketDestroyed(QObject *obj);
@@ -98,6 +108,8 @@ private:
         // Relative path of the file locally, without any vfs suffix
         [[nodiscard]] QString folderRelativePathNoVfsSuffix() const;
 
+        [[nodiscard]] bool isFolderEmpty() const;
+
         Folder *folder = nullptr;
         // Absolute path of the file locally. (May be a virtual file)
         QString localPath;
@@ -114,6 +126,7 @@ private:
     void processLeaveShareRequest(const QString &localFile, SocketListener *listener);
     void processFileActivityRequest(const QString &localFile);
     void processEncryptRequest(const QString &localFile);
+    void processFileActionsRequest(const QString &localFile);
 
     Q_INVOKABLE void command_RETRIEVE_FOLDER_STATUS(const QString &argument, OCC::SocketListener *listener);
     Q_INVOKABLE void command_RETRIEVE_FILE_STATUS(const QString &argument, OCC::SocketListener *listener);
@@ -127,9 +140,6 @@ private:
     Q_INVOKABLE void command_ENCRYPT(const QString &localFile, OCC::SocketListener *listener);
     Q_INVOKABLE void command_SHARE(const QString &localFile, OCC::SocketListener *listener);
     Q_INVOKABLE void command_LEAVESHARE(const QString &localFile, OCC::SocketListener *listener);
-    Q_INVOKABLE void command_MANAGE_PUBLIC_LINKS(const QString &localFile, OCC::SocketListener *listener);
-    Q_INVOKABLE void command_COPY_SECUREFILEDROP_LINK(const QString &localFile, OCC::SocketListener *listener);
-    Q_INVOKABLE void command_COPY_PUBLIC_LINK(const QString &localFile, OCC::SocketListener *listener);
     Q_INVOKABLE void command_COPY_PRIVATE_LINK(const QString &localFile, OCC::SocketListener *listener);
     Q_INVOKABLE void command_EMAIL_PRIVATE_LINK(const QString &localFile, OCC::SocketListener *listener);
     Q_INVOKABLE void command_OPEN_PRIVATE_LINK(const QString &localFile, OCC::SocketListener *listener);
@@ -140,29 +150,21 @@ private:
     Q_INVOKABLE void command_MOVE_ITEM(const QString &localFile, OCC::SocketListener *listener);
     Q_INVOKABLE void command_LOCK_FILE(const QString &localFile, OCC::SocketListener *listener);
     Q_INVOKABLE void command_UNLOCK_FILE(const QString &localFile, OCC::SocketListener *listener);
+    Q_INVOKABLE void command_FILE_ACTIONS(const QString &localFile, OCC::SocketListener *listener);
+    Q_INVOKABLE void command_FILES_GOVERNANCE_LABELS(const QString &localFile, OCC::SocketListener *listener);
+    Q_INVOKABLE void command_V2_HYDRATE_FILE(const QSharedPointer<SocketApiJobV2> &job) const;
 
     void setFileLock(const QString &localFile, const SyncFileItem::LockStatus lockState) const;
 
-    // Windows Shell / Explorer pinning fallbacks, see issue: https://github.com/nextcloud/desktop/issues/1599
-#ifdef Q_OS_WIN
-    Q_INVOKABLE void command_COPYASPATH(const QString &localFile, OCC::SocketListener *listener);
-    Q_INVOKABLE void command_OPENNEWWINDOW(const QString &localFile, OCC::SocketListener *listener);
-    Q_INVOKABLE void command_OPEN(const QString &localFile, OCC::SocketListener *listener);
-#endif
-
-    // External sync
-    Q_INVOKABLE void command_V2_LIST_ACCOUNTS(const QSharedPointer<OCC::SocketApiJobV2> &job) const;
-    Q_INVOKABLE void command_V2_UPLOAD_FILES_FROM(const QSharedPointer<OCC::SocketApiJobV2> &job) const;
-
-    // Fetch the private link and call targetFun
-    void fetchPrivateLinkUrlHelper(const QString &localFile, const std::function<void(const QString &url)> &targetFun);
+    // Build the internal link and call targetFun.
+    void internalLinkUrlHelper(const QString &localFile, void (*targetFun)(const QString &url)) const;
 
     /** Sends translated/branded strings that may be useful to the integration */
     Q_INVOKABLE void command_GET_STRINGS(const QString &argument, OCC::SocketListener *listener);
 
     // Sends the context menu options relating to sharing to listener
     void sendSharingContextMenuOptions(const FileData &fileData, SocketListener *listener, SharingContextItemEncryptedFlag itemEncryptionFlag, SharingContextItemRootEncryptedFolderFlag rootE2eeFolderFlag);
-
+    void sendFileActionsContextMenuOptions(const FileData &fileData, SocketListener *listener);
     void sendEncryptFolderCommandMenuEntries(const QFileInfo &fileInfo,
                                              const FileData &fileData,
                                              const bool isE2eEncryptedPath,
@@ -178,6 +180,8 @@ private:
                                      const FileData &fileData,
                                      const SocketListener* const listener,
                                      const SyncJournalFileRecord &record) const;
+
+    void sendFilesGovernanceLabelsMenuOptions(const QFileInfo &fileInfo, const FileData &fileData, SocketListener *listener);
 
     /** Send the list of menu item. (added in version 1.1)
      * argument is a list of files for which the menu should be shown, separated by '\x1e'
@@ -207,6 +211,7 @@ private:
     QSet<QString> _registeredAliases;
     QMap<QIODevice *, QSharedPointer<SocketListener>> _listeners;
     QLocalServer _localServer;
+    QString m_socketPath;
 };
 }
 

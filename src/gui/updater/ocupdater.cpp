@@ -1,15 +1,7 @@
 /*
- * Copyright (C) by Klaas Freitag <freitag@owncloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2018 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2014 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "theme.h"
@@ -108,13 +100,16 @@ bool OCUpdater::performUpdate()
             tr("A new update for %1 is about to be installed. The updater may ask "
                "for additional privileges during the process. Your computer may reboot to complete the installation.")
                 .arg(Theme::instance()->appNameGUI()),
-            QMessageBox::Ok,
+            QMessageBox::Ok | QMessageBox::Cancel,
             nullptr);
 
         messageBoxStartInstaller->setAttribute(Qt::WA_DeleteOnClose);
 
-        connect(messageBoxStartInstaller, &QMessageBox::finished, this, [this] {
-            slotStartInstaller();
+        connect(messageBoxStartInstaller, &QMessageBox::buttonClicked, this, [this, messageBoxStartInstaller](QAbstractButton *button) {
+            auto clicked = messageBoxStartInstaller->standardButton(button);
+            if (clicked == QMessageBox::Ok) {
+                slotStartInstaller();
+            }
         });
         messageBoxStartInstaller->open();
     }
@@ -149,7 +144,7 @@ QString OCUpdater::statusString(UpdateStatusStringFormat format) const
 
     switch (downloadState()) {
     case Downloading:
-        return tr("Downloading %1. Please wait …").arg(updateVersion);
+        return tr("Downloading %1 …").arg(updateVersion);
     case DownloadComplete:
         return tr("%1 available. Restart application to start the update.").arg(updateVersion);
     case DownloadFailed: {
@@ -172,8 +167,15 @@ QString OCUpdater::statusString(UpdateStatusStringFormat format) const
         return tr("Update status is unknown: Did not check for new updates.");
     case UpToDate:
     // fall through
-    default:
-        return tr("No updates available. Your installation is at the latest version.");
+    default: {
+        ConfigFile configFile;
+        if (configFile.serverHasValidSubscription()) {
+            return tr("You are using the %1 update channel. Your installation is the latest version.")
+                .arg(configFile.currentUpdateChannel());
+        }
+
+        return tr("No updates available. Your installation is the latest version.");
+    }
     }
 }
 
@@ -186,13 +188,13 @@ void OCUpdater::setDownloadState(DownloadState state)
 {
     auto oldState = _state;
     _state = state;
-    emit downloadStateChanged();
+    Q_EMIT downloadStateChanged();
 
     // show the notification if the download is complete (on every check)
     // or once for system based updates.
     if (_state == OCUpdater::DownloadComplete || (oldState != OCUpdater::UpdateOnlyAvailableThroughSystem
                                                      && _state == OCUpdater::UpdateOnlyAvailableThroughSystem)) {
-        emit newUpdateAvailable(tr("Update Check"), statusString(), _updateInfo.web());
+        Q_EMIT newUpdateAvailable(tr("Update Check"), statusString(), _updateInfo.web());
     }
 }
 
@@ -220,8 +222,8 @@ void OCUpdater::slotStartInstaller()
             return QDir::toNativeSeparators(path);
         };
 
-        QString msiLogFile = cfg.configPath() + "msi.log";
-        QString command = QString("&{msiexec /i '%1' /L*V '%2'| Out-Null ; &'%3'}")
+        const auto msiLogFile = cfg.msiLogFilePath();
+        QString command = QStringLiteral("&{msiexec /i '%1' /L*V '%2'| Out-Null ; &'%3'}")
              .arg(preparePathForPowershell(updateFile))
              .arg(preparePathForPowershell(msiLogFile))
              .arg(preparePathForPowershell(QCoreApplication::applicationFilePath()));
@@ -302,15 +304,11 @@ void NSISUpdater::slotWriteFile()
 
 void NSISUpdater::wipeUpdateData()
 {
-    ConfigFile cfg;
-    QSettings settings(cfg.configFile(), QSettings::IniFormat);
-    QString updateFileName = settings.value(updateAvailableC).toString();
-    if (!updateFileName.isEmpty())
-        QFile::remove(updateFileName);
-    settings.remove(updateAvailableC);
-    settings.remove(updateTargetVersionC);
-    settings.remove(updateTargetVersionStringC);
-    settings.remove(autoUpdateAttemptedC);
+    // Deliberately delegated: ConfigFile::cleanUpdaterConfiguration() is also
+    // reached from Application::configVersionMigration() on the first start of
+    // a newly installed version, and both paths must remove the installer, not
+    // just the keys that point at it.
+    ConfigFile().cleanUpdaterConfiguration();
 }
 
 void NSISUpdater::slotDownloadFinished()
@@ -382,7 +380,10 @@ void NSISUpdater::versionInfoArrived(const UpdateInfo &info)
                     setDownloadState(Downloading);
                     _file.reset(new QTemporaryFile);
                     _file->setAutoRemove(true);
-                    _file->open();
+                    const auto openResult = _file->open();
+                    if (!openResult) {
+                        qCWarning(lcUpdater()) << "error while opening the temporary file";
+                    }
                 }
             }
         }
@@ -496,6 +497,13 @@ bool NSISUpdater::handleStartup()
 {
     ConfigFile cfg;
     QSettings settings(cfg.configFile(), QSettings::IniFormat);
+
+    // no need to try to install a previously fetched update when the user doesn't want automated updates
+    if (cfg.skipUpdateCheck() || !cfg.autoUpdateCheck()) {
+        qCInfo(lcUpdater) << "Skipping installation of update due to config settings";
+        return false;
+    }
+
     QString updateFileName = settings.value(updateAvailableC).toString();
     // has the previous run downloaded an update?
     if (!updateFileName.isEmpty() && QFile(updateFileName).exists()) {
@@ -516,6 +524,13 @@ bool NSISUpdater::handleStartup()
                 return false;
             }
         } else {
+            // No internal updater was executed (possible manual install).
+            // If the app has already been upgraded externally, clean up leftover msi and log files.
+            if (updateSucceeded()) {
+                qCInfo(lcUpdater) << "Detected externally installed update - cleaning leftover msi and log files.";
+                wipeUpdateData();
+                return false;
+            }
             qCInfo(lcUpdater) << "Triggering an update";
             return performUpdate();
         }
@@ -528,25 +543,6 @@ bool NSISUpdater::handleStartup()
 PassiveUpdateNotifier::PassiveUpdateNotifier(const QUrl &url)
     : OCUpdater(url)
 {
-    // remember the version of the currently running binary. On Linux it might happen that the
-    // package management updates the package while the app is running. This is detected in the
-    // updater slot: If the installed binary on the hd has a different version than the one
-    // running, the running app is restarted. That happens in folderman.
-    _runningAppVersion = Utility::versionOfInstalledBinary();
-}
-
-void PassiveUpdateNotifier::backgroundCheckForUpdate()
-{
-    if (Utility::isLinux()) {
-        // on linux, check if the installed binary is still the same version
-        // as the one that is running. If not, restart if possible.
-        const QByteArray fsVersion = Utility::versionOfInstalledBinary();
-        if (!(fsVersion.isEmpty() || _runningAppVersion.isEmpty()) && fsVersion != _runningAppVersion) {
-            emit requestRestart();
-        }
-    }
-
-    OCUpdater::backgroundCheckForUpdate();
 }
 
 void PassiveUpdateNotifier::versionInfoArrived(const UpdateInfo &info)

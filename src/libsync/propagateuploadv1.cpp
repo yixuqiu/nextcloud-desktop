@@ -1,15 +1,7 @@
 /*
- * Copyright (C) by Olivier Goffart <ogoffart@owncloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2017 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2016 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "config.h"
@@ -84,8 +76,9 @@ void PropagateUploadFileV1::doStartUpload()
 
 void PropagateUploadFileV1::startNextChunk()
 {
-    if (propagator()->_abortRequested)
+    if (propagator()->_abortRequested) {
         return;
+    }
 
     if (!_jobs.isEmpty() && _currentChunk + _startChunk >= _chunkCount - 1) {
         // Don't do parallel upload of chunk if this might be the last chunk because the server cannot handle that
@@ -102,6 +95,13 @@ void PropagateUploadFileV1::startNextChunk()
 
     QString path = _fileToUpload._file;
 
+    if (_item->_lockOwnerType == SyncFileItem::LockOwnerType::TokenLock &&
+        _item->_locked == SyncFileItem::LockStatus::LockedItem &&
+        _item->_instruction != CSYNC_INSTRUCTION_NEW &&
+        _item->_instruction != CSYNC_INSTRUCTION_TYPE_CHANGE) {
+        headers[QByteArrayLiteral("If")] = (QLatin1String("<") + propagator()->account()->davUrl().toString() + _fileToUpload._file + "> (<opaquelocktoken:" + _item->_lockToken.toUtf8() + ">)").toUtf8();
+    }
+
     qint64 chunkStart = 0;
     qint64 currentChunkSize = fileSize;
     bool isFinalChunk = false;
@@ -110,7 +110,7 @@ void PropagateUploadFileV1::startNextChunk()
         // XOR with chunk size to make sure everything goes well if chunk size changes between runs
         uint transid = _transferId ^ uint(chunkSize());
         qCInfo(lcPropagateUploadV1) << "Upload chunk" << sendingChunk << "of" << _chunkCount << "transferid(remote)=" << transid;
-        path += QString("-chunking-%1-%2-%3").arg(transid).arg(_chunkCount).arg(sendingChunk);
+        path += QStringLiteral("-chunking-%1-%2-%3").arg(transid).arg(_chunkCount).arg(sendingChunk);
 
         headers[QByteArrayLiteral("OC-Chunked")] = QByteArrayLiteral("1");
 
@@ -135,16 +135,19 @@ void PropagateUploadFileV1::startNextChunk()
     }
 
     const QString fileName = _fileToUpload._path;
+    if (FileSystem::isFileLocked(fileName, FileSystem::LockMode::SharedRead)) {
+        Q_EMIT propagator()->seenLockedFile(fileName);
+
+               // Soft error because this is likely caused by the user modifying his files while syncing
+        abortWithError(SyncFileItem::FileLocked, tr("File is locked preventing syncing it", "Generic warning message when a locked file cannot be synced"));
+        return;
+    }
+
     auto device = std::make_unique<UploadDevice>(
             fileName, chunkStart, currentChunkSize, &propagator()->_bandwidthManager);
     if (!device->open(QIODevice::ReadOnly)) {
         qCWarning(lcPropagateUploadV1) << "Could not prepare upload device: " << device->errorString();
 
-        // If the file is currently locked, we want to retry the sync
-        // when it becomes available again.
-        if (FileSystem::isFileLocked(fileName)) {
-            emit propagator()->seenLockedFile(fileName);
-        }
         // Soft error because this is likely caused by the user modifying his files while syncing
         abortWithError(SyncFileItem::SoftError, device->errorString());
         return;
@@ -158,8 +161,9 @@ void PropagateUploadFileV1::startNextChunk()
     connect(job, &PUTFileJob::uploadProgress, this, &PropagateUploadFileV1::slotUploadProgress);
     connect(job, &PUTFileJob::uploadProgress, devicePtr, &UploadDevice::slotJobUploadProgress);
     connect(job, &QObject::destroyed, this, &PropagateUploadFileCommon::slotJobDestroyed);
-    if (isFinalChunk)
+    if (isFinalChunk) {
         adjustLastJobTimeout(job, fileSize);
+    }
     job->start();
     propagator()->_activeJobList.append(this);
     _currentChunk++;
@@ -294,7 +298,8 @@ void PropagateUploadFileV1::slotPutFinished()
         SyncJournalDb::UploadInfo pi;
         pi._valid = true;
         auto currentChunk = job->_chunk;
-        foreach (auto *job, _jobs) {
+
+        for (auto *job : std::as_const(_jobs)) {
             // Take the minimum finished one
             if (auto putJob = qobject_cast<PUTFileJob *>(job)) {
                 currentChunk = qMin(currentChunk, putJob->_chunk - 1);
@@ -356,8 +361,9 @@ void PropagateUploadFileV1::slotUploadProgress(qint64 sent, qint64 total)
     }
 
     int progressChunk = _currentChunk + _startChunk - 1;
-    if (progressChunk >= _chunkCount)
+    if (progressChunk >= _chunkCount) {
         progressChunk = _currentChunk - 1;
+    }
 
     // amount is the number of bytes already sent by all the other chunks that were sent
     // not including this one.
@@ -368,7 +374,7 @@ void PropagateUploadFileV1::slotUploadProgress(qint64 sent, qint64 total)
     sender()->setProperty("byteWritten", sent);
     if (_jobs.count() > 1) {
         amount -= (_jobs.count() - 1) * chunkSize();
-        foreach (QObject *j, _jobs) {
+        for (QObject *j : std::as_const(_jobs)) {
             amount += j->property("byteWritten").toULongLong();
         }
     } else {

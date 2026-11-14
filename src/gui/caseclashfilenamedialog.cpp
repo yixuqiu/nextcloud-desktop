@@ -1,17 +1,6 @@
 /*
- * Copyright 2021 (c) Felix Weilbach <felix.weilbach@nextcloud.com>
- * Copyright 2022 (c) Matthieu Gallien <matthieu.gallien@nextcloud.com>
- * Copyright 2022 (c) Claudio Cambra <claudio.cambra@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2022 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "caseclashfilenamedialog.h"
@@ -19,6 +8,8 @@
 
 #include "account.h"
 #include "folder.h"
+#include "common/filesystembase.h"
+#include "common/utility.h"
 
 #include <QPushButton>
 #include <QDir>
@@ -174,22 +165,24 @@ QString CaseClashFilenameDialog::caseClashConflictFile(const QString &conflictFi
 {
     const auto filePathFileInfo = QFileInfo(conflictFilePath);
     const auto conflictFileName = filePathFileInfo.fileName();
+    const auto lookingForDirectory = FileSystem::isDir(filePathFileInfo.absoluteFilePath());
 
     QDirIterator it(filePathFileInfo.path(), QDirIterator::Subdirectories);
 
     while(it.hasNext()) {
         const auto filePath = it.next();
         qCDebug(lcCaseClashConflictFialog) << filePath;
-        QFileInfo fileInfo(filePath);
 
-        if(fileInfo.isDir()) {
+        if (FileSystem::isDir(filePath) && !lookingForDirectory) {
             continue;
         }
 
-        const auto currentFileName = fileInfo.fileName();
-        if (currentFileName.compare(conflictFileName, Qt::CaseInsensitive) == 0 &&
-                currentFileName != conflictFileName) {
+        const auto currentFileName = QFileInfo(filePath).fileName();
+        if (currentFileName.compare(conflictFileName, Qt::CaseInsensitive) != 0) {
+            continue;
+        }
 
+        if (currentFileName != conflictFileName) {
             return filePath;
         }
     }
@@ -210,7 +203,7 @@ void CaseClashFilenameDialog::updateFileWidgetGroup(const QString &filePath,
     const auto lastModifiedString = filePathFileInfo.lastModified().toString();
     const auto fileSizeString = locale().formattedDataSize(filePathFileInfo.size());
     const auto fileUrl = QUrl::fromLocalFile(filePath).toString();
-    const auto linkString = QStringLiteral("<a href='%1'>%2</a>").arg(fileUrl, linkText);
+    const auto linkString = QStringLiteral("<a href=\"%1\">%2</a>").arg(Utility::escape(fileUrl), linkText);
     const auto mime = QMimeDatabase().mimeTypeForFile(_filePath, QMimeDatabase::MatchExtension);
     QIcon fileTypeIcon;
 

@@ -1,16 +1,9 @@
 /*
- * Copyright (C) by Olivier Goffart <ogoffart@woboq.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2018 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2014 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
+
 #include "selectivesyncdialog.h"
 #include "account.h"
 #include "common/utility.h"
@@ -109,10 +102,8 @@ void SelectiveSyncWidget::refreshFolders()
 
     auto *job = new LsColJob(_account, _folderPath);
     auto props = QList<QByteArray>() << "resourcetype"
-                                     << "http://owncloud.org/ns:size";
-    if (_account->capabilities().clientSideEncryptionAvailable()) {
-        props << "http://nextcloud.org/ns:is-encrypted";
-    }
+                                     << "http://owncloud.org/ns:size"
+                                     << "http://nextcloud.org/ns:is-encrypted";
     job->setProperties(props);
     connect(job, &LsColJob::directoryListingSubfolders,
         this, &SelectiveSyncWidget::slotUpdateDirectories);
@@ -168,7 +159,7 @@ void SelectiveSyncWidget::recursiveInsert(QTreeWidgetItem *parent, QStringList p
             if (parent->checkState(0) == Qt::Checked
                 || parent->checkState(0) == Qt::PartiallyChecked) {
                 item->setCheckState(0, Qt::Checked);
-                foreach (const QString &str, _oldBlackList) {
+                for (const auto &str : std::as_const(_oldBlackList)) {
                     if (str == path || str == QLatin1String("/")) {
                         item->setCheckState(0, Qt::Unchecked);
                         break;
@@ -205,22 +196,24 @@ void SelectiveSyncWidget::slotUpdateDirectories(QStringList list)
     QUrl url = _account->davUrl();
     auto pathToRemove = Utility::trailingSlashPath(url.path());
     pathToRemove.append(_folderPath);
-    if (!_folderPath.isEmpty())
+    if (!_folderPath.isEmpty()) {
         pathToRemove.append('/');
+    }
 
     // Check for excludes.
     QMutableListIterator<QString> it(list);
     while (it.hasNext()) {
         it.next();
-        if (_excludedFiles.isExcluded(it.value(), pathToRemove, FolderMan::instance()->ignoreHiddenFiles()))
+        if (_excludedFiles.isExcluded(it.value(), pathToRemove, FolderMan::instance()->ignoreHiddenFiles())) {
             it.remove();
+        }
     }
 
     // Since / cannot be in the blacklist, expand it to the actual
     // list of top-level folders as soon as possible.
     if (_oldBlackList == QStringList("/")) {
         _oldBlackList.clear();
-        foreach (QString path, list) {
+        for (auto path : std::as_const(list)) {
             path.remove(pathToRemove);
             if (path.isEmpty()) {
                 continue;
@@ -251,7 +244,7 @@ void SelectiveSyncWidget::slotUpdateDirectories(QStringList list)
     }
 
     Utility::sortFilenames(list);
-    foreach (QString path, list) {
+    for (auto path : std::as_const(list)) {
         auto size = job ? job->_folderInfos[path].size : 0;
         path.remove(pathToRemove);
 
@@ -264,10 +257,12 @@ void SelectiveSyncWidget::slotUpdateDirectories(QStringList list)
         }
 
         QStringList paths = path.split('/');
-        if (paths.last().isEmpty())
+        if (paths.last().isEmpty()) {
             paths.removeLast();
-        if (paths.isEmpty())
+        }
+        if (paths.isEmpty()) {
             continue;
+        }
         if (!path.endsWith('/')) {
             path.append('/');
         }
@@ -330,8 +325,9 @@ void SelectiveSyncWidget::slotGatherEncryptedPaths(const QString &path, const QM
 void SelectiveSyncWidget::slotItemExpanded(QTreeWidgetItem *item)
 {
     QString dir = item->data(0, Qt::UserRole).toString();
-    if (dir.isEmpty())
+    if (dir.isEmpty()) {
         return;
+    }
     QString prefix;
     if (!_folderPath.isEmpty()) {
         prefix = _folderPath + QLatin1Char('/');
@@ -346,8 +342,9 @@ void SelectiveSyncWidget::slotItemExpanded(QTreeWidgetItem *item)
 
 void SelectiveSyncWidget::slotItemChanged(QTreeWidgetItem *item, int col)
 {
-    if (col != 0 || _inserting)
+    if (col != 0 || _inserting) {
         return;
+    }
 
     if (item->checkState(0) == Qt::Checked) {
         // If we are checked, check that we may need to check the parent as well if
@@ -407,8 +404,9 @@ QStringList SelectiveSyncWidget::createBlackList(QTreeWidgetItem *root) const
     if (!root) {
         root = _folderTree->topLevelItem(0);
     }
-    if (!root)
+    if (!root) {
         return QStringList();
+    }
 
     switch (root->checkState(0)) {
     case Qt::Unchecked:
@@ -427,9 +425,10 @@ QStringList SelectiveSyncWidget::createBlackList(QTreeWidgetItem *root) const
     } else {
         // We did not load from the server so we reuse the one from the old black list
         QString path = root->data(0, Qt::UserRole).toString();
-        foreach (const QString &it, _oldBlackList) {
-            if (it.startsWith(path))
+        for (const auto &it : _oldBlackList) {
+            if (it.startsWith(path)) {
                 result += it;
+            }
         }
     }
     return result;
@@ -445,9 +444,9 @@ qint64 SelectiveSyncWidget::estimatedSize(QTreeWidgetItem *root)
     if (!root) {
         root = _folderTree->topLevelItem(0);
     }
-    if (!root)
+    if (!root) {
         return -1;
-
+    }
 
     switch (root->checkState(0)) {
     case Qt::Unchecked:
@@ -462,8 +461,9 @@ qint64 SelectiveSyncWidget::estimatedSize(QTreeWidgetItem *root)
     if (root->childCount()) {
         for (int i = 0; i < root->childCount(); ++i) {
             auto r = estimatedSize(root->child(i));
-            if (r < 0)
+            if (r < 0) {
                 return r;
+            }
             result += r;
         }
     } else {
@@ -534,8 +534,8 @@ void SelectiveSyncDialog::accept()
         //The part that changed should not be read from the DB on next sync because there might be new folders
         // (the ones that are no longer in the blacklist)
         auto blackListSet = QSet<QString>{blackList.begin(), blackList.end()};
-        auto changes = (oldBlackListSet - blackListSet) + (blackListSet - oldBlackListSet);
-        foreach (const auto &it, changes) {
+        const auto changes = (oldBlackListSet - blackListSet) + (blackListSet - oldBlackListSet);
+        for (const auto &it : changes) {
             _folder->journalDb()->schedulePathForRemoteDiscovery(it);
             _folder->schedulePathForLocalDiscovery(it);
         }

@@ -1,17 +1,8 @@
 /*
- * Copyright (C) by Daniel Molkentin <danimo@owncloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2018 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2014 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
-
 
 #ifndef ACCOUNTINFO_H
 #define ACCOUNTINFO_H
@@ -82,21 +73,18 @@ public:
         ConfigurationError,
 
         /// We are currently asking the user for credentials
-        AskingCredentials
+        AskingCredentials,
+
+        /// Need to sign terms of service by going to web UI
+        NeedToSignTermsOfService,
     };
 
     /// The actual current connectivity status.
     using ConnectionStatus = ConnectionValidator::Status;
 
     /// Use the account as parent
-    explicit AccountState(AccountPtr account);
+    explicit AccountState(const AccountPtr &account);
     ~AccountState() override;
-
-    /** Creates an account state from settings and an Account object.
-     *
-     * Use from AccountManager with a prepared QSettings object only.
-     */
-    static AccountState *loadFromSettings(AccountPtr account, QSettings &settings);
 
     AccountPtr account() const;
 
@@ -129,6 +117,8 @@ public:
     void signIn();
 
     bool isConnected() const;
+
+    bool needsToSignTermsOfService() const;
 
     /** Returns a new settings object for this account, already in the right groups. */
     std::unique_ptr<QSettings> settings();
@@ -179,7 +169,7 @@ public:
 
     void systemOnlineConfigurationChanged();
 
-public slots:
+public Q_SLOTS:
     /// Triggers a ping to the server to update state and
     /// connection status and errors.
     virtual void checkConnectivity();
@@ -192,12 +182,13 @@ private:
     void increaseRetryCount();
     void resetRetryCount();
 
-signals:
+Q_SIGNALS:
     void stateChanged(OCC::AccountState::State state);
     void isConnectedChanged();
     void hasFetchedNavigationApps();
     void statusChanged();
     void desktopNotificationsAllowedChanged();
+    void termsOfServiceChanged(OCC::AccountPtr account, OCC::AccountState::State state);
 
 protected Q_SLOTS:
     void slotConnectionValidatorResult(OCC::ConnectionValidator::Status status, const QStringList &errors);
@@ -229,6 +220,7 @@ private:
     bool _waitingForNewCredentials = false;
     QDateTime _timeOfLastETagCheck;
     QPointer<ConnectionValidator> _connectionValidator;
+    TermsOfServiceChecker _termsOfServiceChecker;
     QByteArray _notificationsEtagResponseHeader;
     QByteArray _navigationAppsEtagResponseHeader;
 

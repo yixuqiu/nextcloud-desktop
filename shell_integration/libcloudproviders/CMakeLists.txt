@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2017 Nextcloud GmbH and Nextcloud contributors
+# SPDX-License-Identifier: GPL-2.0-or-later
 macro(dbus_add_activation_service _sources)
 if(${CMAKE_VERSION} VERSION_GREATER_EQUAL "3.28.0") 
     pkg_get_variable(_install_dir dbus-1 session_bus_services_dir DEFINE_VARIABLES datadir=${CMAKE_INSTALL_DATADIR})
@@ -11,7 +13,7 @@ endif()
         configure_file(${_service_file} ${_target})
         install(FILES ${_target} DESTINATION ${_install_dir} RENAME "${LIBCLOUDPROVIDERS_DBUS_BUS_NAME}.service")
     endforeach (_i ${ARGN})
-endmacro(dbus_add_activation_service _sources)
+endmacro()
 
 macro(libcloudproviders_add_config _sources)
     set(_install_dir "${CMAKE_INSTALL_PREFIX}/share/cloud-providers")
@@ -22,11 +24,11 @@ macro(libcloudproviders_add_config _sources)
         configure_file(${_service_file} ${_target})
         install(FILES ${_target} DESTINATION ${_install_dir} RENAME "${LIBCLOUDPROVIDERS_DBUS_BUS_NAME}.ini")
     endforeach (_i ${ARGN})
-endmacro(libcloudproviders_add_config _sources)
+endmacro()
 
 
 if (Qt6_FOUND)
-    find_package(Qt6 COMPONENTS COMPONENTS DBus)
+    find_package(Qt6 COMPONENTS DBus)
 else()
     set(REQUIRED_QT_VERSION "5.15.0")
     find_package(Qt5 ${REQUIRED_QT_VERSION} COMPONENTS DBus)

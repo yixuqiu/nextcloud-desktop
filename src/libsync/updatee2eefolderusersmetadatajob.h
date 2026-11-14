@@ -1,15 +1,6 @@
 /*
- * Copyright (C) 2023 by Oleksandr Zolotov <alex@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2023 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #pragma once
@@ -42,7 +33,15 @@ public:
         QString password;
     };
     
-    explicit UpdateE2eeFolderUsersMetadataJob(const AccountPtr &account, SyncJournalDb *journalDb,const QString &syncFolderRemotePath, const Operation operation, const QString &fullRemotePath = {}, const QString &folderUserId = {}, const QSslCertificate &certificate = QSslCertificate{}, QObject *parent = nullptr);
+    explicit UpdateE2eeFolderUsersMetadataJob(const AccountPtr &account,
+                                              SyncJournalDb *journalDb,
+                                              const QString &syncFolderRemotePath,
+                                              const Operation operation,
+                                              const QString &fullRemotePath = {},
+                                              const QString &folderUserId = {},
+                                              const QString &folderUserDisplayName = {},
+                                              const QSslCertificate &certificate = QSslCertificate{},
+                                              QObject *parent = nullptr);
     ~UpdateE2eeFolderUsersMetadataJob() override = default;
 
 public:
@@ -53,9 +52,9 @@ public:
     
     void unlockFolder(const EncryptedFolderMetadataHandler::UnlockFolderWithResult result);
 
-public slots:
+public Q_SLOTS:
     void start(const bool keepLock = false);
-    void setUserData(const UpdateE2eeFolderUsersMetadataJob::UserData &userData);
+    void setUserData(const OCC::UpdateE2eeFolderUsersMetadataJob::UserData &userData);
 
     void setFolderToken(const QByteArray &folderToken);
     void setMetadataKeyForEncryption(const QByteArray &metadataKey);
@@ -69,7 +68,7 @@ private:
     void startUpdate();
     void subJobsFinished(bool success);
 
-private slots:
+private Q_SLOTS:
     void slotStartE2eeMetadataJobs();
     void slotFetchMetadataJobFinished(int statusCode, const QString &message);
 
@@ -81,7 +80,7 @@ private slots:
     void slotCertificatesFetchedFromServer(const QHash<QString, OCC::NextcloudSslCertificate> &results);
     void slotCertificateFetchedFromKeychain(const QSslCertificate &certificate);
 
-private: signals:
+private: Q_SIGNALS:
     void certificateReady();
     void finished(int code, const QString &message = {});
     void folderUnlocked();
@@ -93,6 +92,7 @@ private:
     Operation _operation = Invalid;
     QString _fullRemotePath;
     QString _folderUserId;
+    QString _folderUserDisplayName;
     QSslCertificate _folderUserCertificate;
     QByteArray _folderToken;
     // needed when re-encrypting nested folders' metadata after top-level folder's metadata has changed

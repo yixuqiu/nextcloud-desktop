@@ -1,6 +1,9 @@
+# SPDX-FileCopyrightText: 2017 Nextcloud GmbH and Nextcloud contributors
+# SPDX-FileCopyrightText: 2011 ownCloud GmbH
+# SPDX-License-Identifier: GPL-2.0-or-later
 include(ECMEnableSanitizers)
 
-set(REQUIRED_QT_VERSION "5.15.0")
+set(REQUIRED_QT_VERSION "6.5.0")
 
 find_package(Qt${QT_MAJOR_VERSION}Core ${REQUIRED_QT_VERSION} CONFIG QUIET)
 set_package_properties(Qt${QT_MAJOR_VERSION}Core PROPERTIES
@@ -37,36 +40,6 @@ find_package(Qt${QT_VERSION_MAJOR}Core5Compat ${REQUIRED_QT_VERSION} CONFIG QUIE
      DESCRIPTION "Qt${QT_VERSION_MAJOR} Core5Compat component."
      TYPE REQUIRED
  )
-
-find_package(Qt${QT_MAJOR_VERSION}WebEngineWidgets ${REQUIRED_QT_VERSION} CONFIG QUIET)
-if(NOT BUILD_WITH_WEBENGINE)
-    set_package_properties(Qt${QT_MAJOR_VERSION}WebEngineWidgets PROPERTIES
-        DESCRIPTION "Qt${QT_MAJOR_VERSION} WebEngineWidgets component."
-        TYPE RECOMMENDED
-    )
-else()
-    set_package_properties(Qt${QT_MAJOR_VERSION}WebEngineWidgets PROPERTIES
-        DESCRIPTION "Qt${QT_MAJOR_VERSION} WebEngineWidgets component."
-        TYPE REQUIRED
-    )
-endif()
-
-find_package(Qt${QT_VERSION_MAJOR}WebEngineCore ${REQUIRED_QT_VERSION} CONFIG QUIET)
-if(APPLE)
-    set_package_properties(Qt${QT_VERSION_MAJOR}WebEngineCore PROPERTIES
-        DESCRIPTION "Qt${QT_VERSION_MAJOR} WebEngineCore component."
-        TYPE RECOMMENDED
-    )
-else()
-    set_package_properties(Qt${QT_VERSION_MAJOR}WebEngine PROPERTIES
-        DESCRIPTION "Qt${QT_VERSION_MAJOR} WebEngine component."
-        TYPE REQUIRED
-    )
-endif()
-
-if(Qt${QT_MAJOR_VERSION}WebEngine_FOUND AND Qt${QT_MAJOR_VERSION}WebEngineWidgets_FOUND)
-  add_compile_definitions(WITH_WEBENGINE=1)
-endif()
 
 get_target_property (QT_QMAKE_EXECUTABLE Qt::qmake IMPORTED_LOCATION)
 message(STATUS "Using Qt ${Qt${QT_MAJOR_VERSION}Core_VERSION} (${QT_QMAKE_EXECUTABLE})")
@@ -114,9 +87,6 @@ if(WIN32)
 elseif(UNIX AND NOT APPLE)
   set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-z,relro -Wl,-z,now")
   set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-z,relro -Wl,-z,now")
-elseif(APPLE)
-  set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-ld_classic")
-  set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-ld_classic")
 endif()
 
 set(QML_IMPORT_PATH ${CMAKE_SOURCE_DIR}/theme CACHE STRING "" FORCE)
@@ -128,9 +98,4 @@ if (NOT BUILD_LIBRARIES_ONLY)
     if (BUILD_GUI)
         add_subdirectory(gui)
     endif()
-
-    if (WITH_CRASHREPORTER)
-        add_subdirectory(3rdparty/libcrashreporter-qt)
-        add_subdirectory(crashreporter)
-    endif()
-endif(NOT BUILD_LIBRARIES_ONLY)
+endif()

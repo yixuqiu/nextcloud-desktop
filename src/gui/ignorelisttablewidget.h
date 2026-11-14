@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2019 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
 #pragma once
 
 #include <QWidget>
@@ -21,11 +26,11 @@ public:
     void readIgnoreFile(const QString &file, bool readOnly = false);
     int addPattern(const QString &pattern, bool deletable, bool readOnly);
 
-public slots:
+public Q_SLOTS:
     void slotRemoveAllItems();
-    void slotWriteIgnoreFile(const QString & file);
+    void slotWriteIgnoreFile(const QString &file);
 
-private slots:
+private Q_SLOTS:
     void slotItemSelectionChanged();
     void slotRemoveCurrentItem();
     void slotAddPattern();

@@ -1,30 +1,24 @@
 /*
- * Copyright (C) 2023 by Oleksandr Zolotov <alex@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2023 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
-import QtQuick 2.15
-import QtQuick.Controls 2.15
-import Style 1.0
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Controls.Basic as BasicControls
+import Style
 
-ProgressBar {
+BasicControls.ProgressBar {
     id: control
+
+    property color fillColor: Style.ncBlue
 
     background: Rectangle {
         implicitWidth: Style.progressBarWidth
         implicitHeight: Style.progressBarBackgroundHeight
         radius: Style.progressBarRadius
-        color: Style.progressBarBackgroundColor
-        border.color: Style.progressBarBackgroundBorderColor
+        color: palette.base
+        border.color: palette.dark
         border.width: Style.progressBarBackgroundBorderWidth
     }
 
@@ -36,8 +30,8 @@ ProgressBar {
             width: control.visualPosition * parent.width
             height: parent.height
             radius: Style.progressBarRadius
-            color: Style.progressBarContentColor
-            border.color: Style.progressBarContentBorderColor
+            color: control.fillColor
+            border.color: palette.dark
             border.width: Style.progressBarContentBorderWidth
         }
     }

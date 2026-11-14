@@ -1,19 +1,10 @@
 /*
- * Copyright (C) by Klaas Freitag <freitag@owncloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2016 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2012 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "theme.h"
-#include "config.h"
 #include "common/utility.h"
 #include "version.h"
 #include "configfile.h"
@@ -25,8 +16,22 @@
 #include <QStyle>
 #include <QApplication>
 #endif
+#include <QGuiApplication>
+#include <QStyleHints>
 #include <QSslSocket>
 #include <QSvgRenderer>
+#include <QPainter>
+#include <QJsonDocument>
+#include <QJsonArray>
+#include <QLoggingCategory>
+
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif
+
+#ifdef Q_OS_MACOS
+#include "theme_mac.h"
+#endif
 
 #include "nextcloudtheme.h"
 
@@ -57,9 +62,34 @@ bool shouldPreferSvg()
     return QByteArray(APPLICATION_ICON_SET).toUpper() == QByteArrayLiteral("SVG");
 }
 
+constexpr QRgb darkDestructiveActionTextColor = 0xffdad6;
+constexpr QRgb lightDestructiveActionTextColor = 0xba1a1a;
+
+#ifdef Q_OS_WIN
+constexpr auto settingsPanelBackgroundRole = QPalette::AlternateBase;
+#else
+constexpr auto settingsPanelBackgroundRole = QPalette::Light;
+#endif
+constexpr auto minimumSettingsPanelBrightnessDifference = 8;
+constexpr auto lightSettingsPanelForegroundFraction = 0.03;
+constexpr auto darkSettingsPanelForegroundFraction = 0.06;
+
+QColor destructiveActionColor(const bool darkMode, const QRgb darkColor, const QRgb lightColor)
+{
+    return QColor(darkMode ? darkColor : lightColor);
+}
+
+#ifdef Q_OS_WIN
+bool isWindows11OrGreater() {
+    return QOperatingSystemVersion::current().version() >= QOperatingSystemVersion::Windows11.version();
+}
+#endif
+
 }
 
 namespace OCC {
+
+Q_LOGGING_CATEGORY(lcTheme, "nextcloud.gui.theme", QtInfoMsg)
 
 Theme *Theme::_instance = nullptr;
 
@@ -81,31 +111,31 @@ QString Theme::statusHeaderText(SyncResult::Status status) const
 
     switch (status) {
     case SyncResult::Undefined:
-        resultStr = QCoreApplication::translate("theme", "Status undefined");
+        resultStr = QCoreApplication::translate("theme", "Sync status is unknown");
         break;
     case SyncResult::NotYetStarted:
-        resultStr = QCoreApplication::translate("theme", "Waiting to start sync");
+        resultStr = QCoreApplication::translate("theme", "Waiting to start syncing");
         break;
     case SyncResult::SyncRunning:
         resultStr = QCoreApplication::translate("theme", "Sync is running");
         break;
     case SyncResult::Success:
-        resultStr = QCoreApplication::translate("theme", "Sync Success");
+        resultStr = QCoreApplication::translate("theme", "Sync was successful");
         break;
     case SyncResult::Problem:
-        resultStr = QCoreApplication::translate("theme", "Sync Success, some files were ignored.");
+        resultStr = QCoreApplication::translate("theme", "Sync was successful but some files were ignored");
         break;
     case SyncResult::Error:
-        resultStr = QCoreApplication::translate("theme", "Sync Error");
+        resultStr = QCoreApplication::translate("theme", "Error occurred during sync");
         break;
     case SyncResult::SetupError:
-        resultStr = QCoreApplication::translate("theme", "Setup Error");
+        resultStr = QCoreApplication::translate("theme", "Error occurred during setup");
         break;
     case SyncResult::SyncPrepare:
         resultStr = QCoreApplication::translate("theme", "Preparing to sync");
         break;
     case SyncResult::SyncAbortRequested:
-        resultStr = QCoreApplication::translate("theme", "Aborting …");
+        resultStr = QCoreApplication::translate("theme", "Stopping sync");
         break;
     case SyncResult::Paused:
         resultStr = QCoreApplication::translate("theme", "Sync is paused");
@@ -116,7 +146,7 @@ QString Theme::statusHeaderText(SyncResult::Status status) const
 
 bool Theme::isBranded() const
 {
-    return appNameGUI() != QStringLiteral("Nextcloud");
+    return (appNameGUI() != QStringLiteral("Nextcloud") && NEXTCLOUD_DEV == 0);
 }
 
 QString Theme::appNameGUI() const
@@ -154,6 +184,11 @@ QUrl Theme::statusAwayImageSource() const
     return imagePathToUrl(themeImagePath("user-status-away", 16));
 }
 
+QUrl Theme::statusBusyImageSource() const
+{
+    return imagePathToUrl(themeImagePath("user-status-busy", 16));
+}
+
 QUrl Theme::statusInvisibleImageSource() const
 {
     return imagePathToUrl(themeImagePath("user-status-invisible", 64));
@@ -189,9 +224,48 @@ QUrl Theme::folderOffline() const
     return imagePathToUrl(themeImagePath("state-offline"));
 }
 
+/*
+ * neutral icons for in-app status
+ */
+
+QUrl Theme::offline() const
+{
+    return imagePathToUrl(themeImagePath("offline"));
+}
+
+QUrl Theme::ok() const
+{
+    return imagePathToUrl(themeImagePath("ok"));
+}
+
+QUrl Theme::error() const
+{
+    return imagePathToUrl(themeImagePath("error"));
+}
+
+QUrl Theme::sync() const
+{
+    return imagePathToUrl(themeImagePath("sync"));
+}
+
+QUrl Theme::pause() const
+{
+    return imagePathToUrl(themeImagePath("pause"));
+}
+
+QUrl Theme::warning() const
+{
+    return imagePathToUrl(themeImagePath("warning"));
+}
+
 QString Theme::version() const
 {
     return MIRALL_VERSION_STRING;
+}
+
+QString Theme::versionSuffix() const
+{
+    return QString::fromLatin1(MIRALL_VERSION_SUFFIX);
 }
 
 QString Theme::configFileName() const
@@ -203,6 +277,11 @@ QString Theme::configFileName() const
 
 QIcon Theme::applicationIcon() const
 {
+#ifdef Q_OS_MACOS
+    if (auto bundleIcon = loadAppIconFromBundle(); !bundleIcon.isNull()) {
+        return bundleIcon;
+    }
+#endif
     return themeIcon(QStringLiteral(APPLICATION_ICON_NAME "-icon"));
 }
 
@@ -254,19 +333,17 @@ QIcon Theme::themeIcon(const QString &name, bool sysTray) const
             if (qgetenv("DESKTOP_SESSION") == "ubuntu") {
                 QBitmap mask = px.createMaskFromColor(Qt::white, Qt::MaskOutColor);
                 QPainter p(&px);
-                p.setPen(QColor("#dfdbd2"));
+                p.setPen(QColor(0xdfdbd2));
                 p.drawPixmap(px.rect(), mask, mask.rect());
             }
             cached.addPixmap(px);
         }
     }
 
-#ifdef Q_OS_MAC
-#if QT_VERSION >= QT_VERSION_CHECK(5, 6, 0)
+#ifdef Q_OS_MACOS
     // This defines the icon as a template and enables automatic macOS color handling
     // See https://bugreports.qt.io/browse/QTBUG-42109
     cached.setIsMask(_mono && sysTray);
-#endif
 #endif
 
     return cached;
@@ -346,38 +423,54 @@ Theme::Theme()
 #if defined(Q_OS_WIN)
     // Windows does not provide a dark theme for Win32 apps so let's come up with a palette
     // Credit to https://github.com/Jorgen-VikingGod/Qt-Frameless-Window-DarkStyle
-
-    reserveDarkPalette.setColor(QPalette::Window, QColor(53, 53, 53));
     reserveDarkPalette.setColor(QPalette::WindowText, Qt::white);
-    reserveDarkPalette.setColor(QPalette::Disabled, QPalette::WindowText,
-                                QColor(127, 127, 127));
+    reserveDarkPalette.setColor(QPalette::Button, QColor(127, 127, 127));
+    reserveDarkPalette.setColor(QPalette::Light, QColor(20, 20, 20));
+    reserveDarkPalette.setColor(QPalette::Midlight, QColor(78, 78, 78));
+    reserveDarkPalette.setColor(QPalette::Dark, QColor(191, 191, 191));
+    reserveDarkPalette.setColor(QPalette::Mid, QColor(95, 95, 95));
+    reserveDarkPalette.setColor(QPalette::Text, Qt::white);
+    reserveDarkPalette.setColor(QPalette::BrightText, Qt::red);
+    reserveDarkPalette.setColor(QPalette::ButtonText, Qt::white);
     reserveDarkPalette.setColor(QPalette::Base, QColor(42, 42, 42));
+    reserveDarkPalette.setColor(QPalette::Window, QColor(53, 53, 53));
+    reserveDarkPalette.setColor(QPalette::Shadow, QColor(20, 20, 20));
+    reserveDarkPalette.setColor(QPalette::Highlight, QColor(42, 130, 218));
+    reserveDarkPalette.setColor(QPalette::HighlightedText, Qt::white);
+    reserveDarkPalette.setColor(QPalette::Link, QColor(42, 130, 218));
+    reserveDarkPalette.setColor(QPalette::LinkVisited, QColor(42, 130, 218));
     reserveDarkPalette.setColor(QPalette::AlternateBase, QColor(66, 66, 66));
+    reserveDarkPalette.setColor(QPalette::NoRole, QColor(127, 127, 127));
     reserveDarkPalette.setColor(QPalette::ToolTipBase, Qt::white);
     reserveDarkPalette.setColor(QPalette::ToolTipText, QColor(53, 53, 53));
-    reserveDarkPalette.setColor(QPalette::Text, Qt::white);
+    reserveDarkPalette.setColor(QPalette::PlaceholderText, QColor(44, 44, 44));
+    reserveDarkPalette.setColor(QPalette::Accent, QColor(127, 127, 200));
+
     reserveDarkPalette.setColor(QPalette::Disabled, QPalette::Text, QColor(127, 127, 127));
-    reserveDarkPalette.setColor(QPalette::Dark, QColor(35, 35, 35));
-    reserveDarkPalette.setColor(QPalette::Shadow, QColor(20, 20, 20));
-    reserveDarkPalette.setColor(QPalette::Button, QColor(53, 53, 53));
-    reserveDarkPalette.setColor(QPalette::ButtonText, Qt::white);
     reserveDarkPalette.setColor(QPalette::Disabled, QPalette::ButtonText,
                                 QColor(127, 127, 127));
-    reserveDarkPalette.setColor(QPalette::BrightText, Qt::red);
-    reserveDarkPalette.setColor(QPalette::Link, QColor(42, 130, 218));
-    reserveDarkPalette.setColor(QPalette::Highlight, QColor(42, 130, 218));
     reserveDarkPalette.setColor(QPalette::Disabled, QPalette::Highlight, QColor(80, 80, 80));
-    reserveDarkPalette.setColor(QPalette::HighlightedText, Qt::white);
     reserveDarkPalette.setColor(QPalette::Disabled, QPalette::HighlightedText,
                                 QColor(127, 127, 127));
+    reserveDarkPalette.setColor(QPalette::Disabled, QPalette::WindowText,
+                                QColor(127, 127, 127));
 #endif
+
+    connectToPaletteSignal();
 
 #ifdef APPLICATION_SERVER_URL_ENFORCE
     _forceOverrideServerUrl = true;
 #endif
 #ifdef APPLICATION_SERVER_URL
-    _overrideServerUrl = QString::fromLatin1(APPLICATION_SERVER_URL);
+    setOverrideServerUrl(QString::fromUtf8(APPLICATION_SERVER_URL));
 #endif
+}
+
+QString Theme::developerStringInfo() const
+{
+    const auto devString = QString(tr("%1 Desktop Client Version %2", "%1 is application name. %2 is the human version string."))
+    .arg(APPLICATION_NAME, QString::fromLatin1(MIRALL_HUMAN_VERSION_STRING));
+    return devString;
 }
 
 // If this option returns true, the client only supports one folder to sync.
@@ -402,7 +495,7 @@ QString Theme::helpUrl() const
 #ifdef APPLICATION_HELP_URL
     return QString::fromLatin1(APPLICATION_HELP_URL);
 #else
-    return QString::fromLatin1("https://docs.nextcloud.com/desktop/%1.%2/").arg(MIRALL_VERSION_MAJOR).arg(MIRALL_VERSION_MINOR);
+    return QString::fromLatin1("https://docs.nextcloud.com/server/latest/user_manual/en/desktop/index.html");
 #endif
 }
 
@@ -424,6 +517,23 @@ QString Theme::overrideServerUrl() const
 bool Theme::forceOverrideServerUrl() const
 {
     return _forceOverrideServerUrl;
+}
+
+void Theme::updateMultipleOverrideServers()
+{
+    const auto json = overrideServerUrl().toUtf8();
+    QJsonParseError jsonParseError;
+    const auto doc = QJsonDocument::fromJson(json, &jsonParseError);
+    if (jsonParseError.error != QJsonParseError::NoError) {
+        qDebug() << "Parsing array of server urls from APPLICATION_SERVER_URL failed:" << jsonParseError.error << jsonParseError.errorString();
+    }
+
+    _multipleOverrideServers = doc.isArray() && !doc.array().empty();
+}
+
+bool Theme::multipleOverrideServers() const
+{
+    return _multipleOverrideServers;
 }
 
 bool Theme::isVfsEnabled() const
@@ -454,14 +564,7 @@ bool Theme::forbidBadSSL() const
 #endif
 }
 
-bool Theme::doNotUseProxy() const
-{
-#ifdef DO_NOT_USE_PROXY
-    return true;
-#else
-    return false;
-#endif
-}
+
 
 QString Theme::forceConfigAuthType() const
 {
@@ -488,7 +591,7 @@ QString Theme::systrayIconFlavor(bool mono) const
 void Theme::setSystrayUseMonoIcons(bool mono)
 {
     _mono = mono;
-    emit systrayUseMonoIconsChanged(mono);
+    Q_EMIT systrayUseMonoIconsChanged(mono);
 }
 
 bool Theme::systrayUseMonoIcons() const
@@ -523,6 +626,37 @@ bool Theme::wizardHideFolderSizeLimitCheckbox() const
     return false;
 }
 
+bool Theme::wizardHideSelfHostButton() const
+{
+    return WIZARD_HIDE_SELF_HOST_BUTTON;
+}
+
+bool Theme::wizardHideSignupButton() const
+{
+    return WIZARD_HIDE_SIGNUP_BUTTON;
+}
+
+QUrl Theme::wizardSignupUrl() const
+{
+#ifdef APPLICATION_SIGNUP_URL
+    return signupUrlForBranding(QString::fromUtf8(APPLICATION_SIGNUP_URL));
+#else
+    return signupUrlForBranding({});
+#endif
+}
+
+QUrl Theme::signupUrlForBranding(const QString &configuredUrl)
+{
+    using namespace Qt::StringLiterals;
+
+    const auto url = QUrl(configuredUrl, QUrl::StrictMode);
+    if (configuredUrl == configuredUrl.trimmed() && url.isValid() && !url.host().isEmpty() && !url.authority().contains(u'@')
+        && (url.scheme() == u"http"_s || url.scheme() == u"https"_s)) {
+        return url;
+    }
+    return QUrl(u"https://nextcloud.com/sign-up/?flow=V3"_s);
+}
+
 QString Theme::gitSHA1() const
 {
     QString devString;
@@ -530,6 +664,8 @@ QString Theme::gitSHA1() const
     const QString githubPrefix(QLatin1String(
         "https://github.com/nextcloud/desktop/commit/"));
     const QString gitSha1(QLatin1String(GIT_SHA1));
+    //: %1 is the full Git commit URL. %2 is the abbreviated Git revision. %3 is the build date.
+    //: %4 is the build time. %5 is the Qt version. %6 is the TLS library version.
     devString = QCoreApplication::translate("nextcloudTheme::aboutInfo()",
         "<p><small>Built from Git revision <a href=\"%1\">%2</a>"
         " on %3, %4 using Qt %5, %6</small></p>")
@@ -545,13 +681,8 @@ QString Theme::gitSHA1() const
 
 QString Theme::aboutInfo() const
 {
-    // Shorten Qt's OS name: "macOS Mojave (10.14)" -> "macOS"
-    QStringList osStringList = Utility::platformName().split(QLatin1Char(' '));
-    QString osName = osStringList.at(0);
-
     //: Example text: "<p>Nextcloud Desktop Client</p>"   (%1 is the application name)
-    auto devString = QString(tr("<p>%1 Desktop Client</p><p>Version %1. For more information please click <a href='%2'>here</a>.</p>") + QStringLiteral(" (%3)"))
-            .arg(APPLICATION_NAME, QString::fromLatin1(MIRALL_STRINGIFY(MIRALL_VERSION)), helpUrl(), osName);
+    auto devString = developerStringInfo();
                       
 
     devString += tr("<p><small>Using virtual files plugin: %1</small></p>").arg(Vfs::modeToString(bestAvailableVfsMode()));
@@ -562,12 +693,7 @@ QString Theme::aboutInfo() const
 
 QString Theme::about() const
 {
-    // Shorten Qt's OS name: "macOS Mojave (10.14)" -> "macOS"
-    QStringList osStringList = Utility::platformName().split(QLatin1Char(' '));
-    QString osName = osStringList.at(0);
-
-    //: Example text: "<p>Nextcloud Desktop Client</p>"   (%1 is the application name)
-    const auto devString = tr("<p>%1 desktop client %2</p>").arg(APPLICATION_NAME, QString::fromLatin1(MIRALL_STRINGIFY(MIRALL_VERSION)));
+    const auto devString = developerStringInfo();
 
     return devString;
 }
@@ -575,9 +701,7 @@ QString Theme::about() const
 QString Theme::aboutDetails() const
 {
     QString devString;
-    devString = tr("<p>Version %1. For more information please click <a href='%2'>here</a>.</p>")
-              .arg(MIRALL_VERSION_STRING)
-              .arg(helpUrl());
+    devString = developerStringInfo();
 
     devString += tr("<p>This release was supplied by %1.</p>")
               .arg(APPLICATION_VENDOR);
@@ -648,7 +772,6 @@ QIcon Theme::syncStateIcon(SyncResult::Status status, bool sysTray) const
         break;
     case SyncResult::Error:
     case SyncResult::SetupError:
-    // FIXME: Use state-problem once we have an icon.
     default:
         statusIcon = QLatin1String("state-error");
     }
@@ -656,9 +779,42 @@ QIcon Theme::syncStateIcon(SyncResult::Status status, bool sysTray) const
     return themeIcon(statusIcon, sysTray);
 }
 
-QIcon Theme::folderDisabledIcon() const
+// Neutral icons for the classic sync folder list
+
+QIcon Theme::folderStateIcon(SyncResult::Status status) const
 {
-    return themeIcon(QLatin1String("state-pause"));
+    // FIXME: Mind the size!
+    QString statusIcon;
+
+    switch (status) {
+    case SyncResult::Undefined:
+        // this can happen if no sync connections are configured.
+        statusIcon = QLatin1String("warning");
+        break;
+    case SyncResult::NotYetStarted:
+    case SyncResult::SyncRunning:
+        statusIcon = QLatin1String("sync");
+        break;
+    case SyncResult::SyncAbortRequested:
+    case SyncResult::Paused:
+        statusIcon = QLatin1String("pause");
+        break;
+    case SyncResult::SyncPrepare:
+    case SyncResult::Success:
+        statusIcon = QLatin1String("ok");
+        break;
+    case SyncResult::Problem:
+        statusIcon = QLatin1String("warning");
+        break;
+    case SyncResult::SetupError:
+        statusIcon = QLatin1String("offline");
+        break;
+    case SyncResult::Error:
+    default:
+        statusIcon = QLatin1String("error");
+    }
+
+    return themeIcon(statusIcon, false);
 }
 
 QIcon Theme::folderOfflineIcon(bool sysTray) const
@@ -721,16 +877,18 @@ QPixmap Theme::wizardHeaderLogo() const
 QPixmap Theme::wizardHeaderBanner() const
 {
     QColor c = wizardHeaderBackgroundColor();
-    if (!c.isValid())
+    if (!c.isValid()) {
         return QPixmap();
+    }
 
     QSize size(750, 78);
     if (auto screen = qApp->primaryScreen()) {
         // Adjust the the size if there is a different DPI. (Issue #6156)
         // Indeed, this size need to be big enough to for the banner height, and the wizard's width
         auto ratio = screen->logicalDotsPerInch() / 96.;
-        if (ratio > 1.)
+        if (ratio > 1.) {
             size *= ratio;
+        }
     }
     QPixmap pix(size);
     pix.fill(wizardHeaderBackgroundColor());
@@ -740,7 +898,7 @@ QPixmap Theme::wizardHeaderBanner() const
 
 bool Theme::wizardSelectiveSyncDefaultNothing() const
 {
-    return false;
+    return ConfigFile().wizardSelectiveSyncDefaultNothing();
 }
 
 bool Theme::linkSharing() const
@@ -773,12 +931,6 @@ QString Theme::userIDHint() const
     return QString();
 }
 
-
-QString Theme::wizardUrlPostfix() const
-{
-    return QString();
-}
-
 QString Theme::wizardUrlHint() const
 {
     return QString();
@@ -801,8 +953,9 @@ QString Theme::versionSwitchOutput() const
 #endif
     stream << "Using Qt " << qVersion() << ", built against Qt " << QT_VERSION_STR << Qt::endl;
 
-    if(!QGuiApplication::platformName().isEmpty())
+    if (!QGuiApplication::platformName().isEmpty()) {
         stream << "Using Qt platform plugin '" << QGuiApplication::platformName() << "'" << Qt::endl;
+    }
 
     stream << "Using '" << QSslSocket::sslLibraryVersionString() << "'" << Qt::endl;
     stream << "Running on " << Utility::platformName() << ", " << QSysInfo::currentCpuArchitecture() << Qt::endl;
@@ -821,9 +974,27 @@ bool Theme::isDarkColor(const QColor &color)
     return getColorDarkness(color) > 0.5;
 }
 
+QColor Theme::settingsPanelColor(const QPalette &palette)
+{
+    const auto windowColor = palette.color(QPalette::Window);
+    auto panelColor = palette.color(settingsPanelBackgroundRole);
+    if (qAbs(qGray(panelColor.rgb()) - qGray(windowColor.rgb())) >= minimumSettingsPanelBrightnessDifference) {
+        return panelColor;
+    }
+
+    const auto foreground = palette.color(QPalette::WindowText);
+    const auto fraction = isDarkColor(windowColor) ? darkSettingsPanelForegroundFraction : lightSettingsPanelForegroundFraction;
+    const auto blend = [fraction](const auto background, const auto text) {
+        return background * (1.0 - fraction) + text * fraction;
+    };
+    return QColor::fromRgbF(blend(windowColor.redF(), foreground.redF()),
+                            blend(windowColor.greenF(), foreground.greenF()),
+                            blend(windowColor.blueF(), foreground.blueF()));
+}
+
 QColor Theme::getBackgroundAwareLinkColor(const QColor &backgroundColor)
 {
-    return {(isDarkColor(backgroundColor) ? QColor("#6193dc") : QGuiApplication::palette().color(QPalette::Link))};
+    return {(isDarkColor(backgroundColor) ? QColor(0x6193dc) : QGuiApplication::palette().color(QPalette::Link))};
 }
 
 QColor Theme::getBackgroundAwareLinkColor()
@@ -862,17 +1033,24 @@ QIcon Theme::createColorAwareIcon(const QString &name, const QPalette &palette)
 
     inverted.invertPixels(QImage::InvertRgb);
 
+    const auto defaultPixmap = Theme::isDarkColor(palette.color(QPalette::Base))
+        ? QPixmap::fromImage(inverted)
+        : QPixmap::fromImage(img);
+    const auto highlightedPixmap = Theme::isDarkColor(palette.color(QPalette::HighlightedText))
+        ? QPixmap::fromImage(img)
+        : QPixmap::fromImage(inverted);
+
     QIcon icon;
-    if (Theme::isDarkColor(palette.color(QPalette::Base))) {
-        icon.addPixmap(QPixmap::fromImage(inverted));
-    } else {
-        icon.addPixmap(QPixmap::fromImage(img));
-    }
-    if (Theme::isDarkColor(palette.color(QPalette::HighlightedText))) {
-        icon.addPixmap(QPixmap::fromImage(img), QIcon::Normal, QIcon::On);
-    } else {
-        icon.addPixmap(QPixmap::fromImage(inverted), QIcon::Normal, QIcon::On);
-    }
+    icon.addPixmap(defaultPixmap, QIcon::Normal, QIcon::Off);
+    icon.addPixmap(defaultPixmap, QIcon::Active, QIcon::Off);
+    icon.addPixmap(defaultPixmap, QIcon::Selected, QIcon::Off);
+
+    icon.addPixmap(highlightedPixmap, QIcon::Normal, QIcon::On);
+    icon.addPixmap(highlightedPixmap, QIcon::Active, QIcon::On);
+    icon.addPixmap(highlightedPixmap, QIcon::Selected, QIcon::On);
+
+    icon.addPixmap(defaultPixmap, QIcon::Disabled, QIcon::Off);
+    icon.addPixmap(highlightedPixmap, QIcon::Disabled, QIcon::On);
     return icon;
 }
 
@@ -904,7 +1082,7 @@ QPixmap Theme::createColorAwarePixmap(const QString &name)
 bool Theme::showVirtualFilesOption() const
 {
     const auto vfsMode = bestAvailableVfsMode();
-    return ConfigFile().showExperimentalOptions() || vfsMode == Vfs::WindowsCfApi;
+    return ConfigFile().showExperimentalOptions() || vfsMode == Vfs::WindowsCfApi || vfsMode == Vfs::OpenVFS;
 }
 
 bool Theme::enforceVirtualFilesSyncFolder() const
@@ -913,32 +1091,38 @@ bool Theme::enforceVirtualFilesSyncFolder() const
     return ENFORCE_VIRTUAL_FILES_SYNC_FOLDER && vfsMode != OCC::Vfs::Off;
 }
 
+bool Theme::disableVirtualFilesSyncFolder() const
+{
+    return DISABLE_VIRTUAL_FILES_SYNC_FOLDER;
+}
+
 QColor Theme::defaultColor()
 {
     return QColor{NEXTCLOUD_BACKGROUND_COLOR};
 }
 
-void Theme::connectToPaletteSignal()
+QColor Theme::destructiveActionTextColor() const
 {
-    if (!_paletteSignalsConnected) {
-        if (const auto ptr = qobject_cast<QGuiApplication *>(QGuiApplication::instance())) {
-            connect(ptr, &QGuiApplication::paletteChanged, this, &Theme::systemPaletteChanged);
-            connect(ptr, &QGuiApplication::paletteChanged, this, &Theme::darkModeChanged);
-            _paletteSignalsConnected = true;
-        }
+    return destructiveActionColor(darkMode(), darkDestructiveActionTextColor, lightDestructiveActionTextColor);
+}
+
+void Theme::connectToPaletteSignal() const
+{
+    if (const auto ptr = qobject_cast<QGuiApplication*>(qApp)) {
+        connect(ptr->styleHints(), &QStyleHints::colorSchemeChanged, this, &Theme::darkModeChanged, Qt::UniqueConnection);
     }
 }
 
-QVariantMap Theme::systemPalette()
+QVariantMap Theme::systemPalette() const
 {
-    connectToPaletteSignal();
-#if defined(Q_OS_WIN)
     auto systemPalette = QGuiApplication::palette();
-    if(darkMode()) {
+#if defined(Q_OS_WIN)
+    if (darkMode() && !isWindows11OrGreater()) {
         systemPalette = reserveDarkPalette;
+        qApp->setPalette(reserveDarkPalette);
     }
 #else
-    const auto systemPalette = QGuiApplication::palette();
+
 #endif
 
     return QVariantMap {
@@ -965,35 +1149,66 @@ QVariantMap Theme::systemPalette()
     };
 }
 
-bool Theme::darkMode()
+bool Theme::darkMode() const
 {
     connectToPaletteSignal();
-// Windows: Check registry for dark mode
-#if defined(Q_OS_WIN)
-    const auto darkModeSubkey = QStringLiteral("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize");
-    if (Utility::registryKeyExists(HKEY_CURRENT_USER, darkModeSubkey) &&
-        !Utility::registryGetKeyValue(HKEY_CURRENT_USER, darkModeSubkey, QStringLiteral("AppsUseLightTheme")).toBool()) {
-        return true;
-    }
+    const auto isDarkFromStyle = [] {
+        switch (qGuiApp->styleHints()->colorScheme())
+        {
+        case Qt::ColorScheme::Dark:
+            return true;
+        case Qt::ColorScheme::Light:
+            return false;
+        case Qt::ColorScheme::Unknown:
+            return Theme::isDarkColor(QGuiApplication::palette().window().color());
+        }
 
-    return false;
+        return false;
+    };
+
+#ifdef Q_OS_WIN
+    static const auto darkModeSubkey = QStringLiteral("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize");
+    if (!isWindows11OrGreater() && Utility::registryKeyExists(HKEY_CURRENT_USER, darkModeSubkey)) {
+        if (const auto keyVariant = Utility::registryGetKeyValue(HKEY_CURRENT_USER, darkModeSubkey, QStringLiteral("AppsUseLightTheme"));
+            keyVariant.isValid() && !keyVariant.toBool()) {
+            return true;
+        }
+    }
+#endif
+    return isDarkFromStyle();
+}
+
+bool Theme::displayLegacyImportDialog() const
+{
+#if defined APPLICATION_DISPLAY_LEGACY_IMPORT_DIALOG && APPLICATION_DISPLAY_LEGACY_IMPORT_DIALOG
+    return true;
 #else
-    return Theme::isDarkColor(QGuiApplication::palette().window().color());
+    return false;
 #endif
 }
 
 void Theme::setOverrideServerUrl(const QString &overrideServerUrl)
 {
-    if (_overrideServerUrl != overrideServerUrl) {
-        _overrideServerUrl = overrideServerUrl;
-        emit overrideServerUrlChanged();
+    auto validOverrideServerUrl = overrideServerUrl;
+    if (validOverrideServerUrl.startsWith("\"")) {
+        validOverrideServerUrl.remove(0, 1);
+    }
+
+    if (validOverrideServerUrl.endsWith("\"")) {
+        validOverrideServerUrl.chop(1);
+    }
+
+    if (_overrideServerUrl != validOverrideServerUrl) {
+        _overrideServerUrl = validOverrideServerUrl;
+        updateMultipleOverrideServers();
+        Q_EMIT overrideServerUrlChanged();
     }
 }
 void Theme::setForceOverrideServerUrl(bool forceOverride)
 {
     if (_forceOverrideServerUrl != forceOverride) {
         _forceOverrideServerUrl = forceOverride;
-        emit forceOverrideServerUrlChanged();
+        Q_EMIT forceOverrideServerUrlChanged();
     }
 }
 
@@ -1001,7 +1216,7 @@ void Theme::setVfsEnabled(bool enabled)
 {
     if (_isVfsEnabled != enabled) {
         _isVfsEnabled = enabled;
-        emit vfsEnabledChanged();
+        Q_EMIT vfsEnabledChanged();
     }
 }
 
@@ -1009,8 +1224,18 @@ void Theme::setStartLoginFlowAutomatically(bool startLoginFlowAuto)
 {
     if (_startLoginFlowAutomatically != startLoginFlowAuto) {
         _startLoginFlowAutomatically = startLoginFlowAuto;
-        emit startLoginFlowAutomaticallyChanged();
+        Q_EMIT startLoginFlowAutomaticallyChanged();
     }
+}
+
+void Theme::systemPaletteHasChanged()
+{
+    qCInfo(lcTheme()) << "system palette changed";
+#ifdef Q_OS_WIN
+    if (darkMode() && !isWindows11OrGreater()) {
+        qApp->setPalette(reserveDarkPalette);
+    }
+#endif
 }
 
 } // end namespace client

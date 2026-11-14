@@ -1,34 +1,60 @@
 /*
- * Copyright (C) 2023 by Claudio Cambra <claudio.cambra@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2023 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
+#pragma once
+
+#include <QHash>
 #include <QLoggingCategory>
+
+#include <chrono>
+#include <optional>
+
+#include "fileproviderxpcconnection.h"
 
 #import <Foundation/Foundation.h>
 #import <FileProvider/FileProvider.h>
 
-#import "ClientCommunicationProtocol.h"
+#import "../../../shell_integration/MacOSX/NextcloudFileProviderKit/Sources/NextcloudFileProviderXPC/include/NextcloudFileProviderXPC.h"
+#import "fileproviderservice.h"
 
 namespace OCC::Mac::FileProviderXPCUtils {
 
 NSArray<NSFileProviderManager *> *getDomainManagers();
-NSArray<NSURL *> *getDomainUrlsForManagers(NSArray<NSFileProviderManager *> *managers);
 NSArray<NSDictionary<NSFileProviderServiceName, NSFileProviderService *> *> *getFileProviderServices(NSArray<NSFileProviderManager *> *managers);
-NSArray<NSDictionary<NSFileProviderServiceName, NSFileProviderService *> *> *getFileProviderServicesAtUrls(NSArray<NSURL *> *urls);
 NSArray<NSXPCConnection *> *connectToFileProviderServices(NSArray<NSDictionary<NSFileProviderServiceName, NSFileProviderService *> *> *fpServices);
 void configureFileProviderConnection(NSXPCConnection *connection);
 NSObject *getRemoteServiceObject(NSXPCConnection *connection, Protocol *protocol);
-NSString *getExtensionAccountId(NSObject<ClientCommunicationProtocol> *clientCommService);
-QHash<QString, void*> processClientCommunicationConnections(NSArray *connections);
 
+/**
+ * @brief Get the domain identifier for and from a given client communication service.
+ */
+NSString *getFileProviderDomainIdentifier(NSObject<ClientCommunicationProtocol> *clientCommService);
+
+/**
+ * @brief Configures client communication connections and indexes them by domain identifier.
+ * @param connections XPC connections obtained from the File Provider services.
+ * @param service The app-side service exported through each connection.
+ * @return A map containing the retained remote proxy and XPC connection for each domain identifier.
+ *
+ * The opaque pointers carry ownership. The caller must invalidate the connection and transfer both
+ * pointers back to ARC when they are no longer needed.
+ */
+ClientCommunicationConnections processClientCommunicationConnections(NSArray<NSXPCConnection *> *connections, OCC::Mac::FileProviderService *service);
+
+/**
+ * @brief Ask a client communication service to delete the password of its domain and wait for the reply.
+ * @param clientCommService The remote service of one domain. With nil, no request is sent.
+ * @return The reply, or std::nullopt when there is no service or no reply arrived within the timeout.
+ */
+std::optional<bool> deletePassword(NSObject<ClientCommunicationProtocol> *clientCommService, std::chrono::nanoseconds timeout);
+
+/**
+ * @brief Ask the extension of a domain to delete the password of its domain, through a connection of its own.
+ *
+ * This does not depend on configured or still valid XPC connections, which domain removal at startup cannot rely on.
+ * @return The reply, or std::nullopt when the extension could not be reached or did not reply in time.
+ */
+std::optional<bool> deletePassword(NSFileProviderDomain *domain, OCC::Mac::FileProviderService *service);
 }

@@ -1,15 +1,7 @@
 /*
- * Copyright (C) by Olivier Goffart <ogoffart@owncloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2018 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2014 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 #pragma once
 
@@ -23,9 +15,7 @@
 #include <QBuffer>
 #include <QFile>
 
-#if !defined(Q_OS_MACOS) || __MAC_OS_X_VERSION_MIN_REQUIRED >= MAC_OS_X_VERSION_10_15
 #include <filesystem>
-#endif
 
 namespace OCC {
 class PropagateDownloadEncrypted;
@@ -55,6 +45,7 @@ class OWNCLOUDSYNC_EXPORT GETFileJob : public AbstractNetworkJob
 
     /// Will be set to true once we've seen a 2xx response header
     bool _saveBodyToFile = false;
+    qint64 _decompressionThresholdBase = 0;
 
 protected:
     qint64 _contentLength;
@@ -85,7 +76,7 @@ public:
                 _bandwidthManager->unregisterDownloadJob(this);
             }
             if (!_hasEmittedFinishedSignal) {
-                emit finishedSignal();
+                Q_EMIT finishedSignal();
             }
             _hasEmittedFinishedSignal = true;
             return true; // discard
@@ -118,13 +109,16 @@ public:
     [[nodiscard]] qint64 expectedContentLength() const { return _expectedContentLength; }
     void setExpectedContentLength(qint64 size) { _expectedContentLength = size; }
 
+    [[nodiscard]] qint64 decompressionThresholdBase() const { return _decompressionThresholdBase; }
+    void setDecompressionThresholdBase(qint64 decompressionThresholdBase) { _decompressionThresholdBase = decompressionThresholdBase; }
+
 protected:
     virtual qint64 writeToDevice(const QByteArray &data);
 
-signals:
+Q_SIGNALS:
     void finishedSignal();
     void downloadProgress(qint64, qint64);
-private slots:
+private Q_SLOTS:
     void slotReadyRead();
     void slotMetaDataChanged();
 };
@@ -220,7 +214,12 @@ public:
      */
     void setDeleteExistingFolder(bool enabled);
 
-private slots:
+protected:
+    void done(const SyncFileItem::Status status, const QString &errorString, const ErrorCategory category) override;
+
+    void makeParentFolderModifiable(const QString &fileName);
+
+private Q_SLOTS:
     /// Called when ComputeChecksum on the local file finishes,
     /// maybe the local and remote checksums are identical?
     void conflictChecksumComputed(const QByteArray &checksumType, const QByteArray &checksum);
@@ -240,10 +239,10 @@ private slots:
     /// Called when it's time to update the db metadata
     void updateMetadata(bool isConflict);
 
-    void abort(PropagatorJob::AbortType abortType) override;
+    void abort(OCC::PropagatorJob::AbortType abortType) override;
     void slotDownloadProgress(qint64, qint64);
     void slotChecksumFail(const QString &errMsg, const QByteArray &calculatedChecksumType,
-        const QByteArray &calculatedChecksum, const ValidateChecksumHeader::FailureReason reason);
+        const QByteArray &calculatedChecksum, const OCC::ValidateChecksumHeader::FailureReason reason);
     void processChecksumRecalculate(const QNetworkReply *reply, const QByteArray &originalChecksumHeader, const QString &errorMessage);
     void checksumValidateFailedAbortDownload(const QString &errMsg);
 
@@ -265,9 +264,7 @@ private:
 
     PropagateDownloadEncrypted *_downloadEncryptedHelper = nullptr;
 
-#if !defined(Q_OS_MACOS) || __MAC_OS_X_VERSION_MIN_REQUIRED >= MAC_OS_X_VERSION_10_15
     std::filesystem::path _parentPath;
-#endif
     bool _needParentFolderRestorePermissions = false;
 };
 }

@@ -1,15 +1,7 @@
 /*
- * Copyright (C) by Olivier Goffart <ogoffart@woboq.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2021 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2017 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #pragma once
@@ -55,7 +47,7 @@ public:
      * starting value and is then gradually adjusted within the
      * minChunkSize / maxChunkSize bounds.
      */
-    qint64 _initialChunkSize = 10 * 1000 * 1000; // 10MB
+    qint64 _initialChunkSize = 100LL * 1024LL * 1024LL; // 100MiB
 
     /** The target duration of chunk uploads for dynamic chunk sizing.
      *
@@ -93,7 +85,6 @@ public:
      */
     void verifyChunkSizes();
 
-
     /** A regular expression to match file names
      * If no pattern is provided the default is an invalid regular expression.
      */
@@ -109,6 +100,10 @@ public:
      */
     void setPathPattern(const QString &pattern);
 
+    /** sync had been started via nextcloudcmd command line   */
+    [[nodiscard]] bool isCmd() const;
+    void setIsCmd(const bool isCmd);
+
 private:
     /**
      * Only sync files that match the expression
@@ -118,6 +113,8 @@ private:
 
     qint64 _minChunkSize = chunkV2MinChunkSize;
     qint64 _maxChunkSize = chunkV2MaxChunkSize;
+
+    bool _isCmd = false;
 };
 
 }

@@ -1,9 +1,14 @@
+/*
+ * SPDX-FileCopyrightText: 2017 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
 #include "propagateuploadencrypted.h"
 #include "clientsideencryptionjobs.h"
 #include "networkjobs.h"
 #include "clientsideencryption.h"
 #include "foldermetadata.h"
 #include "encryptedfoldermetadatahandler.h"
+#include "filesystem.h"
 #include "account.h"
 #include <QFileInfo>
 #include <QDir>
@@ -44,7 +49,7 @@ void PropagateUploadEncrypted::start()
     if (!_propagator->_journal->getRootE2eFolderRecord(Utility::fullRemotePathToRemoteSyncRootRelative(_remoteParentAbsolutePath, _propagator->remotePath()),
                                                        &rec)
         || !rec.isValid()) {
-        emit error();
+        Q_EMIT error();
         return;
     }
     _encryptedFolderMetadataHandler.reset(new EncryptedFolderMetadataHandler(_propagator->account(),
@@ -84,13 +89,13 @@ void PropagateUploadEncrypted::slotFetchMetadataJobFinished(int statusCode, cons
     qCDebug(lcPropagateUploadEncrypted) << "Metadata Received, Preparing it for the new file." << message;
 
     if (statusCode != 200) {
-        emit error();
+        Q_EMIT error();
         return;
     }
 
     if (!_encryptedFolderMetadataHandler->folderMetadata() || !_encryptedFolderMetadataHandler->folderMetadata()->isValid()) {
-        qCDebug(lcPropagateUploadEncrypted()) << "There was an error encrypting the file, aborting upload. Invalid metadata.";
-        emit error();
+        qCWarning(lcPropagateUploadEncrypted()) << "There was an error encrypting the file, aborting upload. Invalid metadata.";
+        Q_EMIT error();
         return;
     }
 
@@ -147,8 +152,8 @@ void PropagateUploadEncrypted::slotFetchMetadataJobFinished(int statusCode, cons
         bool encryptionResult = EncryptionHelper::fileEncryption(encryptedFile.encryptionKey, encryptedFile.initializationVector, &input, &output, tag);
 
         if (!encryptionResult) {
-            qCDebug(lcPropagateUploadEncrypted()) << "There was an error encrypting the file, aborting upload.";
-            emit error();
+            qCWarning(lcPropagateUploadEncrypted()) << "There was an error encrypting the file, aborting upload.";
+            Q_EMIT error();
             return;
         }
 
@@ -158,7 +163,11 @@ void PropagateUploadEncrypted::slotFetchMetadataJobFinished(int statusCode, cons
 
     qCDebug(lcPropagateUploadEncrypted) << "Creating the metadata for the encrypted file.";
 
-    metadata->addEncryptedFile(encryptedFile);
+    if (!metadata->addEncryptedFile(encryptedFile)) {
+        qCWarning(lcPropagateUploadEncrypted()) << "There was an error encrypting the file, aborting upload. Invalid metadata file name.";
+        Q_EMIT error();
+        return;
+    }
 
     qCDebug(lcPropagateUploadEncrypted) << "Metadata created, sending to the server.";
 
@@ -169,9 +178,9 @@ void PropagateUploadEncrypted::slotFetchMetadataJobFinished(int statusCode, cons
 void PropagateUploadEncrypted::slotUploadMetadataFinished(int statusCode, const QString &message)
 {
     if (statusCode != 200) {
-        qCDebug(lcPropagateUploadEncrypted) << "Update metadata error for folder" << _encryptedFolderMetadataHandler->folderId() << "with error" << message;
+        qCWarning(lcPropagateUploadEncrypted) << "Update metadata error for folder" << _encryptedFolderMetadataHandler->folderId() << "with error" << message;
         qCDebug(lcPropagateUploadEncrypted()) << "Unlocking the folder.";
-        emit error();
+        Q_EMIT error();
         return;
     }
 
@@ -180,9 +189,11 @@ void PropagateUploadEncrypted::slotUploadMetadataFinished(int statusCode, const 
 
     qCDebug(lcPropagateUploadEncrypted) << "Encrypted Info:" << outputInfo.path() << outputInfo.fileName() << outputInfo.size();
     qCDebug(lcPropagateUploadEncrypted) << "Finalizing the upload part, now the actuall uploader will take over";
-    emit finalized(Utility::trailingSlashPath(outputInfo.path()) + outputInfo.fileName(),
+    Q_EMIT finalized(Utility::trailingSlashPath(outputInfo.path()) + outputInfo.fileName(),
                    Utility::trailingSlashPath(_remoteParentPath) + outputInfo.fileName(),
-                   outputInfo.size());
+                   FileSystem::getSize(_completeFileName));
 }
 
 } // namespace OCC
+
+#include "moc_propagateuploadencrypted.cpp"

@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2019 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
 #ifndef REMOTEWIPE_H
 #define REMOTEWIPE_H
 
@@ -15,7 +20,7 @@ class RemoteWipe : public QObject
 public:
     explicit RemoteWipe(AccountPtr account, QObject *parent = nullptr);
 
-signals:
+Q_SIGNALS:
     /**
      * Notify if wipe was requested
      */
@@ -26,32 +31,38 @@ signals:
      */
     void askUserCredentials();
 
-public slots:
+public Q_SLOTS:
     /**
      * Once receives a 401 or 403 status response it will do a fetch to
      * <server>/index.php/core/wipe/check
      */
     void startCheckJobWithAppPassword(QString);
 
-private slots:
+private Q_SLOTS:
     /**
      * If wipe is requested, delete account and data, if not continue by asking
      * the user to login again
      */
-    void checkJobSlot();
+    void slotCheckJob();
+
+    /**
+     * Local sync folders were wiped, this will now remove the account.
+     */
+    void slotWipeDone(OCC::AccountState *accountState, bool);
 
     /**
      * Once the client has wiped all the required data a POST to
      * <server>/index.php/core/wipe/success
      */
-    void notifyServerSuccessJob(OCC::AccountState *accountState, bool);
-    void notifyServerSuccessJobSlot();
+    void notifyServerSuccess();
+    void slotNotifyServerSuccessFinished();
+
 
 private:
     AccountPtr _account;
     QString _appPassword;
-    bool _accountRemoved = false;
-    QNetworkAccessManager _networkManager;
+    bool _canWipeLocalFiles = false;
+    QNetworkAccessManager *_networkManager = nullptr;
     QNetworkReply *_networkReplyCheck = nullptr;
     QNetworkReply *_networkReplySuccess = nullptr;
 

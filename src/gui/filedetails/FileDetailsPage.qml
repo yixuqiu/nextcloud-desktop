@@ -1,23 +1,14 @@
 /*
- * Copyright (C) 2022 by Claudio Cambra <claudio.cambra@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2022 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
-import QtQuick 2.15
-import QtQuick.Layouts 1.15
-import QtQuick.Controls 2.15
+import QtQuick
+import QtQuick.Layouts
+import QtQuick.Controls
 
-import com.nextcloud.desktopclient 1.0
-import Style 1.0
+import com.nextcloud.desktopclient
+import Style
 import "../tray"
 
 Page {
@@ -69,7 +60,7 @@ Page {
     bottomPadding: intendedPadding
 
     background: Rectangle {
-        color: palette.window
+        color: palette.base
         visible: root.backgroundsVisible
     }
 
@@ -130,21 +121,19 @@ Page {
                 wrapMode: Text.Wrap
             }
 
-            CustomButton {
+            Button {
                 id: closeButton
 
                 Layout.rowSpan: headerGridLayout.rows
-                Layout.preferredWidth: Style.iconButtonWidth
-                Layout.preferredHeight: width
+                Layout.preferredWidth: Style.activityListButtonWidth
+                Layout.preferredHeight: Style.activityListButtonHeight
+                Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
                 Layout.rightMargin: headerGridLayout.textRightMargin
 
                 icon.source: "image://svgimage-custom-color/clear.svg" + "/" + palette.buttonText
-                bgColor: palette.highlight
-                bgNormalOpacity: 0
-                toolTipText: qsTr("Dismiss")
-
+                icon.width: Style.activityListButtonIconSize
+                icon.height: Style.activityListButtonIconSize
                 visible: root.showCloseButton
-
                 onClicked: root.closeButtonClicked()
             }
 
@@ -155,7 +144,6 @@ Page {
                 Layout.rightMargin: headerGridLayout.textRightMargin
 
                 text: `${root.fileDetails.sizeString} · ${root.fileDetails.lastChangedString}`
-                color: palette.midlight
                 wrapMode: Text.Wrap
             }
 
@@ -166,7 +154,6 @@ Page {
                 Layout.rightMargin: headerGridLayout.textRightMargin
 
                 text: root.fileDetails.lockExpireString
-                color: palette.midlight
                 wrapMode: Text.Wrap
                 visible: headerGridLayout.showFileLockedString
             }
@@ -208,7 +195,8 @@ Page {
                         id: hoverHandler
                     }
 
-                    NCToolTip {
+                    ToolTip {
+                        popupType: Qt.platform.os === "windows" ? Popup.Item : Popup.Native
                         visible: hoverHandler.hovered
                         text: tagRepeater.fileTagModel.overflowTagsString
                     }
@@ -227,8 +215,8 @@ Page {
 
             NCTabButton {
                 svgCustomColorSource: "image://svgimage-custom-color/activity.svg"
+                //: Name of the Activity feature.
                 text: qsTr("Activity")
-                accentColor: root.accentColor
                 checked: swipeView.currentIndex === fileActivityView.swipeIndex
                 onClicked: swipeView.currentIndex = fileActivityView.swipeIndex
             }
@@ -237,8 +225,8 @@ Page {
                 width: visible ? implicitWidth : 0
                 height: visible ? implicitHeight : 0
                 svgCustomColorSource: "image://svgimage-custom-color/share.svg"
+                //: Name of the Sharing feature.
                 text: qsTr("Sharing")
-                accentColor: root.accentColor
                 checked: swipeView.currentIndex === shareViewLoader.swipeIndex
                 onClicked: swipeView.currentIndex = shareViewLoader.swipeIndex
                 visible: root.fileDetails.sharingAvailable

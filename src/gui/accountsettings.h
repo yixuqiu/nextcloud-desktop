@@ -1,15 +1,7 @@
 /*
- * Copyright (C) by Daniel Molkentin <danimo@owncloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2018 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2014 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #ifndef ACCOUNTSETTINGS_H
@@ -35,6 +27,9 @@ class QModelIndex;
 class QNetworkReply;
 class QListWidgetItem;
 class QLabel;
+class QPushButton;
+class QIcon;
+class QFrame;
 
 namespace OCC {
 
@@ -60,32 +55,48 @@ class AccountSettings : public QWidget
 public:
     explicit AccountSettings(AccountState *accountState, QWidget *parent = nullptr);
     ~AccountSettings() override;
-    [[nodiscard]] QSize sizeHint() const override { return ownCloudGui::settingsDialogSize(); }
+    [[nodiscard]] QSize sizeHint() const override
+    {
+        return {
+            ownCloudGui::settingsDialogSize().width(),
+            QWidget::sizeHint().height()
+        };
+    }
     bool canEncryptOrDecrypt(const FolderStatusModel::SubFolderInfo* folderInfo);
+    [[nodiscard]] OCC::AccountState *accountsState() const { return _accountState; }
 
-signals:
+Q_SIGNALS:
     void folderChanged();
     void openFolderAlias(const QString &);
     void showIssuesList(OCC::AccountState *account);
+    /** @brief Emitted when opening Online status is requested for @p account. */
+    void showUserStatus(OCC::AccountState *account);
+    /** @brief Emitted when opening Assistant is requested for @p account. */
+    void showAssistant(OCC::AccountState *account);
+    /** @brief Emitted when opening Search is requested for @p account. */
+    void showSearch(OCC::AccountState *account);
     void requestMnemonic();
     void removeAccountFolders(OCC::AccountState *account);
     void styleChanged();
 
-public slots:
+public Q_SLOTS:
     void slotOpenOC();
     void slotUpdateQuota(qint64 total, qint64 used);
     void slotAccountStateChanged();
     void slotStyleChanged();
-    OCC::AccountState *accountsState() { return _accountState; }
     void slotHideSelectiveSyncWidget();
 
-protected slots:
+protected Q_SLOTS:
     void slotAddFolder();
     void slotEnableCurrentFolder(bool terminate = false);
+#ifdef Q_OS_MACOS
+    void slotFixSandboxBookmark(OCC::Folder *folder);
+#endif
     void slotScheduleCurrentFolder();
     void slotScheduleCurrentFolderForceRemoteDiscovery();
     void slotForceSyncCurrentFolder();
     void slotRemoveCurrentFolder();
+    void slotRemoveAccount();
     void slotOpenCurrentFolder(); // sync folder
     void slotOpenCurrentLocalSubFolder(); // selected subfolder in sync folder
     void slotEditCurrentIgnoredFiles();
@@ -116,32 +127,44 @@ protected slots:
                                   const QVector<int> &roles);
     void slotPossiblyUnblacklistE2EeFoldersAndRestartSync();
 
-private slots:
+    void slotE2eEncryptionCertificateNeedMigration();
+
+private Q_SLOTS:
     void updateBlackListAndScheduleFolderSync(const QStringList &blackList, OCC::Folder *folder, const QStringList &foldersToRemoveFromBlacklist) const;
     void folderTerminateSyncAndUpdateBlackList(const QStringList &blackList, OCC::Folder *folder, const QStringList &foldersToRemoveFromBlacklist);
 
-private slots:
+private Q_SLOTS:
     void displayMnemonic(const QString &mnemonic);
-    void disableEncryptionForAccount(const OCC::AccountPtr &account) const;
+    void forgetEncryptionOnDeviceForAccount(const OCC::AccountPtr &account) const;
+    void migrateCertificateForAccount(const OCC::AccountPtr &account);
     void showConnectionLabel(const QString &message, QStringList errors = QStringList());
+    void showConnectionSettingsDialog();
     void openIgnoredFilesDialog(const QString & absFolderPath);
     void customizeStyle();
 
-    void initializeE2eEncryption();
-    void resetE2eEncryption();
+    void setupE2eEncryption();
+    void forgetE2eEncryption();
     void checkClientSideEncryptionState();
     void removeActionFromEncryptionMessage(const QString &actionId);
+    void setEncryptionPanelVisible(bool visible);
+    void updateSyncFoldersPanelVisibility();
+    /** @brief Refreshes account shortcut visibility from the current connection state and capabilities. */
+    void updateAccountShortcutVisibility();
+    void slotResetFileProviderDomain();
 
 private:
     bool event(QEvent *) override;
     QAction *addActionToEncryptionMessage(const QString &actionTitle, const QString &actionId);
 
-    void initializeE2eEncryptionSettingsMessage();
+    void setupE2eEncryptionMessage();
+    void refreshE2eEncryptionMessage();
+    void setEncryptionMessageIcon(const QIcon &icon);
+    void updateEncryptionMessageActions();
+    /** @brief Refreshes the account shortcut icons for the current palette. */
+    void updateAccountShortcutIcons();
 
     /// Returns the alias of the selected folder, empty string if none
     [[nodiscard]] QString selectedFolderAlias() const;
-
-    void disguiseTabWidget() const;
 
     Ui::AccountSettings *_ui;
 
@@ -154,8 +177,13 @@ private:
     QAction *_addAccountAction = nullptr;
 
     bool _menuShown = false;
+    bool _e2eEncryptionSetupDone = false;
+    QFrame *_encryptionPanel = nullptr;
 
     QHash<QString, QMetaObject::Connection> _folderConnections;
+    QHash<QAction *, QPushButton *> _encryptionMessageButtons;
+
+    QString _spaceUsageText;
 };
 
 } // namespace OCC

@@ -1,18 +1,11 @@
 /*
-* Copyright 2024 (c) Claudio Cambra <claudio.cambra@nextcloud.com>
-*
-* This program is free software; you can redistribute it and/or modify
-* it under the terms of the GNU General Public License as published by
-* the Free Software Foundation; either version 2 of the License, or
-* (at your option) any later version.
-*
-* This program is distributed in the hope that it will be useful, but
-* WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
-* or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
-* for more details.
-*/
+ * SPDX-FileCopyrightText: 2024 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
 
 #import "progressobserver.h"
+
+_Static_assert(__has_feature(objc_arc), "progressobserver requires ARC.");
 
 @implementation ProgressObserver
 
@@ -29,6 +22,16 @@
         [_progress addObserver:self forKeyPath:@"fileCompletedCount" options:NSKeyValueObservingOptionNew context:nil];
     }
     return self;
+}
+
+- (void)dealloc
+{
+    [_progress removeObserver:self forKeyPath:@"totalUnitCount"];
+    [_progress removeObserver:self forKeyPath:@"completedUnitCount"];
+    [_progress removeObserver:self forKeyPath:@"cancelled"];
+    [_progress removeObserver:self forKeyPath:@"paused"];
+    [_progress removeObserver:self forKeyPath:@"fileTotalCount"];
+    [_progress removeObserver:self forKeyPath:@"fileCompletedCount"];
 }
 
 - (void)observeValueForKeyPath:(NSString *)keyPath

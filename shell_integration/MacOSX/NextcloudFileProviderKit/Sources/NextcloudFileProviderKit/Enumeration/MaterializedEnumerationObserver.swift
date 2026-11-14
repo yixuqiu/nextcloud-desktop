@@ -1,0 +1,152 @@
+//  SPDX-FileCopyrightText: 2023 Nextcloud GmbH and Nextcloud contributors
+//  SPDX-License-Identifier: LGPL-3.0-or-later
+
+import FileProvider
+import Foundation
+
+///
+/// The custom `NSFileProviderEnumerationObserver` implementation to process materialized items enumerated by the system.
+///
+public class MaterializedEnumerationObserver: NSObject, NSFileProviderEnumerationObserver {
+    let logger: FileProviderLogger
+    public let account: Account
+    let dbManager: FilesDatabaseManager
+    private let completionHandler: (_ materialized: Set<NSFileProviderItemIdentifier>, _ evicted: Set<NSFileProviderItemIdentifier>) -> Void
+
+    ///
+    /// All materialized items enumerated by the system.
+    ///
+    private var enumeratedItems = Set<NSFileProviderItemIdentifier>()
+
+    public required init(account: Account, dbManager: FilesDatabaseManager, log: any FileProviderLogging, completionHandler: @escaping (_ materialized: Set<NSFileProviderItemIdentifier>, _ evicted: Set<NSFileProviderItemIdentifier>) -> Void) {
+        self.account = account
+        self.dbManager = dbManager
+        logger = FileProviderLogger(category: "MaterializedEnumerationObserver", log: log)
+        self.completionHandler = completionHandler
+        super.init()
+    }
+
+    public func didEnumerate(_ updatedItems: [NSFileProviderItemProtocol]) {
+        updatedItems
+            .map(\.itemIdentifier)
+            .forEach { enumeratedItems.insert($0) }
+    }
+
+    public func finishEnumerating(upTo _: NSFileProviderPage?) {
+        logger.debug("Handling enumerated materialized items.")
+        handleEnumeratedItems(enumeratedItems, account: account, dbManager: dbManager, completionHandler: completionHandler)
+    }
+
+    public func finishEnumeratingWithError(_ error: Error) {
+        logger.error("Finishing enumeration with error.", [.error: error])
+        // An incomplete enumeration is not evidence that missing items were evicted.
+        // Do not reconcile against a partial snapshot on failure.
+        completionHandler([], [])
+    }
+
+    func handleEnumeratedItems(_ identifiers: Set<NSFileProviderItemIdentifier>, account: Account, dbManager: FilesDatabaseManager, completionHandler: @escaping (_ materialized: Set<NSFileProviderItemIdentifier>, _ evicted: Set<NSFileProviderItemIdentifier>) -> Void) {
+        guard let metadataForMaterializedItems = dbManager.materialisedItemMetadatas(account: account.ncKitAccount) else {
+            // Without the stored set nothing can be told apart; evicting on a guess would drop local state.
+            logger.error("Could not read the materialized items; not reconciling this enumeration.", [.account: account.ncKitAccount])
+            completionHandler([], [])
+            return
+        }
+
+        var metadataForMaterializedItemsByIdentifier = [NSFileProviderItemIdentifier: SendableItemMetadata]()
+        var evictionCandidates = Set<NSFileProviderItemIdentifier>()
+        var evictedItems = Set<NSFileProviderItemIdentifier>()
+        var stillMaterializedItems = Set<NSFileProviderItemIdentifier>()
+        var materializationStates = [(ocId: String, downloaded: Bool?, visitedDirectory: Bool?)]()
+
+        for metadata in metadataForMaterializedItems {
+            let identifier = NSFileProviderItemIdentifier(metadata.ocId)
+            metadataForMaterializedItemsByIdentifier[identifier] = metadata
+            evictionCandidates.insert(identifier) // Assume the item related to the metadata object was evicted until proven otherwise below.
+        }
+
+        for enumeratedIdentifier in identifiers {
+            // The system now accounts for this item itself, so the download record that protected
+            // it from the reconciliation below has served its purpose.
+            dbManager.pendingMaterializations.confirmMaterialized(enumeratedIdentifier)
+
+            if evictionCandidates.contains(enumeratedIdentifier) {
+                evictionCandidates.remove(enumeratedIdentifier) // The enumerated item cannot be assumed as evicted any longer.
+            } else {
+                stillMaterializedItems.insert(enumeratedIdentifier)
+
+                var metadata: SendableItemMetadata?
+
+                switch enumeratedIdentifier {
+                    case .rootContainer:
+                        metadata = dbManager.rootItemMetadata(account: account)
+                    case .trashContainer:
+                        continue // there is no placeholder item for the trash container in the database
+                    default:
+                        metadata = dbManager.itemMetadata(enumeratedIdentifier)
+                }
+
+                guard let metadata else {
+                    logger.error("No metadata for enumerated item found.", [.item: enumeratedIdentifier])
+                    continue
+                }
+
+                logger.debug("Updating state for item to materialized.", [.item: enumeratedIdentifier, .name: metadata.fileName])
+
+                if metadata.directory {
+                    materializationStates.append((ocId: metadata.ocId, downloaded: nil, visitedDirectory: true))
+                } else {
+                    materializationStates.append((ocId: metadata.ocId, downloaded: true, visitedDirectory: nil))
+                }
+            }
+        }
+
+        // An item this process downloaded moments ago is legitimately absent from the system's
+        // materialized set until the system catches up, so it must not be reconciled as evicted
+        // yet — see `PendingMaterializationRegistry`.
+        let unconfirmed = dbManager.pendingMaterializations.awaitingConfirmation(among: evictionCandidates)
+
+        evictionCandidates.subtract(unconfirmed)
+
+        for candidateIdentifier in evictionCandidates {
+            guard let materializedMetadata = metadataForMaterializedItemsByIdentifier[candidateIdentifier] else {
+                logger.error("No metadata found for apparently evicted identifier.", [.item: candidateIdentifier])
+                continue
+            }
+
+            var metadata = materializedMetadata
+            metadata.downloaded = false
+
+            // Being absent from enumeratorForMaterializedItems only means the item has no
+            // local materialized content. For directories, visitedDirectory is our refresh
+            // subscription: if Finder has enumerated a folder before, keep watching it for
+            // remote child changes even when macOS reports it as dataless. This matters for
+            // shared mount roots, which may be omitted from materialized items after browsing.
+            if !metadata.directory {
+                metadata.visitedDirectory = false
+            }
+
+            // Persist and report only genuine state transitions, so a file already recorded as
+            // dataless is not rewritten on every pass (#10558).
+            guard metadata.downloaded != materializedMetadata.downloaded
+                || metadata.visitedDirectory != materializedMetadata.visitedDirectory
+            else {
+                continue
+            }
+
+            logger.debug("Updating item state to dataless.", [.name: metadata.fileName, .item: candidateIdentifier])
+
+            materializationStates.append((ocId: metadata.ocId, downloaded: false, visitedDirectory: metadata.directory ? nil : false))
+            evictedItems.insert(candidateIdentifier)
+        }
+
+        // One transaction for the whole pass, which runs synchronously on the framework's callback
+        // thread, writing only the `downloaded` and `visitedDirectory` flags so a row that changed
+        // since this pass read it, for example by a download finishing meanwhile, keeps its other
+        // columns.
+        dbManager.setMaterializationStates(materializationStates, durability: .relaxed)
+
+        logger.info("Reconciled materialized set.", [.materializedCount: stillMaterializedItems.count, .evictedCount: evictedItems.count, .deferredCount: unconfirmed.count])
+
+        completionHandler(stillMaterializedItems, evictedItems)
+    }
+}

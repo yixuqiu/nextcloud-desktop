@@ -1,21 +1,12 @@
 /*
- * Copyright (C) by Claudio Cambra <claudio.cambra@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2023 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include <QJsonArray>
 #include <QVariantMap>
 
-#include "gui/tray/activitylistmodel.h"
+#include "gui/activity/activitylistmodel.h"
 
 #include "libsync/account.h"
 #include "gui/accountstate.h"
@@ -87,15 +78,15 @@ public:
         return maxActivities() + 1;
     }
 
-public slots:
+public Q_SLOTS:
     void startFetchJob() override;
     void startMaxActivitiesFetchJob();
     void slotProcessReceivedActivities();
 
-signals:
+Q_SIGNALS:
     void activitiesProcessed();
 
-private slots:
+private Q_SLOTS:
     void startFetchJobWithNumActivities(const int numActivities = 50);
 
 private:

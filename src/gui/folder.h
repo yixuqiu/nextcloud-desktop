@@ -1,17 +1,7 @@
 /*
- * Copyright (C) by Duncan Mac-Vicar P. <duncan@kde.org>
- * Copyright (C) by Daniel Molkentin <danimo@owncloud.com>
- * Copyright (C) by Klaas Freitag <freitag@owncloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2017 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2014 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #ifndef MIRALL_FOLDER_H
@@ -23,6 +13,7 @@
 #include "networkjobs.h"
 #include "syncoptions.h"
 
+#include <QByteArray>
 #include <QObject>
 #include <QStringList>
 #include <QUuid>
@@ -43,6 +34,12 @@ class AccountState;
 class SyncRunFileLog;
 class FolderWatcher;
 class LocalDiscoveryTracker;
+
+#ifdef Q_OS_MACOS
+namespace Utility {
+class MacSandboxPersistentAccess;
+}
+#endif
 
 /**
  * @brief The FolderDefinition class
@@ -71,6 +68,11 @@ public:
     /// Whether the vfs mode shall silently be updated if possible
     bool upgradeVfsMode = false;
 
+    /// macOS app-scoped security-scoped bookmark data for the local sync folder.
+    /// Persisted to settings so that a sandboxed app can regain access to the
+    /// user-selected folder after an app restart.
+    QByteArray securityScopedBookmarkData;
+
     /// Saves the folder definition into the current settings group.
     static void save(QSettings &settings, const FolderDefinition &folder);
 
@@ -85,8 +87,9 @@ public:
      *            (version remains readable by 2.5.1)
      * Version 3: introduction of new windows vfs mode in 2.6.0
      * Version 5: available in oC client 4.0.0 and 4.2.0
+     * Version 13: available in oC client 5.2.0 and 5.3.1
      */
-    static int maxSettingsVersion() { return 5; }
+    static int maxSettingsVersion() { return 13; }
 
     /// Ensure / as separator and trailing /.
     static QString prepareLocalPath(const QString &path);
@@ -128,23 +131,30 @@ public:
     /**
      * The account the folder is configured on.
      */
-    AccountState *accountState() const { return _accountState.data(); }
+    [[nodiscard]] AccountState *accountState() const { return _accountState.data(); }
 
     /**
      * alias or nickname
      */
-    QString alias() const;
-    QString shortGuiRemotePathOrAppName() const; // since 2.0 we don't want to show aliases anymore, show the path instead
+    [[nodiscard]] QString alias() const;
+    [[nodiscard]] QString shortGuiRemotePathOrAppName() const; // since 2.0 we don't want to show aliases anymore, show the path instead
+
+    /**
+     * Returns the display name used for the sidebar entry.
+     * If more than one account is configured the returned string includes
+     * account details as well.
+     */
+    [[nodiscard]] QString sidebarDisplayName() const;
 
     /**
      * short local path to display on the GUI  (native separators)
      */
-    QString shortGuiLocalPath() const;
+    [[nodiscard]] QString shortGuiLocalPath() const;
 
     /**
      * canonical local folder path, always ends with /
      */
-    QString path() const;
+    [[nodiscard]] QString path() const;
 
     /**
      * cleaned canonical folder path, like path() but never ends with a /
@@ -152,39 +162,47 @@ public:
      * Wrapper for QDir::cleanPath(path()) except for "Z:/",
      * where it returns "Z:" instead of "Z:/".
      */
-    QString cleanPath() const;
+    [[nodiscard]] QString cleanPath() const;
 
     /**
      * remote folder path, usually without trailing /, exception "/"
      */
-    QString remotePath() const;
+    [[nodiscard]] QString remotePath() const;
 
     /**
      * remote folder path, always with a trailing /
      */
-    QString remotePathTrailingSlash() const;
+    [[nodiscard]] QString remotePathTrailingSlash() const;
+
+    /**
+     * Returns the path name of a file in the local canonical path.
+     *
+     * Similar to `QDir(path()).filePath(...)`, except file names like "Z:test"
+     * are treated as relative paths on Windows.
+     */
+    [[nodiscard]] QString filePath(const QString& fileName);
 
     [[nodiscard]] QString fulllRemotePathToPathInSyncJournalDb(const QString &fullRemotePath) const;
 
     void setNavigationPaneClsid(const QUuid &clsid) { _definition.navigationPaneClsid = clsid; }
-    QUuid navigationPaneClsid() const { return _definition.navigationPaneClsid; }
+    [[nodiscard]] QUuid navigationPaneClsid() const { return _definition.navigationPaneClsid; }
 
     /**
      * remote folder path with server url
      */
-    QUrl remoteUrl() const;
+    [[nodiscard]] QUrl remoteUrl() const;
 
     /**
      * switch sync on or off
      */
     void setSyncPaused(bool);
 
-    bool syncPaused() const;
+    [[nodiscard]] bool syncPaused() const;
 
     /**
      * Returns true when the folder may sync.
      */
-    bool canSync() const;
+    [[nodiscard]] bool canSync() const;
 
     void prepareToSync();
 
@@ -192,15 +210,15 @@ public:
      * True if the folder is busy and can't initiate
      * a synchronization
      */
-    virtual bool isBusy() const;
+    [[nodiscard]] virtual bool isBusy() const;
 
     /** True if the folder is currently synchronizing */
-    bool isSyncRunning() const;
+    [[nodiscard]] bool isSyncRunning() const;
 
     /**
      * return the last sync result with error message and status
      */
-    SyncResult syncResult() const;
+    [[nodiscard]] SyncResult syncResult() const;
 
     /**
       * This is called when the sync folder definition is removed. Do cleanups here.
@@ -219,19 +237,19 @@ public:
       * Ignore syncing of hidden files or not. This is defined in the
       * folder definition
       */
-    bool ignoreHiddenFiles();
+    [[nodiscard]] bool ignoreHiddenFiles();
     void setIgnoreHiddenFiles(bool ignore);
 
     // Used by the Socket API
-    SyncJournalDb *journalDb() { return &_journal; }
-    SyncEngine &syncEngine() { return *_engine; }
-    Vfs &vfs() { return *_vfs; }
+    [[nodiscard]] SyncJournalDb *journalDb() const { return &_journal; }
+    [[nodiscard]] SyncEngine &syncEngine() const { return *_engine; }
+    [[nodiscard]] Vfs &vfs() const { return *_vfs; }
 
-    RequestEtagJob *etagJob() { return _requestEtagJob; }
-    std::chrono::milliseconds msecSinceLastSync() const { return std::chrono::milliseconds(_timeSinceLastSyncDone.elapsed()); }
-    std::chrono::milliseconds msecLastSyncDuration() const { return _lastSyncDuration; }
-    int consecutiveFollowUpSyncs() const { return _consecutiveFollowUpSyncs; }
-    int consecutiveFailingSyncs() const { return _consecutiveFailingSyncs; }
+    [[nodiscard]] RequestEtagJob *etagJob() const { return _requestEtagJob; }
+    [[nodiscard]] std::chrono::milliseconds msecSinceLastSync() const { return std::chrono::milliseconds(_timeSinceLastSyncDone.elapsed()); }
+    [[nodiscard]] std::chrono::milliseconds msecLastSyncDuration() const { return _lastSyncDuration; }
+    [[nodiscard]] int consecutiveFollowUpSyncs() const { return _consecutiveFollowUpSyncs; }
+    [[nodiscard]] int consecutiveFailingSyncs() const { return _consecutiveFailingSyncs; }
 
     /// Saves the folder data in the account's settings.
     void saveToSettings() const;
@@ -244,12 +262,12 @@ public:
     /**
       * Returns whether a file inside this folder should be excluded.
       */
-    bool isFileExcludedAbsolute(const QString &fullPath) const;
+    [[nodiscard]] bool isFileExcludedAbsolute(const QString &fullPath) const;
 
     /**
       * Returns whether a file inside this folder should be excluded.
       */
-    bool isFileExcludedRelative(const QString &relativePath) const;
+    [[nodiscard]] bool isFileExcludedRelative(const QString &relativePath) const;
 
     /** Calls schedules this folder on the FolderMan after a short delay.
       *
@@ -258,7 +276,7 @@ public:
       * modified too recently, and this delay ensures the modification is
       * far enough in the past.
       *
-      * The delay doesn't reset with subsequent calls.
+      * The delay resets with subsequent calls.
       */
     void scheduleThisFolderSoon();
 
@@ -282,19 +300,62 @@ public:
      */
     void registerFolderWatcher();
 
+#ifdef Q_OS_MACOS
+    /**
+     * @brief Takes ownership of a persistent security-scoped access handle.
+     *
+     * On macOS, sandboxed apps must resolve bookmark data and call
+     * startAccessingSecurityScopedResource() before accessing the local sync
+     * folder. This method stores the resulting handle so that access is
+     * maintained for the folder's entire lifetime.
+     *
+     * @param access The persistent access handle
+     */
+    void setSecurityScopedAccess(std::unique_ptr<Utility::MacSandboxPersistentAccess> access);
+
+    /**
+     * Whether the folder holds security-scoped access to its local path.
+     */
+    [[nodiscard]] bool hasSecurityScopedAccess() const;
+
+    /**
+     * Whether this folder needs the user to re-approve access for macOS sandbox.
+     *
+     * True when the folder was loaded from settings without valid security-scoped
+     * bookmark data (e.g. after upgrading from a pre-sandbox client version).
+     * The folder is paused until the user re-selects it via a file dialog.
+     */
+    [[nodiscard]] bool needsSandboxBookmark() const;
+
+    /**
+     * Mark this folder as needing (or no longer needing) sandbox bookmark approval.
+     * When set to true, the folder is paused to prevent sync errors.
+     */
+    void setNeedsSandboxBookmark(bool needs);
+
+    /**
+     * Apply a newly acquired security-scoped bookmark after user re-approval.
+     *
+     * Stores the bookmark data, sets the persistent access handle, clears the
+     * needsSandboxBookmark flag, un-pauses the folder, and persists to settings.
+     */
+    void applySandboxBookmark(const QByteArray &bookmarkData,
+                              std::unique_ptr<Utility::MacSandboxPersistentAccess> access);
+#endif
+
     /** virtual files of some kind are enabled
      *
      * This is independent of whether new files will be virtual. It's possible to have this enabled
      * and never have an automatic virtual file. But when it's on, the shell context menu will allow
      * users to make existing files virtual.
      */
-    bool virtualFilesEnabled() const;
+    [[nodiscard]] bool virtualFilesEnabled() const;
     void setVirtualFilesEnabled(bool enabled);
 
     void setRootPinState(PinState state);
 
     /** Whether user desires a switch that couldn't be executed yet, see member */
-    bool isVfsOnOffSwitchPending() const { return _vfsOnOffPending; }
+    [[nodiscard]] bool isVfsOnOffSwitchPending() const { return _vfsOnOffPending; }
     void setVfsOnOffSwitchPending(bool pending) { _vfsOnOffPending = pending; }
 
     void switchToVirtualFiles();
@@ -302,15 +363,18 @@ public:
     void processSwitchedToVirtualFiles();
 
     /** Whether this folder should show selective sync ui */
-    bool supportsSelectiveSync() const;
+    [[nodiscard]] bool supportsSelectiveSync() const;
 
-    QString fileFromLocalPath(const QString &localPath) const;
+    [[nodiscard]] QString fileFromLocalPath(const QString &localPath) const;
 
     void whitelistPath(const QString &path);
     void blacklistPath(const QString &path);
     void migrateBlackListPath(const QString &legacyPath);
 
-signals:
+    /// whether the current folder contains any of the passed fileIds
+    [[nodiscard]] bool hasFileIds(const QList<qint64>& fileIds) const;
+
+Q_SIGNALS:
     void syncStateChange();
     void syncStarted();
     void syncFinished(const OCC::SyncResult &result);
@@ -325,7 +389,7 @@ signals:
      */
     void watchedFileChangedExternally(const QString &path);
 
-public slots:
+public Q_SLOTS:
 
     /**
        * terminate the current sync run
@@ -343,9 +407,9 @@ public slots:
     void startSync(const QStringList &pathList = QStringList());
 
     int slotDiscardDownloadProgress();
-    int downloadInfoCount();
+    [[nodiscard]] int downloadInfoCount();
     int slotWipeErrorBlacklist();
-    int errorBlackListEntryCount();
+    [[nodiscard]] int errorBlackListEntryCount();
 
     /**
        * Triggered by the folder watcher when a file/dir in this folder
@@ -401,7 +465,7 @@ public slots:
      */
     void removeLocalE2eFiles();
 
-private slots:
+private Q_SLOTS:
     void slotSyncStarted();
     void slotSyncFinished(bool);
     /*
@@ -422,6 +486,8 @@ private slots:
     void slotRunEtagJob();
     void etagRetrieved(const QByteArray &, const QDateTime &tp);
     void etagRetrievedFromSyncEngine(const QByteArray &, const QDateTime &time);
+
+    void rootFileIdReceivedFromSyncEngine(qint64 fileId);
 
     void slotEmitFinishedDelayed();
 
@@ -470,9 +536,9 @@ private:
 
     void showSyncResultPopup();
 
-    void checkLocalPath();
+    bool checkLocalPath();
 
-    SyncOptions initializeSyncOptions() const;
+    [[nodiscard]] SyncOptions initializeSyncOptions() const;
 
     enum LogStatus {
         LogStatusRemove,
@@ -497,6 +563,16 @@ private:
 
     static void postExistingFolderNowBigNotification(const QString &folderPath);
     void postExistingFolderNowBigActivity(const QString &folderPath) const;
+
+#ifdef Q_OS_MACOS
+    /**
+     * macOS sandbox: Holds the persistent security-scoped resource access
+     * for the local sync folder path. Must outlive all filesystem access to
+     * the folder. Declared first so it is destroyed last (C++ destroys
+     * members in reverse declaration order).
+     */
+    std::unique_ptr<Utility::MacSandboxPersistentAccess> _securityScopedAccess;
+#endif
 
     AccountStatePtr _accountState;
     FolderDefinition _definition;
@@ -558,6 +634,13 @@ private:
 
     bool _silenceErrorsUntilNextSync = false;
 
+#ifdef Q_OS_MACOS
+    /** Whether this folder needs the user to re-approve access for macOS sandbox.
+     * Runtime-only flag, not persisted to settings.
+     */
+    bool _needsSandboxBookmark = false;
+#endif
+
     /**
      * Watches this folder's local directory for changes.
      *
@@ -579,6 +662,9 @@ private:
     QMetaObject::Connection _officeFileLockReleaseUnlockFailure;
     QMetaObject::Connection _fileLockSuccess;
     QMetaObject::Connection _fileLockFailure;
+
+    /// The remote file ID of the current folder.
+    qint64 _rootFileId = 0;
 };
 }
 

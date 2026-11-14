@@ -1,15 +1,7 @@
 /*
- * Copyright (C) by Roeland Jago Douma <roeland@famdouma.nl>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2019 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2015 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "ocssharejob.h"
@@ -33,7 +25,7 @@ void OcsShareJob::getShares(const QString &path, const QMap<QString, QString> &p
     setVerb("GET");
 
     addParam(QString::fromLatin1("path"), path);
-    addParam(QString::fromLatin1("reshares"), QString("true"));
+    addParam(QString::fromLatin1("reshares"), QStringLiteral("true"));
 
     for (auto it = std::cbegin(params); it != std::cend(params); ++it) {
         addParam(it.key(), it.value());
@@ -85,28 +77,6 @@ void OcsShareJob::setNote(const QString &shareId, const QString &note)
 
     addParam(QString::fromLatin1("note"), note);
     _value = note;
-
-    start();
-}
-
-void OcsShareJob::setPublicUpload(const QString &shareId, bool publicUpload)
-{
-    appendPath(shareId);
-    setVerb("PUT");
-
-    const QString value = QString::fromLatin1(publicUpload ? "true" : "false");
-    addParam(QString::fromLatin1("publicUpload"), value);
-    _value = publicUpload;
-
-    start();
-}
-
-void OcsShareJob::setName(const QString &shareId, const QString &name)
-{
-    appendPath(shareId);
-    setVerb("PUT");
-    addParam(QString::fromLatin1("name"), name);
-    _value = name;
 
     start();
 }
@@ -207,16 +177,19 @@ void OcsShareJob::createShare(const QString &path,
     start();
 }
 
-void OcsShareJob::getSharedWithMe()
+void OcsShareJob::getSharedWithMe(const QString &path)
 {
     setVerb("GET");
-    addParam(QLatin1String("shared_with_me"), QLatin1String("true"));
+
+    addParam(QString::fromLatin1("path"), path);
+    addParam(QString::fromLatin1("shared_with_me"), QStringLiteral("true"));
+
     start();
 }
 
 void OcsShareJob::jobDone(QJsonDocument reply)
 {
-    emit shareJobFinished(reply, _value);
+    Q_EMIT shareJobFinished(reply, _value);
 }
 
 QString const OcsShareJob::_pathForSharesRequest = QStringLiteral("ocs/v2.php/apps/files_sharing/api/v1/shares");

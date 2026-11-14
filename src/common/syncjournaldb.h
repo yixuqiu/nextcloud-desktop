@@ -1,19 +1,7 @@
 /*
- * Copyright (C) by Klaas Freitag <freitag@owncloud.com>
- *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * SPDX-FileCopyrightText: 2020 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2014 ownCloud GmbH
+ * SPDX-License-Identifier: LGPL-2.1-or-later
  */
 
 #ifndef SYNCJOURNALDB_H
@@ -32,6 +20,8 @@
 #include "common/syncjournalfilerecord.h"
 #include "common/result.h"
 #include "common/pinstate.h"
+
+class TestSyncJournalDB;
 
 namespace OCC {
 class SyncJournalFileRecord;
@@ -85,6 +75,8 @@ public:
         const QByteArray &contentChecksumType);
     [[nodiscard]] bool updateLocalMetadata(const QString &filename,
         qint64 modtime, qint64 size, quint64 inode, const SyncJournalFileLockInfo &lockInfo);
+
+    [[nodiscard]] bool hasFileIds(const QList<qint64> &fileIds);
 
     /// Return value for hasHydratedOrDehydratedFiles()
     struct HasHydratedDehydrated
@@ -182,6 +174,10 @@ public:
     QStringList getSelectiveSyncList(SelectiveSyncListType type, bool *ok);
     /* Write the selective sync list (remove all other entries of that list */
     void setSelectiveSyncList(SelectiveSyncListType type, const QStringList &list);
+
+    QStringList addSelectiveSyncLists(SelectiveSyncListType type, const QString &path);
+
+    QStringList removeSelectiveSyncLists(SelectiveSyncListType type, const QString &path);
 
     /**
      * Make sure that on the next sync fileName and its parents are discovered from the server.
@@ -304,6 +300,11 @@ public:
      */
     struct OCSYNC_EXPORT PinStateInterface
     {
+        explicit PinStateInterface(SyncJournalDb *db)
+            : _db(db)
+        {
+        }
+
         PinStateInterface(const PinStateInterface &) = delete;
         PinStateInterface(PinStateInterface &&) = delete;
 
@@ -393,7 +394,7 @@ public:
      */
     int autotestFailCounter = -1;
 
-public slots:
+public Q_SLOTS:
     /// Store a new or updated record in the database
     void setCaseConflictRecord(const OCC::ConflictRecord &record);
 
@@ -402,9 +403,12 @@ public slots:
 
 private:
     int getFileRecordCount();
+    [[nodiscard]] bool ensureCorrectEncryptionStatus();
     [[nodiscard]] bool updateDatabaseStructure();
     [[nodiscard]] bool updateMetadataTableStructure();
     [[nodiscard]] bool updateErrorBlacklistTableStructure();
+    [[nodiscard]] bool removeColumn(const QString &columnName);
+    [[nodiscard]] bool hasDefaultValue(const QString &columnName);
     bool sqlFail(const QString &log, const SqlQuery &query);
     void commitInternal(const QString &context, bool startTrans = true);
     void startTransaction();
@@ -450,6 +454,8 @@ private:
     QByteArray _journalMode;
 
     PreparedSqlQueryManager _queryManager;
+
+    friend class ::TestSyncJournalDB;
 };
 
 bool OCSYNC_EXPORT

@@ -1,16 +1,7 @@
 #pragma once
 /*
- * Copyright (C) 2024 by Oleksandr Zolotov <alex@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2023 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "accountfwd.h"
@@ -45,19 +36,11 @@ class OWNCLOUDSYNC_EXPORT FolderMetadata : public QObject
         QByteArray encryptedMetadataKey;
     };
 
-    // based on api-version and "version" key in metadata JSON
-    enum MetadataVersion {
-        VersionUndefined = -1,
-        Version1,
-        Version1_2,
-        Version2_0,
-    };
-
     struct UserWithFileDropEntryAccess {
         QString userId;
         QByteArray decryptedFiledropKey;
 
-        inline bool isValid() const
+        [[nodiscard]] inline bool isValid() const
         {
             return !userId.isEmpty() && !decryptedFiledropKey.isEmpty();
         }
@@ -69,8 +52,8 @@ class OWNCLOUDSYNC_EXPORT FolderMetadata : public QObject
         QByteArray nonce;
         QByteArray authenticationTag;
         UserWithFileDropEntryAccess currentUser;
-        
-        inline bool isValid() const
+
+        [[nodiscard]] inline bool isValid() const
         {
             return !cipherText.isEmpty() && !nonce.isEmpty() && !authenticationTag.isEmpty();
         }
@@ -84,7 +67,7 @@ public:
         QByteArray authenticationTag;
         QString encryptedFilename;
         QString originalFilename;
-        bool isDirectory() const;
+        [[nodiscard]] bool isDirectory() const;
     };
 
     enum class FolderType {
@@ -93,7 +76,23 @@ public:
     };
     Q_ENUM(FolderType)
 
-    FolderMetadata(AccountPtr account, const QString &remoteFolderRoot, FolderType folderType = FolderType::Nested);
+    enum class CertificateType {
+        SoftwareNextcloudCertificate,
+        HardwareCertificate,
+    };
+    Q_ENUM(CertificateType)
+
+    // based on api-version and "version" key in metadata JSON
+    enum class MetadataVersion {
+        VersionUndefined = -1,
+        Version1,
+        Version1_2,
+        Version2_0,
+        Version2_1,
+    };
+    Q_ENUM(MetadataVersion)
+
+    FolderMetadata(AccountPtr account, const QString &remoteFolderRoot, FolderType folderType);
     /*
     * construct metadata based on RootEncryptedFolderInfo
     * as per E2EE V2, the encryption key and users that have access are only stored in root(top-level) encrypted folder's metadata
@@ -104,6 +103,7 @@ public:
                    const QByteArray &metadata,
                    const RootEncryptedFolderInfo &rootEncryptedFolderInfo,
                    const QByteArray &signature,
+                   FolderType folderType,
                    QObject *parent = nullptr);
 
     [[nodiscard]] QVector<EncryptedFile> files() const;
@@ -119,12 +119,14 @@ public:
     [[nodiscard]] bool moveFromFileDropToFiles();
 
     // adds a user to have access to this folder (always generates new metadata key)
-    [[nodiscard]] bool addUser(const QString &userId, const QSslCertificate &certificate);
+    [[nodiscard]] bool addUser(const QString &userId, const QSslCertificate &certificate, CertificateType certificateType);
     // removes a user from this folder and removes and generates a new metadata key
     [[nodiscard]] bool removeUser(const QString &userId);
 
-    [[nodiscard]] const QByteArray metadataKeyForEncryption() const;
-    [[nodiscard]] const QByteArray metadataKeyForDecryption() const;
+    [[nodiscard]] bool updateUser(const QString &userId, const QSslCertificate &certificate, CertificateType certificateType);
+
+    [[nodiscard]] const QByteArray binaryMetadataKeyForEncryption() const;
+    [[nodiscard]] const QByteArray binaryMetadataKeyForDecryption() const;
     [[nodiscard]] const QSet<QByteArray> &keyChecksums() const;
 
     [[nodiscard]] QByteArray encryptedMetadata();
@@ -140,9 +142,13 @@ public:
 
     [[nodiscard]] QByteArray initialMetadata() const;
 
-public slots:
-    void addEncryptedFile(const EncryptedFile &f);
-    void removeEncryptedFile(const EncryptedFile &f);
+    void updateSelfCertificate();
+
+    static MetadataVersion setupVersionFromExistingMetadata(const QByteArray &metadata);
+
+public Q_SLOTS:
+    [[nodiscard]] bool addEncryptedFile(const OCC::FolderMetadata::EncryptedFile &f);
+    [[nodiscard]] bool removeEncryptedFile(const QString &originalFilename);
     void removeAllEncryptedFiles();
 
 private:
@@ -150,8 +156,10 @@ private:
 
     [[nodiscard]] bool verifyMetadataKey(const QByteArray &metadataKey) const;
 
-    [[nodiscard]] QByteArray encryptDataWithPublicKey(const QByteArray &data, const QSslKey &key) const;
-    [[nodiscard]] QByteArray decryptDataWithPrivateKey(const QByteArray &data) const;
+    [[nodiscard]] QByteArray encryptDataWithPublicKey(const QByteArray &data,
+                                                      const CertificateInformation &shareUserCertificate) const;
+    [[nodiscard]] QByteArray decryptDataWithPrivateKey(const QByteArray &data,
+                                                       const QByteArray &base64CertificateSha256Hash) const;
 
     [[nodiscard]] QByteArray encryptJsonObject(const QByteArray& obj, const QByteArray pass) const;
     [[nodiscard]] QByteArray decryptJsonObject(const QByteArray& encryptedJsonBlob, const QByteArray& pass) const;
@@ -164,6 +172,8 @@ private:
 
     [[nodiscard]] QJsonObject convertFileToJsonObject(const EncryptedFile *encryptedFile) const;
 
+    [[nodiscard]] static bool isOriginalFilenameValid(const QString &originalFilename);
+
     [[nodiscard]] MetadataVersion latestSupportedMetadataVersion() const;
 
     [[nodiscard]] bool parseFileDropPart(const QJsonDocument &doc);
@@ -175,15 +185,13 @@ private:
 
     static QByteArray prepareMetadataForSignature(const QJsonDocument &fullMetadata);
 
-private slots:
+private Q_SLOTS:
     void initMetadata();
     void initEmptyMetadata();
     void initEmptyMetadataLegacy();
 
     void setupExistingMetadata(const QByteArray &metadata);
     void setupExistingMetadataLegacy(const QByteArray &metadata);
-
-    void setupVersionFromExistingMetadata(const QByteArray &metadata);
 
     void startFetchRootE2eeFolderMetadata(const QString &path);
     void slotRootE2eeFolderMetadataReceived(int statusCode, const QString &message);
@@ -193,7 +201,7 @@ private slots:
 
     void emitSetupComplete();
 
-signals:
+Q_SIGNALS:
     void setupComplete();
 
 private:
@@ -203,9 +211,9 @@ private:
 
     bool _isRootEncryptedFolder = false;
     // always contains the last generated metadata key (non-encrypted and non-base64)
-    QByteArray _metadataKeyForEncryption;
+    QByteArray _binaryMetadataKeyForEncryption;
     // used for storing initial metadataKey to use for decryption, especially in nested folders when changing the metadataKey and re-encrypting nested dirs
-    QByteArray _metadataKeyForDecryption;
+    QByteArray _binaryMetadataKeyForDecryption;
     QByteArray _metadataNonce;
     // metadatakey checksums for validation during setting up from existing metadata
     QSet<QByteArray> _keyChecksums;

@@ -55,8 +55,9 @@ UpdateInfo UpdateInfo::parseElement(const QDomElement &element, bool *ok)
 {
     if (element.tagName() != QLatin1String("owncloudclient")) {
         qCCritical(lcUpdater) << "Expected 'owncloudclient', got '" << element.tagName() << "'.";
-        if (ok)
+        if (ok) {
             *ok = false;
+        }
         return UpdateInfo();
     }
 
@@ -76,24 +77,23 @@ UpdateInfo UpdateInfo::parseElement(const QDomElement &element, bool *ok)
         }
     }
 
-
-    if (ok)
+    if (ok) {
         *ok = true;
+    }
     return result;
 }
 
 UpdateInfo UpdateInfo::parseString(const QString &xml, bool *ok)
 {
-    QString errorMsg;
-    int errorLine = 0, errorCol = 0;
     QDomDocument doc;
-    if (!doc.setContent(xml, false, &errorMsg, &errorLine, &errorCol)) {
-        qCWarning(lcUpdater).noquote().nospace() << errorMsg << " at " << errorLine << "," << errorCol
-                                << "\n" <<  xml.split("\n").value(errorLine-1) << "\n"
-                                << QString(" ").repeated(errorCol - 1) << "^\n"
+    if (const auto result = doc.setContent(xml); !result) {
+        qCWarning(lcUpdater).noquote().nospace() << result.errorMessage << " at " << result.errorLine << "," << result.errorColumn
+                                << "\n" <<  xml.split("\n").value(result.errorLine - 1) << "\n"
+                                << QStringLiteral(" ").repeated(result.errorColumn - 1) << "^\n"
                                 << "->" << xml << "<-";
-        if (ok)
+        if (ok) {
             *ok = false;
+        }
         return UpdateInfo();
     }
 

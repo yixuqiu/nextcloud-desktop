@@ -1,22 +1,10 @@
 /*
  * libcsync -- a library to sync a directory with another
  *
- * Copyright (c) 2008-2013 by Andreas Schneider <asn@cryptomilk.org>
- * Copyright (c) 2013- by Klaas Freitag <freitag@owncloud.com>
- *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * SPDX-FileCopyrightText: 2020 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2013 ownCloud GmbH
+ * SPDX-FileCopyrightText: 2008-2013 by Andreas Schneider <asn@cryptomilk.org>
+ * SPDX-License-Identifier: LGPL-2.1-or-later
  */
 
 #include <errno.h>
@@ -66,6 +54,8 @@ csync_vio_handle_t *csync_vio_local_opendir(const QString &name) {
         int retcode = GetLastError();
         if( retcode == ERROR_FILE_NOT_FOUND ) {
             errno = ENOENT;
+        } else if (retcode == ERROR_DIRECTORY) {
+            errno = ENOTDIR;
         } else {
             errno = EACCES;
         }
@@ -113,7 +103,9 @@ static time_t FileTimeToUnixTime(FILETIME *filetime, DWORD *remainder)
     }
 }
 
-std::unique_ptr<csync_file_stat_t> csync_vio_local_readdir(csync_vio_handle_t *handle, OCC::Vfs *vfs) {
+std::unique_ptr<csync_file_stat_t> csync_vio_local_readdir(csync_vio_handle_t *handle, OCC::Vfs *vfs, bool checkPermissionsValidity)
+{
+  Q_UNUSED(checkPermissionsValidity)
 
   std::unique_ptr<csync_file_stat_t> file_stat;
   DWORD rem = 0;
@@ -137,14 +129,16 @@ std::unique_ptr<csync_file_stat_t> csync_vio_local_readdir(csync_vio_handle_t *h
   }
   auto path = QString::fromWCharArray(handle->ffd.cFileName);
   if (path == QLatin1String(".") || path == QLatin1String(".."))
-      return csync_vio_local_readdir(handle, vfs);
+      return csync_vio_local_readdir(handle, vfs, true);
 
   file_stat = std::make_unique<csync_file_stat_t>();
   file_stat->path = path.toUtf8();
 
+    const auto isDirectory = handle->ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY;
+
     if (vfs && vfs->statTypeVirtualFile(file_stat.get(), &handle->ffd)) {
       // all good
-    } else if (handle->ffd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
+    } else if ((handle->ffd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) && !isDirectory) {
       // Detect symlinks, and treat junctions as symlinks too.
       if (handle->ffd.dwReserved0 == IO_REPARSE_TAG_SYMLINK
           || handle->ffd.dwReserved0 == IO_REPARSE_TAG_MOUNT_POINT) {
@@ -155,12 +149,17 @@ std::unique_ptr<csync_file_stat_t> csync_vio_local_readdir(csync_vio_handle_t *h
           // but will also treat them normally for now.
           file_stat->type = ItemTypeFile;
       }
-    } else if (handle->ffd.dwFileAttributes & FILE_ATTRIBUTE_DEVICE
-                || handle->ffd.dwFileAttributes & FILE_ATTRIBUTE_OFFLINE
-              ) {
+    } else if ((handle->ffd.dwFileAttributes & FILE_ATTRIBUTE_DEVICE || handle->ffd.dwFileAttributes & FILE_ATTRIBUTE_OFFLINE) &&
+               !isDirectory) {
         file_stat->type = ItemTypeSkip;
-    } else if (handle->ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-        file_stat->type = ItemTypeDirectory;
+    } else if (isDirectory) {
+        if (handle->ffd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT &&
+            (handle->ffd.dwReserved0 == IO_REPARSE_TAG_SYMLINK ||
+             handle->ffd.dwReserved0 == IO_REPARSE_TAG_MOUNT_POINT)) {
+            file_stat->type = ItemTypeSoftLink;
+        } else {
+            file_stat->type = ItemTypeDirectory;
+        }
     } else {
         file_stat->type = ItemTypeFile;
     }
@@ -175,7 +174,7 @@ std::unique_ptr<csync_file_stat_t> csync_vio_local_readdir(csync_vio_handle_t *h
 
     // path always ends with '\', by construction
 
-    if (csync_vio_local_stat(handle->path + QString::fromWCharArray(handle->ffd.cFileName), file_stat.get()) < 0) {
+    if (csync_vio_local_stat(handle->path + QString::fromWCharArray(handle->ffd.cFileName), file_stat.get(), true) < 0) {
         // Will get excluded by _csync_detect_update.
         file_stat->type = ItemTypeSkip;
     }
@@ -183,8 +182,10 @@ std::unique_ptr<csync_file_stat_t> csync_vio_local_readdir(csync_vio_handle_t *h
     return file_stat;
 }
 
-int csync_vio_local_stat(const QString &uri, csync_file_stat_t *buf)
+int csync_vio_local_stat(const QString &uri, csync_file_stat_t *buf, bool checkPermissionsValidity)
 {
+    Q_UNUSED(checkPermissionsValidity)
+
     /* Almost nothing to do since csync_vio_local_readdir already filled up most of the information
        But we still need to fetch the file ID.
        Possible optimisation: only fetch the file id when we need it (for new files)

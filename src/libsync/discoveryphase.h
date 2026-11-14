@@ -1,18 +1,17 @@
 /*
- * Copyright (C) by Olivier Goffart <ogoffart@woboq.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2020 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2014 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #pragma once
+
+#include "networkjobs.h"
+#include "syncoptions.h"
+#include "syncfileitem.h"
+
+#include "common/folderquota.h"
+#include "common/remoteinfo.h"
 
 #include <QObject>
 #include <QElapsedTimer>
@@ -20,13 +19,10 @@
 #include <csync.h>
 #include <QMap>
 #include <QSet>
-#include "networkjobs.h"
 #include <QMutex>
 #include <QWaitCondition>
 #include <QRunnable>
 #include <deque>
-#include "syncoptions.h"
-#include "syncfileitem.h"
 
 class ExcludedFiles;
 
@@ -53,41 +49,6 @@ class ProcessDirectoryJob;
 
 enum class ErrorCategory;
 
-/**
- * Represent all the meta-data about a file in the server
- */
-struct RemoteInfo
-{
-    /** FileName of the entry (this does not contains any directory or path, just the plain name */
-    QString name;
-    QByteArray etag;
-    QByteArray fileId;
-    QByteArray checksumHeader;
-    OCC::RemotePermissions remotePerm;
-    time_t modtime = 0;
-    int64_t size = 0;
-    int64_t sizeOfFolder = 0;
-    bool isDirectory = false;
-    bool _isE2eEncrypted = false;
-    bool isFileDropDetected = false;
-    QString e2eMangledName;
-    bool sharedByMe = false;
-
-    [[nodiscard]] bool isValid() const { return !name.isNull(); }
-    [[nodiscard]] bool isE2eEncrypted() const { return _isE2eEncrypted; }
-
-    QString directDownloadUrl;
-    QString directDownloadCookies;
-
-    SyncFileItem::LockStatus locked = SyncFileItem::LockStatus::UnlockedItem;
-    QString lockOwnerDisplayName;
-    QString lockOwnerId;
-    SyncFileItem::LockOwnerType lockOwnerType = SyncFileItem::LockOwnerType::UserLock;
-    QString lockEditorApp;
-    qint64 lockTime = 0;
-    qint64 lockTimeout = 0;
-};
-
 struct LocalInfo
 {
     /** FileName of the entry (this does not contains any directory or path, just the plain name */
@@ -102,6 +63,8 @@ struct LocalInfo
     bool isVirtualFile = false;
     bool isSymLink = false;
     bool isMetadataMissing = false;
+    bool isPermissionsInvalid = false;
+    bool isLocked = false;
     [[nodiscard]] bool isValid() const { return !name.isNull(); }
 };
 
@@ -110,25 +73,30 @@ struct LocalInfo
  *
  * @ingroup libsync
  */
-class DiscoverySingleLocalDirectoryJob : public QObject, public QRunnable
+class OWNCLOUDSYNC_EXPORT DiscoverySingleLocalDirectoryJob : public QObject, public QRunnable
 {
     Q_OBJECT
 public:
-    explicit DiscoverySingleLocalDirectoryJob(const AccountPtr &account, const QString &localPath, OCC::Vfs *vfs, QObject *parent = nullptr);
+    explicit DiscoverySingleLocalDirectoryJob(const AccountPtr &account,
+                                              const QString &localPath,
+                                              OCC::Vfs *vfs,
+                                              bool fileSystemReliablePermissions,
+                                              QObject *parent = nullptr);
 
     void run() override;
-signals:
+Q_SIGNALS:
     void finished(QVector<OCC::LocalInfo> result);
     void finishedFatalError(QString errorString);
     void finishedNonFatalError(QString errorString);
 
     void itemDiscovered(OCC::SyncFileItemPtr item);
     void childIgnored(bool b);
-private slots:
+private Q_SLOTS:
 private:
     QString _localPath;
     AccountPtr _account;
     OCC::Vfs* _vfs;
+    bool _fileSystemReliablePermissions = false;
 public:
 };
 
@@ -150,6 +118,7 @@ public:
         sounds to me like it would be much more efficient to just have the e2ee parent folder that we are
         inside*/
                                          const QSet<QString> &topLevelE2eeFolderPaths,
+                                         SyncFileItem::EncryptionStatus parentEncryptionStatus,
                                          QObject *parent = nullptr);
     // Specify that this is the root and we need to check the data-fingerprint
     void setIsRootPath() { _isRootPath = true; }
@@ -161,15 +130,17 @@ public:
     [[nodiscard]] SyncFileItem::EncryptionStatus requiredEncryptionStatus() const;
 
     // This is not actually a network job, it is just a job
-signals:
+Q_SIGNALS:
     void firstDirectoryPermissions(OCC::RemotePermissions);
     void etag(const QByteArray &, const QDateTime &time);
     void finished(const OCC::HttpResult<QVector<OCC::RemoteInfo>> &result);
+    void setfolderQuota(const OCC::FolderQuota &folderQuota);
+    void firstDirectoryFileId(qint64 fileId);
 
-private slots:
+private Q_SLOTS:
     void directoryListingIteratedSlot(const QString &, const QMap<QString, QString> &);
     void lsJobFinishedWithoutErrorSlot();
-    void lsJobFinishedWithErrorSlot(QNetworkReply *);
+    void lsJobFinishedWithErrorSlot(QNetworkReply *reply);
     void fetchE2eMetadata();
     void metadataReceived(const QJsonDocument &json, int statusCode);
     void metadataError(const QByteArray& fileId, int httpReturnCode);
@@ -197,6 +168,7 @@ private:
     bool _isFileDropDetected = false;
     bool _encryptedMetadataNeedUpdate = false;
     SyncFileItem::EncryptionStatus _encryptionStatusRequired = SyncFileItem::EncryptionStatus::NotEncrypted;
+
     // If set, the discovery will finish with an error
     int64_t _size = 0;
     QString _error;
@@ -207,6 +179,7 @@ private:
 
 public:
     QByteArray _dataFingerprint;
+    FolderQuota _folderQuota;
 };
 
 class DiscoveryPhase : public QObject
@@ -306,6 +279,13 @@ class DiscoveryPhase : public QObject
 
     void enqueueDirectoryToDelete(const QString &path, ProcessDirectoryJob* const directoryJob);
 
+    [[nodiscard]] bool recursiveCheckForDeletedParents(const QString &itemPath) const;
+
+    /// contains files/folder names that are requested to be deleted permanently
+    QSet<QString> _permanentDeletionRequests;
+
+    void markPermanentDeletionRequests();
+
 public:
     // input
     QString _localDir; // absolute path to the local directory. ends with '/'
@@ -317,6 +297,7 @@ public:
     QRegularExpression _invalidFilenameRx; // FIXME: maybe move in ExcludedFiles
     QStringList _serverBlacklistedFiles; // The blacklist from the capabilities
     QStringList _leadingAndTrailingSpacesFilesAllowed;
+    bool _shouldEnforceWindowsFileNameCompatibility = false;
     bool _ignoreHiddenFiles = false;
     std::function<bool(const QString &)> _shouldDiscoverLocaly;
 
@@ -333,14 +314,21 @@ public:
 
     QStringList _listExclusiveFiles;
 
+    QStringList _forbiddenFilenames;
+    QStringList _forbiddenBasenames;
+    QStringList _forbiddenExtensions;
+    QStringList _forbiddenChars;
+
     bool _hasUploadErrorItems = false;
     bool _hasDownloadRemovedItems = false;
 
     bool _noCaseConflictRecordsInDb = false;
 
+    bool _fileSystemReliablePermissions = false;
+
     QSet<QString> _topLevelE2eeFolderPaths;
 
-signals:
+Q_SIGNALS:
     void fatalError(const QString &errorString, const OCC::ErrorCategory errorCategory);
     void itemDiscovered(const OCC::SyncFileItemPtr &item);
     void finished();
@@ -355,9 +343,13 @@ signals:
       */
     void silentlyExcluded(const QString &folderPath);
 
-    void addErrorToGui(const SyncFileItem::Status status, const QString &errorMessage, const QString &subject, const OCC::ErrorCategory category);
+    void addErrorToGui(const OCC::SyncFileItem::Status status, const QString &errorMessage, const QString &subject, const OCC::ErrorCategory category);
 
-private slots:
+    void remnantReadOnlyFolderDiscovered(const OCC::SyncFileItemPtr &item);
+
+    /** Emitted when propagation would have problems with a locked file. */
+    void seenLockedFile(const QString &fileName);
+private Q_SLOTS:
     void slotItemDiscovered(const OCC::SyncFileItemPtr &item);
 };
 

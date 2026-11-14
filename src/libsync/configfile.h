@@ -1,27 +1,24 @@
 /*
- * Copyright (C) by Klaas Freitag <freitag@owncloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2018 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2014 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #ifndef CONFIGFILE_H
 #define CONFIGFILE_H
 
 #include "owncloudlib.h"
-#include <memory>
-#include <QSharedPointer>
+#include "settings/managedproxysettings.h"
+#include "settings/managedsettings.h"
 #include <QSettings>
+#include <QSharedPointer>
 #include <QString>
 #include <QVariant>
+#include <QVersionNumber>
 #include <chrono>
+#include <functional>
+#include <memory>
+#include <vector>
 
 class QWidget;
 class QHeaderView;
@@ -30,6 +27,16 @@ class ExcludedFiles;
 namespace OCC {
 
 class AbstractCredentials;
+class Migration;
+struct ServerManagedSettings;
+
+// Managed virtual files mode resolved from the settings hierarchy.
+// enabled is true when the resolved mode is a virtual files mode, false when it is off.
+struct ManagedVirtualFilesMode {
+    bool isManaged = false;
+    bool isEnforced = false;
+    bool enabled = false;
+};
 
 /**
  * @brief The ConfigFile class
@@ -48,6 +55,11 @@ public:
     [[nodiscard]] QString excludeFile(Scope scope) const;
     static QString excludeFileFromSystem(); // doesn't access config dir
 
+    void cleanUpdaterConfiguration();
+    /** Path of the log msiexec writes while installing an update (Windows). */
+    [[nodiscard]] QString msiLogFilePath() const;
+    void cleanupGlobalNetworkConfiguration();
+
     /**
      * Creates a backup of any given fileName in the config folder
      *
@@ -61,24 +73,24 @@ public:
 
     bool exists();
 
-    [[nodiscard]] QString defaultConnection() const;
+    [[nodiscard]] QString defaultConnectionGroupName() const;
 
     // the certs do not depend on a connection.
     QByteArray caCerts();
     void setCaCerts(const QByteArray &);
 
-    bool passwordStorageAllowed(const QString &connection = QString());
+    bool passwordStorageAllowed(const QString &name = QString());
 
     /* Server poll interval in milliseconds */
-    [[nodiscard]] std::chrono::milliseconds remotePollInterval(const QString &connection = QString()) const;
+    [[nodiscard]] std::chrono::milliseconds remotePollInterval(const QString &connectionGroup = QString()) const;
     /* Set poll interval. Value in milliseconds has to be larger than 5000 */
-    void setRemotePollInterval(std::chrono::milliseconds interval, const QString &connection = QString());
+    void setRemotePollInterval(std::chrono::milliseconds interval, const QString &connectionGroupName = QString());
 
     /* Interval to check for new notifications */
-    [[nodiscard]] std::chrono::milliseconds notificationRefreshInterval(const QString &connection = QString()) const;
+    [[nodiscard]] std::chrono::milliseconds notificationRefreshInterval(const QString &connectionGroup = QString()) const;
 
     /* Force sync interval, in milliseconds */
-    [[nodiscard]] std::chrono::milliseconds forceSyncInterval(const QString &connection = QString()) const;
+    [[nodiscard]] std::chrono::milliseconds forceSyncInterval(const QString &connectionGroup = QString()) const;
 
     /**
      * Interval in milliseconds within which full local discovery is required
@@ -93,8 +105,8 @@ public:
     [[nodiscard]] bool promptDeleteFiles() const;
     void setPromptDeleteFiles(bool promptDeleteFiles);
 
-    [[nodiscard]] bool crashReporter() const;
-    void setCrashReporter(bool enabled);
+    [[nodiscard]] int deleteFilesThreshold() const;
+    void setDeleteFilesThreshold(int thresholdValue);
 
     [[nodiscard]] bool automaticLogDir() const;
     void setAutomaticLogDir(bool enabled);
@@ -124,6 +136,16 @@ public:
     [[nodiscard]] int proxyType() const;
     [[nodiscard]] QString proxyHostName() const;
     [[nodiscard]] int proxyPort() const;
+
+    // Proxy type, host and port resolved together from the settings hierarchy.
+    [[nodiscard]] ManagedProxySettings managedProxySettings() const;
+    // Server values apply only to the account that supplied them.
+    [[nodiscard]] ManagedProxySettings managedProxySettings(const ServerManagedSettings &accountServerSettings) const;
+
+    // Virtual files mode resolved from the settings hierarchy.
+    [[nodiscard]] ManagedVirtualFilesMode managedVirtualFilesMode() const;
+    // Server values apply only to the supplying account.
+    [[nodiscard]] ManagedVirtualFilesMode managedVirtualFilesMode(const ServerManagedSettings &accountServerSettings) const;
     [[nodiscard]] bool proxyNeedsAuth() const;
     [[nodiscard]] QString proxyUser() const;
     [[nodiscard]] QString proxyPassword() const;
@@ -141,6 +163,8 @@ public:
     /** [checked, size in MB] **/
     [[nodiscard]] QPair<bool, qint64> newBigFolderSizeLimit() const;
     void setNewBigFolderSizeLimit(bool isChecked, qint64 mbytes);
+    /** @brief Whether new classic sync folders start with no remote folders selected. */
+    [[nodiscard]] bool wizardSelectiveSyncDefaultNothing() const;
     [[nodiscard]] bool notifyExistingFoldersOverLimit() const;
     void setNotifyExistingFoldersOverLimit(const bool notify);
     [[nodiscard]] bool stopSyncingExistingFoldersOverLimit() const;
@@ -153,10 +177,6 @@ public:
     [[nodiscard]] bool moveToTrash() const;
     void setMoveToTrash(bool);
 
-    /** If we should force loginflow v2 */
-    [[nodiscard]] bool forceLoginV2() const;
-    void setForceLoginV2(bool);
-
     [[nodiscard]] bool showMainDialogAsNormalWindow() const;
 
     static bool setConfDir(const QString &value);
@@ -164,8 +184,14 @@ public:
     [[nodiscard]] bool optionalServerNotifications() const;
     void setOptionalServerNotifications(bool show);
 
+    [[nodiscard]] bool showChatNotifications() const;
+    void setShowChatNotifications(bool show);
+
     [[nodiscard]] bool showCallNotifications() const;
     void setShowCallNotifications(bool show);
+
+    [[nodiscard]] bool showQuotaWarningNotifications() const;
+    void setShowQuotaWarningNotifications(bool show);
 
     [[nodiscard]] bool showInExplorerNavigationPane() const;
     void setShowInExplorerNavigationPane(bool show);
@@ -180,29 +206,37 @@ public:
     void restoreGeometry(QWidget *w);
 
     // how often the check about new versions runs
-    [[nodiscard]] std::chrono::milliseconds updateCheckInterval(const QString &connection = QString()) const;
+    [[nodiscard]] std::chrono::milliseconds updateCheckInterval(const QString &connectionGroupName = QString()) const;
 
     // skipUpdateCheck completely disables the updater and hides its UI
-    [[nodiscard]] bool skipUpdateCheck(const QString &connection = QString()) const;
-    void setSkipUpdateCheck(bool, const QString &);
+    [[nodiscard]] bool skipUpdateCheck(const QString &connectionGroupName = QString()) const;
+    void setSkipUpdateCheck(bool, const QString &connectionGroupName);
 
     // autoUpdateCheck allows the user to make the choice in the UI
-    [[nodiscard]] bool autoUpdateCheck(const QString &connection = QString()) const;
-    void setAutoUpdateCheck(bool, const QString &);
+    [[nodiscard]] bool autoUpdateCheck(const QString &connectionGroupName = QString()) const;
+    void setAutoUpdateCheck(bool, const QString &connectionGroupName);
 
     /** Query-parameter 'updatesegment' for the update check, value between 0 and 99.
         Used to throttle down desktop release rollout in order to keep the update servers alive at peak times.
         See: https://github.com/nextcloud/client_updater_server/pull/36 */
     [[nodiscard]] int updateSegment() const;
 
-    [[nodiscard]] QString updateChannel() const;
+    [[nodiscard]] QString currentUpdateChannel() const;
+    [[nodiscard]] QString defaultUpdateChannel() const;
+    [[nodiscard]] QStringList validUpdateChannels() const;
     void setUpdateChannel(const QString &channel);
 
     [[nodiscard]] QString overrideServerUrl() const;
-    void setOverrideServerUrl(const QString &url);
+    [[nodiscard]] bool hasUserOverrideServerUrl() const;
+    [[nodiscard]] bool isOverrideServerUrlLocked() const;
+    bool setOverrideServerUrl(const QString &url);
+    void clearOverrideServerUrl();
 
     [[nodiscard]] QString overrideLocalDir() const;
-    void setOverrideLocalDir(const QString &localDir);
+    [[nodiscard]] bool hasUserOverrideLocalDir() const;
+    [[nodiscard]] QString overrideLocalDirForNewAccount(bool firstAccount) const;
+    bool setOverrideLocalDir(const QString &localDir);
+    void clearOverrideLocalDir();
 
     [[nodiscard]] bool isVfsEnabled() const;
     void setVfsEnabled(bool enabled);
@@ -220,10 +254,53 @@ public:
     [[nodiscard]] QString clientVersionString() const;
     void setClientVersionString(const QString &version);
 
+    [[nodiscard]] QString clientPreviousVersionString() const;
+    void setClientPreviousVersionString(const QString &version);
+
     /** If the option 'Launch on system startup' is set
         Updated by configVersionMigration() at client startup. */
     [[nodiscard]] bool launchOnSystemStartup() const;
     void setLaunchOnSystemStartup(const bool autostart);
+
+    [[nodiscard]] bool serverHasValidSubscription() const;
+    void setServerHasValidSubscription(bool valid);
+
+    [[nodiscard]] QString desktopEnterpriseChannel() const;
+    void setDesktopEnterpriseChannel(const QString &channel);
+
+    [[nodiscard]] ServerManagedSettings serverManagedSettings() const;
+    void setServerManagedSettings(const ServerManagedSettings &settings);
+
+    // Enforcement aware read: resolves across device, server, user and defaults, with source and enforcement.
+    [[nodiscard]] ResolvedSetting getConfig(const QString &name, const QVariant &builtinDefault = {}, const QString &connectionGroupName = {}) const;
+    // Typed read; the value is converted to the schema type, T is the caller's type.
+    template<typename T>
+    [[nodiscard]] T getConfig(const QString &name, const QString &connectionGroupName = {}) const
+    {
+        return getConfig(name, QVariant{}, connectionGroupName).value.template value<T>();
+    }
+    // Writes the user config, unless the effective value is enforced; returns false then.
+    bool setConfig(const QString &name, const QVariant &value, const QString &connectionGroupName = {});
+    // Removes the user config value, so the next source in the hierarchy applies again.
+    void clearConfig(const QString &name, const QString &connectionGroupName = {});
+    [[nodiscard]] bool isEnforced(const QString &name, const QString &connectionGroupName = {}) const;
+    [[nodiscard]] SettingSourceType sourceOf(const QString &name, const QString &connectionGroupName = {}) const;
+    // The label shown next to an enforced control, chosen by where the value came from.
+    [[nodiscard]] QString sourceLabel(const QString &name) const;
+
+    using DeviceSourcesFactory = std::function<std::vector<std::unique_ptr<SettingSource>>()>;
+    // For tests; an empty factory restores the platform sources.
+    static void setDeviceSourcesFactory(DeviceSourcesFactory factory);
+
+    [[nodiscard]] bool hasDesktopEnterpriseChannel() const;
+
+    /// Enforce a specific language used for the UI
+    [[nodiscard]] QString language() const;
+    void setLanguage(const QString &language);
+
+    /// Store and retrieve the last selected account identifier
+    [[nodiscard]] uint lastSelectedAccount() const;
+    void setLastSelectedAccount(const uint accountId);
 
     /**  Returns a new settings pre-set in a specific group.  The Settings will be created
          with the given parent. If no parent is specified, the caller must destroy the settings */
@@ -232,18 +309,72 @@ public:
     /// Add the system and user exclude file path to the ExcludedFiles instance.
     static void setupDefaultExcludeFilePaths(ExcludedFiles &excludedFiles);
 
-    /// Set during first time migration of legacy accounts in AccountManager
-    [[nodiscard]] static QString discoveredLegacyConfigPath();
-    static void setDiscoveredLegacyConfigPath(const QString &discoveredLegacyConfigPath);
+    /// File Provider Domain UUID to Account ID mapping
+
+    /**
+     * @brief Completely removes the now obsolete "FileProviderAccountIds" and "FileProviderDomainUuids" groups from the configuration file.
+     */
+    void removeFileProviderDomainMapping();
+
+    /// File Provider app sandbox migration flag
+    [[nodiscard]] bool fileProviderDomainsAppSandboxMigrationCompleted() const;
+    void setFileProviderDomainsAppSandboxMigrationCompleted(bool completed);
+
+    [[nodiscard]] QStringList backupConfigFiles();
+    void applyMigrationDefaults();
+
+    /// App-level macOS File Provider mode: when enabled, every account gets a file
+    /// provider domain and classic sync folders are unavailable (the File Provider
+    /// extension and the FinderSync extension cannot run at the same time).
+    [[nodiscard]] bool macFileProviderModeEnabled() const;
+    [[nodiscard]] bool macFileProviderModeEnabledIsSet() const;
+    void setMacFileProviderModeEnabled(bool enabled);
+
+    /// Whether the user was already told that a policy turned virtual files off.
+    [[nodiscard]] bool fileProviderVfsEnforcedOffNotified() const;
+    void setFileProviderVfsEnforcedOffNotified(bool notified);
+
+    static constexpr char unbrandedAppName[] = "Nextcloud";
+    static constexpr char legacyAppName[] = "Owncloud";
+
+    static constexpr char clientVersionC[] = "clientVersion";
+
+    static constexpr char isVfsEnabledC[] = "isVfsEnabled";
+    static constexpr char launchOnSystemStartupC[] = "launchOnSystemStartup";
+    static constexpr char monoIconsC[] = "monoIcons";
+    static constexpr char optionalServerNotificationsC[] = "optionalServerNotifications";
+    static constexpr char promptDeleteC[] = "promptDeleteAllFiles";
+    static constexpr char showCallNotificationsC[] = "showCallNotifications";
+    static constexpr char showQuotaWarningNotificationsC[] = "showQuotaWarningNotifications";
+    static constexpr char showChatNotificationsC[] = "showChatNotifications";
+    static constexpr char showInExplorerNavigationPaneC[] = "showInExplorerNavigationPane";
+    static constexpr char confirmExternalStorageC[] = "confirmExternalStorage";
+    static constexpr char useNewBigFolderSizeLimitC[] = "useNewBigFolderSizeLimit";
+    static constexpr char newBigFolderSizeLimitC[] = "newBigFolderSizeLimit";
+    static constexpr char wizardSelectiveSyncDefaultNothingC[] = "wizardSelectiveSyncDefaultNothing";
+    static constexpr char notifyExistingFoldersOverLimitC[] = "notifyExistingFoldersOverLimit";
+    static constexpr char stopSyncingExistingFoldersOverLimitC[] = "stopSyncingExistingFoldersOverLimit";
+    static constexpr char moveToTrashC[] = "moveToTrash";
+    static constexpr char updateChannelC[] = "updateChannel";
+    static constexpr char autoUpdateCheckC[] = "autoUpdateCheck";
+    static constexpr char skipUpdateCheckC[] = "skipUpdateCheck";
+    static constexpr char overrideServerUrlC[] = "overrideServerUrl";
+    static constexpr char overrideLocalDirC[] = "overrideLocalDir";
+    static constexpr char useUploadLimitC[] = "BWLimit/useUploadLimit";
+    static constexpr char useDownloadLimitC[] = "BWLimit/useDownloadLimit";
+    static constexpr char uploadLimitC[] = "BWLimit/uploadLimit";
+    static constexpr char downloadLimitC[] = "BWLimit/downloadLimit";
 
 protected:
-    [[nodiscard]] QVariant getPolicySetting(const QString &policy, const QVariant &defaultValue = QVariant()) const;
     void storeData(const QString &group, const QString &key, const QVariant &value);
     [[nodiscard]] QVariant retrieveData(const QString &group, const QString &key) const;
     void removeData(const QString &group, const QString &key);
     [[nodiscard]] bool dataExists(const QString &group, const QString &key) const;
 
 private:
+    [[nodiscard]] ResolvedSetting
+    resolveSetting(const QString &name, const QVariant &builtinDefault, const QString &connectionGroupName, const ServerManagedSettings &serverSettings) const;
+
     [[nodiscard]] QVariant getValue(const QString &param, const QString &group = QString(),
         const QVariant &defaultValue = QVariant()) const;
     void setValue(const QString &key, const QVariant &value);
@@ -253,7 +384,6 @@ private:
     using SharedCreds = QSharedPointer<AbstractCredentials>;
 
     static QString _confDir;
-    static QString _discoveredLegacyConfigPath;
 };
 }
 #endif // CONFIGFILE_H

@@ -1,21 +1,8 @@
-/******************************************************************************
- *   Copyright (C) 2014 by Olivier Goffart <ogoffart@woboq.com                *
- *                                                                            *
- *   This program is free software; you can redistribute it and/or modify     *
- *   it under the terms of the GNU General Public License as published by     *
- *   the Free Software Foundation; either version 2 of the License, or        *
- *   (at your option) any later version.                                      *
- *                                                                            *
- *   This program is distributed in the hope that it will be useful,          *
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of           *
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the            *
- *   GNU General Public License for more details.                             *
- *                                                                            *
- *   You should have received a copy of the GNU General Public License        *
- *   along with this program; if not, write to the                            *
- *   Free Software Foundation, Inc.,                                          *
- *   51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA               *
- ******************************************************************************/
+/*
+ * SPDX-FileCopyrightText: 2020 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2014 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
 
 #include <KPluginFactory>
 #include <KAbstractFileItemActionPlugin>
@@ -39,8 +26,9 @@ public:
     QList<QAction*> actions(const KFileItemListProperties& fileItemInfos, QWidget* parentWidget) override
     {
         auto helper = OwncloudDolphinPluginHelper::instance();
-        if (!helper->isConnected() || !fileItemInfos.isLocal())
+        if (!helper->isConnected() || !fileItemInfos.isLocal()) {
             return {};
+        }
 
         // If any of the url is outside of a sync folder, return an empty menu.
         const QList<QUrl> urls = fileItemInfos.urlList();
@@ -51,11 +39,13 @@ public:
             auto localFile = localPath.canonicalPath();
             if (!std::any_of(paths.begin(), paths.end(), [&](const QString &s) {
                     return localFile.startsWith(s);
-                }))
+                })) {
                 return {};
+            }
 
-            if (!files.isEmpty())
+            if (!files.isEmpty()) {
                 files += '\x1e'; // Record separator
+            }
             files += localFile.toUtf8();
         }
 
@@ -70,11 +60,13 @@ public:
                 loop.quit();
             } else if (cmd.startsWith("MENU_ITEM:")) {
                 auto args = QString::fromUtf8(cmd).split(QLatin1Char(':'));
-                if (args.size() < 4)
+                if (args.size() < 4) {
                     return;
+                }
                 auto action = menu->addAction(args.mid(3).join(QLatin1Char(':')));
-                if (args.value(2).contains(QLatin1Char('d')))
+                if (args.value(2).contains(QLatin1Char('d'))) {
                     action->setDisabled(true);
+                }
                 auto call = args.value(1).toLatin1();
                 connect(action, &QAction::triggered, [helper, call, files] {
                     helper->sendCommand(QByteArray(call + ":" + files + "\n").constData());
@@ -99,8 +91,9 @@ public:
     QList<QAction *> legacyActions(const KFileItemListProperties &fileItemInfos, QWidget *parentWidget)
     {
         QList<QUrl> urls = fileItemInfos.urlList();
-        if (urls.count() != 1)
+        if (urls.count() != 1) {
             return {};
+        }
         QDir localPath(urls.first().toLocalFile());
         auto localFile = localPath.canonicalPath();
         auto helper = OwncloudDolphinPluginHelper::instance();

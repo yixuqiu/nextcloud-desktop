@@ -1,15 +1,7 @@
 /*
- * Copyright (C) by Klaas Freitag <freitag@owncloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2018 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2012 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "logger.h"
@@ -33,17 +25,23 @@
 #include <io.h> // for stdout
 #endif
 
+using namespace Qt::StringLiterals;
+
 namespace {
 
 constexpr int CrashLogSize = 20;
 constexpr auto MaxLogLinesCount = 50000;
+constexpr auto MaxLogLinesBeforeFlush = 10;
+
+static QtMessageHandler s_originalMessageHandler = nullptr;
 
 static bool compressLog(const QString &originalName, const QString &targetName)
 {
 #ifdef ZLIB_FOUND
     QFile original(originalName);
-    if (!original.open(QIODevice::ReadOnly))
+    if (!original.open(QIODevice::ReadOnly)) {
         return false;
+    }
     auto compressed = gzopen(targetName.toUtf8(), "wb");
     if (!compressed) {
         return false;
@@ -68,6 +66,8 @@ static bool compressLog(const QString &originalName, const QString &targetName)
 
 namespace OCC {
 
+Q_LOGGING_CATEGORY(lcPermanentLog, "nextcloud.log.permanent")
+
 Logger *Logger::instance()
 {
     static Logger log;
@@ -81,7 +81,7 @@ Logger::Logger(QObject *parent)
                                       "]%{if-debug}\t[ %{function} ]%{endif}:\t%{message}"));
     _crashLog.resize(CrashLogSize);
 #ifndef NO_MSG_HANDLER
-    qInstallMessageHandler([](QtMsgType type, const QMessageLogContext &ctx, const QString &message) {
+    s_originalMessageHandler = qInstallMessageHandler([](QtMsgType type, const QMessageLogContext &ctx, const QString &message) {
         Logger::instance()->doLog(type, ctx, message);
     });
 #endif
@@ -100,12 +100,12 @@ Logger::~Logger()
 
 void Logger::postGuiLog(const QString &title, const QString &message)
 {
-    emit guiLog(title, message);
+    Q_EMIT guiLog(title, message);
 }
 
 void Logger::postGuiMessage(const QString &title, const QString &message)
 {
-    emit guiMessage(title, message);
+    Q_EMIT guiMessage(title, message);
 }
 
 bool Logger::isLoggingToFile() const
@@ -118,40 +118,28 @@ void Logger::doLog(QtMsgType type, const QMessageLogContext &ctx, const QString 
 {
     static long long int linesCounter = 0;
     const auto &msg = qFormatLogMessage(type, ctx, message);
-#if defined Q_OS_WIN && (defined NEXTCLOUD_DEV || defined QT_DEBUG)
+#if defined Q_OS_WIN && ((defined NEXTCLOUD_DEV && NEXTCLOUD_DEV) || defined QT_DEBUG)
     // write logs to Output window of Visual Studio
     {
-        QString prefix;
-        switch (type) {
-        case QtDebugMsg:
-            break;
-        case QtInfoMsg:
-            break;
-        case QtWarningMsg:
-            prefix = QStringLiteral("[WARNING] ");
-            break;
-        case QtCriticalMsg:
-            prefix = QStringLiteral("[CRITICAL ERROR] ");
-            break;
-        case QtFatalMsg:
-            prefix = QStringLiteral("[FATAL ERROR] ");
-            break;
-        }
-        auto msgW = QString(prefix + message).toStdWString();
-        msgW.append(L"\n");
+        const auto msgW = QStringLiteral("%1\n").arg(msg).toStdWString();
         OutputDebugString(msgW.c_str());
+    }
+#elif defined Q_OS_MACOS && defined QT_DEBUG
+    // write logs to Xcode console (stderr)
+    {
+        std::cerr << msg.toStdString() << std::endl;
     }
 #endif
     {
         QMutexLocker lock(&_mutex);
 
-        if (linesCounter >= MaxLogLinesCount) {
+        if (!logFile().isEmpty() && linesCounter >= MaxLogLinesCount) {
             linesCounter = 0;
             if (_logstream) {
                 _logstream->flush();
             }
             closeNoLock();
-            enterNextLogFileNoLock();
+            enterNextLogFileNoLock(QStringLiteral("nextcloud.log"), LogType::Log);
         }
         ++linesCounter;
 
@@ -160,23 +148,32 @@ void Logger::doLog(QtMsgType type, const QMessageLogContext &ctx, const QString 
 
         if (_logstream) {
             (*_logstream) << msg << "\n";
-            if (_doFileFlush)
+            ++_linesCounter;
+            if (_doFileFlush ||
+                _linesCounter >= MaxLogLinesBeforeFlush ||
+                type == QtMsgType::QtWarningMsg || type == QtMsgType::QtCriticalMsg || type == QtMsgType::QtFatalMsg) {
                 _logstream->flush();
+                _linesCounter = 0;
+            }
+        }
+        if (_permanentDeleteLogStream && ctx.category && strcmp(ctx.category, lcPermanentLog().categoryName()) == 0) {
+            (*_permanentDeleteLogStream) << msg << "\n";
+            _permanentDeleteLogStream->flush();
+            if (_permanentDeleteLogFile.size() > 10LL * 1024LL) {
+                enterNextLogFileNoLock(QStringLiteral("permanent_delete.log"), LogType::DeleteLog);
+            }
         }
         if (type == QtFatalMsg) {
+            dumpCrashLog();
             closeNoLock();
-#if defined(Q_OS_WIN)
-            // Make application terminate in a way that can be caught by the crash reporter
-            Utility::crash();
-#endif
+            s_originalMessageHandler(type, ctx, message);
         }
     }
-    emit logWindowLog(msg);
+    Q_EMIT logWindowLog(msg);
 }
 
 void Logger::closeNoLock()
 {
-    dumpCrashLog();
     if (_logstream)
     {
         _logstream->flush();
@@ -195,6 +192,12 @@ void Logger::setLogFile(const QString &name)
 {
     QMutexLocker locker(&_mutex);
     setLogFileNoLock(name);
+}
+
+void Logger::setPermanentDeleteLogFile(const QString &name)
+{
+    QMutexLocker locker(&_mutex);
+    setPermanentDeleteLogFileNoLock(name);
 }
 
 void Logger::setLogExpire(int expire)
@@ -219,7 +222,7 @@ void Logger::setLogFlush(bool flush)
 
 void Logger::setLogDebug(bool debug)
 {
-    const QSet<QString> rules = {debug ? QStringLiteral("nextcloud.*.debug=true") : QString()};
+    const auto rules = debug ? QSet<QString>{u"nextcloud.*.debug=true"_s, u"sync.vfs.openvfs=true"_s} : QSet<QString>{};
     if (debug) {
         addLogRule(rules);
     } else {
@@ -236,8 +239,15 @@ QString Logger::temporaryFolderLogDirPath() const
 void Logger::setupTemporaryFolderLogDir()
 {
     auto dir = temporaryFolderLogDirPath();
-    if (!QDir().mkpath(dir))
+    if (!QDir().mkpath(dir)) {
         return;
+    }
+
+    // Since we're using the temp folder, lock down permissions to owner only
+    QFile::Permissions perm = QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner;
+    QFile file(dir);
+    file.setPermissions(perm);
+    
     setLogDebug(true);
     setLogExpire(4 /*hours*/);
     setLogDir(dir);
@@ -246,13 +256,12 @@ void Logger::setupTemporaryFolderLogDir()
 
 void Logger::disableTemporaryFolderLogDir()
 {
-    if (!_temporaryFolderLogDir)
+    if (!_temporaryFolderLogDir) {
         return;
+    }
 
-    enterNextLogFile();
+    enterNextLogFile("nextcloud.log", LogType::Log);
     setLogDir(QString());
-    setLogDebug(false);
-    setLogFile(QString());
     _temporaryFolderLogDir = false;
 }
 
@@ -277,9 +286,10 @@ void Logger::dumpCrashLog()
             out << _crashLog[(_crashLogIndex + i) % CrashLogSize] << QLatin1Char('\n');
         }
     }
+    qDebug() << "crash log written in" << logFile.fileName();
 }
 
-void Logger::enterNextLogFileNoLock()
+void Logger::enterNextLogFileNoLock(const QString &baseFileName, LogType type)
 {
     if (!_logDirectory.isEmpty()) {
 
@@ -291,35 +301,51 @@ void Logger::enterNextLogFileNoLock()
         // Tentative new log name, will be adjusted if one like this already exists
         const auto now = QDateTime::currentDateTime();
         const auto cLocale = QLocale::c(); // Some system locales generate strings that are incompatible with filesystem
-        QString newLogName = cLocale.toString(now, QStringLiteral("yyyyMMdd_HHmm")) + QStringLiteral("_nextcloud.log");
+        QString newLogName = cLocale.toString(now, QStringLiteral("yyyyMMdd_HHmm")) + QStringLiteral("_%1").arg(baseFileName);
 
         // Expire old log files and deal with conflicts
-        QStringList files = dir.entryList(QStringList("*owncloud.log.*"), QDir::Files, QDir::Name) +
-            dir.entryList(QStringList("*nextcloud.log.*"), QDir::Files, QDir::Name);
-        static const QRegularExpression rx(QRegularExpression::anchoredPattern(R"(.*(next|own)cloud\.log\.(\d+).*)"));
-        int maxNumber = -1;
-        foreach (const QString &s, files) {
+        const auto files = dir.entryList({QStringLiteral("*owncloud.log.*"), QStringLiteral("*%1.*").arg(baseFileName)}, QDir::Files, QDir::Name);
+        for (const auto &s : files) {
             if (_logExpire > 0) {
                 QFileInfo fileInfo(dir.absoluteFilePath(s));
                 if (fileInfo.lastModified().addSecs(60 * 60 * _logExpire) < now) {
                     dir.remove(s);
                 }
             }
-            const auto rxMatch = rx.match(s);
-            if (s.startsWith(newLogName) && rxMatch.hasMatch()) {
-                maxNumber = qMax(maxNumber, rxMatch.captured(2).toInt());
+        }
+
+        const auto regexpText = QString{"%1\\.(\\d+).*"}.arg(QRegularExpression::escape(newLogName));
+        const auto anchoredPatternRegexpText = QRegularExpression::anchoredPattern(regexpText);
+        const QRegularExpression rx(regexpText);
+        int maxNumber = -1;
+        const auto collidingFileNames = dir.entryList({QStringLiteral("%1.*").arg(newLogName)}, QDir::Files, QDir::Name);
+        for(const auto &fileName : collidingFileNames) {
+            const auto rxMatch = rx.match(fileName);
+            if (rxMatch.hasMatch()) {
+                maxNumber = qMax(maxNumber, rxMatch.captured(1).toInt());
             }
         }
         newLogName.append("." + QString::number(maxNumber + 1));
 
-        auto previousLog = _logFile.fileName();
-        setLogFileNoLock(dir.filePath(newLogName));
+        auto previousLog = QString{};
+        switch (type)
+        {
+        case OCC::Logger::LogType::Log:
+            previousLog = _logFile.fileName();
+            setLogFileNoLock(dir.filePath(newLogName));
+            break;
+        case OCC::Logger::LogType::DeleteLog:
+            previousLog = _permanentDeleteLogFile.fileName();
+            setPermanentDeleteLogFileNoLock(dir.filePath(newLogName));
+            break;
+        }
 
         // Compress the previous log file. On a restart this can be the most recent
         // log file.
         auto logToCompress = previousLog;
-        if (logToCompress.isEmpty() && files.size() > 0 && !files.last().endsWith(".gz"))
+        if (logToCompress.isEmpty() && files.size() > 0 && !files.last().endsWith(".gz")) {
             logToCompress = dir.absoluteFilePath(files.last());
+        }
         if (!logToCompress.isEmpty()) {
             QString compressedName = logToCompress + ".gz";
             if (compressLog(logToCompress, compressedName)) {
@@ -351,20 +377,58 @@ void Logger::setLogFileNoLock(const QString &name)
     }
 
     if (!openSucceeded) {
-        postGuiMessage(tr("Error"),
-                       QString(tr("<nobr>File \"%1\"<br/>cannot be opened for writing.<br/><br/>"
-                                  "The log output <b>cannot</b> be saved!</nobr>"))
-                           .arg(name));
+        if (!_didShowLogWriteError) {
+            _didShowLogWriteError = true;
+            postGuiMessage(tr("Error"),
+                           QString(tr("<nobr>File \"%1\"<br/>cannot be opened for writing.<br/><br/>"
+                                      "The log output <b>cannot</b> be saved!</nobr>"))
+                               .arg(name));
+        }
         return;
     }
 
+    _didShowLogWriteError = false;
     _logstream.reset(new QTextStream(&_logFile));
 }
 
-void Logger::enterNextLogFile()
+void Logger::setPermanentDeleteLogFileNoLock(const QString &name)
+{
+    if (_permanentDeleteLogStream) {
+        _permanentDeleteLogStream.reset(nullptr);
+        _permanentDeleteLogFile.close();
+    }
+
+    if (name.isEmpty()) {
+        return;
+    }
+
+    bool openSucceeded = false;
+    if (name == QLatin1String("-")) {
+        openSucceeded = _permanentDeleteLogFile.open(stdout, QIODevice::WriteOnly);
+    } else {
+        _permanentDeleteLogFile.setFileName(name);
+        openSucceeded = _permanentDeleteLogFile.open(QIODevice::WriteOnly);
+    }
+
+    if (!openSucceeded) {
+        if (!_didShowLogWriteError) {
+            _didShowLogWriteError = true;
+            postGuiMessage(tr("Error"),
+                           QString(tr("<nobr>File \"%1\"<br/>cannot be opened for writing.<br/><br/>"
+                                      "The log output <b>cannot</b> be saved!</nobr>"))
+                               .arg(name));
+        }
+        return;
+    }
+
+    _didShowLogWriteError = false;
+    _permanentDeleteLogStream.reset(new QTextStream(&_permanentDeleteLogFile));
+}
+
+void Logger::enterNextLogFile(const QString &baseFileName, LogType type)
 {
     QMutexLocker locker(&_mutex);
-    enterNextLogFileNoLock();
+    enterNextLogFileNoLock(baseFileName, type);
 }
 
 } // namespace OCC

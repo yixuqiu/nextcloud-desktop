@@ -1,24 +1,19 @@
 /*
- * Copyright (C) by Felix Weilbach <felix.weilbach@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2021 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "pushnotifications.h"
 #include "creds/abstractcredentials.h"
 #include "account.h"
 
+#include <QJsonArray>
+
 namespace {
 static constexpr int MAX_ALLOWED_FAILED_AUTHENTICATION_ATTEMPTS = 3;
 static constexpr int PING_INTERVAL = 30 * 1000;
+
+static constexpr QLatin1String NOTIFY_FILE_ID_PREFIX = QLatin1String{"notify_file_id "};
 }
 
 namespace OCC {
@@ -30,7 +25,7 @@ PushNotifications::PushNotifications(Account *account, QObject *parent)
     , _account(account)
     , _webSocket(new QWebSocket(QString(), QWebSocketProtocol::VersionLatest, this))
 {
-    connect(_webSocket, QOverload<QAbstractSocket::SocketError>::of(&QWebSocket::error), this, &PushNotifications::onWebSocketError);
+    connect(_webSocket, QOverload<QAbstractSocket::SocketError>::of(&QWebSocket::errorOccurred), this, &PushNotifications::onWebSocketError);
     connect(_webSocket, &QWebSocket::sslErrors, this, &PushNotifications::onWebSocketSslErrors);
     connect(_webSocket, &QWebSocket::connected, this, &PushNotifications::onWebSocketConnected);
     connect(_webSocket, &QWebSocket::disconnected, this, &PushNotifications::onWebSocketDisconnected);
@@ -76,7 +71,7 @@ void PushNotifications::closeWebSocket()
         _reconnectTimer->stop();
     }
 
-    disconnect(_webSocket, QOverload<QAbstractSocket::SocketError>::of(&QWebSocket::error), this, &PushNotifications::onWebSocketError);
+    disconnect(_webSocket, QOverload<QAbstractSocket::SocketError>::of(&QWebSocket::errorOccurred), this, &PushNotifications::onWebSocketError);
     disconnect(_webSocket, &QWebSocket::sslErrors, this, &PushNotifications::onWebSocketSslErrors);
 
     _webSocket->close();
@@ -111,7 +106,9 @@ void PushNotifications::onWebSocketTextMessageReceived(const QString &message)
 {
     qCInfo(lcPushNotifications) << "Received push notification:" << message;
 
-    if (message == "notify_file") {
+    if (message.startsWith(NOTIFY_FILE_ID_PREFIX)) {
+        handleNotifyFileId(message);
+    } else if (message == "notify_file") {
         handleNotifyFile();
     } else if (message == "notify_activity") {
         handleNotifyActivity();
@@ -133,9 +130,9 @@ void PushNotifications::onWebSocketError(QAbstractSocket::SocketError error)
         return;
     }
 
-    qCWarning(lcPushNotifications) << "Websocket error on with account" << _account->url() << error;
+    qCWarning(lcPushNotifications) << "Websocket error on with account" << _account->displayName() << _account->url() << error;
     closeWebSocket();
-    emit connectionLost();
+    Q_EMIT connectionLost();
 }
 
 bool PushNotifications::tryReconnectToWebSocket()
@@ -162,9 +159,9 @@ bool PushNotifications::tryReconnectToWebSocket()
 
 void PushNotifications::onWebSocketSslErrors(const QList<QSslError> &errors)
 {
-    qCWarning(lcPushNotifications) << "Websocket ssl errors on with account" << _account->url() << errors;
+    qCWarning(lcPushNotifications) << "Websocket ssl errors on with account" << _account->displayName() << _account->url() << errors;
     closeWebSocket();
-    emit authenticationFailed();
+    Q_EMIT authenticationFailed();
 }
 
 void PushNotifications::openWebSocket()
@@ -173,8 +170,8 @@ void PushNotifications::openWebSocket()
     const auto capabilities = _account->capabilities();
     const auto webSocketUrl = capabilities.pushNotificationsWebSocketUrl();
 
-    qCInfo(lcPushNotifications) << "Open connection to websocket on" << webSocketUrl << "for account" << _account->url();
-    connect(_webSocket, QOverload<QAbstractSocket::SocketError>::of(&QWebSocket::error), this, &PushNotifications::onWebSocketError);
+    qCInfo(lcPushNotifications) << "Open connection to websocket on" << webSocketUrl << "for account" << _account->displayName() << _account->url();
+    connect(_webSocket, QOverload<QAbstractSocket::SocketError>::of(&QWebSocket::errorOccurred), this, &PushNotifications::onWebSocketError);
     connect(_webSocket, &QWebSocket::sslErrors, this, &PushNotifications::onWebSocketSslErrors);
     _webSocket->open(webSocketUrl);
 }
@@ -193,9 +190,11 @@ void PushNotifications::handleAuthenticated()
 {
     qCInfo(lcPushNotifications) << "Authenticated successful on websocket";
     _failedAuthenticationAttemptsCount = 0;
+    qCDebug(lcPushNotifications) << "Requesting opt-in to 'notify_file_id' notifications";
+    _webSocket->sendTextMessage("listen notify_file_id");
     _isReady = true;
     startPingTimer();
-    emit ready();
+    Q_EMIT ready();
 
     // We maybe reconnected to websocket while being offline for a
     // while. To not miss any notifications that may have happened,
@@ -211,12 +210,43 @@ void PushNotifications::handleNotifyFile()
     emitFilesChanged();
 }
 
+void PushNotifications::handleNotifyFileId(const QString &message)
+{
+    qCDebug(lcPushNotifications) << "File-ID push notification arrived";
+
+    QList<qint64> fileIds{};
+    QJsonParseError parseError;
+    const auto fileIdsJson = message.mid(NOTIFY_FILE_ID_PREFIX.length());
+    const auto jsonDoc = QJsonDocument::fromJson(fileIdsJson.toUtf8(), &parseError);
+
+    if (parseError.error != QJsonParseError::NoError) {
+        qCWarning(lcPushNotifications).nospace() << "could not parse received list of file IDs error=" << parseError.error << " errorString=" << parseError.errorString() << " fileIdsJson=" << fileIdsJson;
+        return;
+    }
+
+    if (const auto jsonArray = jsonDoc.array(); jsonDoc.isArray()) {
+        for (const auto& jsonFileid : jsonArray) {
+            if (const auto fileid = jsonFileid.toInteger(); jsonFileid.isDouble()) {
+                fileIds.push_back(fileid);
+            }
+        }
+    }
+
+    if (fileIds.empty()) {
+        qCDebug(lcPushNotifications) << "Cancelling file IDs changed signal emission due to empty list of file IDs.";
+        return;
+    }
+
+    qCDebug(lcPushNotifications) << "Emitting signal of changed file IDs.";
+    Q_EMIT fileIdsChanged(_account, fileIds);
+}
+
 void PushNotifications::handleInvalidCredentials()
 {
     qCInfo(lcPushNotifications) << "Invalid credentials submitted to websocket";
     if (!tryReconnectToWebSocket()) {
         closeWebSocket();
-        emit authenticationFailed();
+        Q_EMIT authenticationFailed();
     }
 }
 
@@ -282,16 +312,16 @@ void PushNotifications::setPingInterval(int timeoutInterval)
 
 void PushNotifications::emitFilesChanged()
 {
-    emit filesChanged(_account);
+    Q_EMIT filesChanged(_account);
 }
 
 void PushNotifications::emitNotificationsChanged()
 {
-    emit notificationsChanged(_account);
+    Q_EMIT notificationsChanged(_account);
 }
 
 void PushNotifications::emitActivitiesChanged()
 {
-    emit activitiesChanged(_account);
+    Q_EMIT activitiesChanged(_account);
 }
 }

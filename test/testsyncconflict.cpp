@@ -1,8 +1,11 @@
 /*
- *    This software is in the public domain, furnished "as is", without technical
- *    support, and with no warranty, express or implied, as to its usefulness for
- *    any purpose.
- *
+ * SPDX-FileCopyrightText: 2022 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2017 ownCloud, Inc.
+ * SPDX-License-Identifier: CC0-1.0
+ * 
+ * This software is in the public domain, furnished "as is", without technical
+ * support, and with no warranty, express or implied, as to its usefulness for
+ * any purpose.
  */
 
 #include <QtTest>
@@ -43,9 +46,10 @@ bool expectAndWipeConflict(FileModifier &local, FileInfo state, const QString pa
 {
     PathComponents pathComponents(path);
     auto base = state.find(pathComponents.parentDirComponents());
-    if (!base)
+    if (!base) {
         return false;
-    for (const auto &item : qAsConst(base->children)) {
+    }
+    for (const auto &item : std::as_const(base->children)) {
         if (item.name.startsWith(pathComponents.fileName()) && item.name.contains("(conflicted copy")) {
             local.remove(item.path());
             return true;
@@ -65,7 +69,15 @@ class TestSyncConflict : public QObject
 {
     Q_OBJECT
 
-private slots:
+private Q_SLOTS:
+    void initTestCase()
+    {
+        OCC::Logger::instance()->setLogFlush(true);
+        OCC::Logger::instance()->setLogDebug(true);
+
+        QStandardPaths::setTestModeEnabled(true);
+    }
+
     void testNoUpload()
     {
         FakeFolder fakeFolder{ FileInfo::A12_B12_C12_S12() };
@@ -130,7 +142,7 @@ private slots:
         QCOMPARE(Utility::conflictFileBaseNameFromPattern(conflictMap[a1FileId].toUtf8()), QByteArray("A/a1"));
 
         // Check that the conflict file contains the username
-        QVERIFY(conflictMap[a1FileId].contains(QString("(conflicted copy %1 ").arg(fakeFolder.syncEngine().account()->davDisplayName())));
+        QVERIFY(conflictMap[a1FileId].contains(QStringLiteral("(conflicted copy %1 ").arg(fakeFolder.syncEngine().account()->davDisplayName())));
 
         QCOMPARE(remote.find(conflictMap[a1FileId])->contentChar, 'L');
         QCOMPARE(remote.find("A/a1")->contentChar, 'R');
@@ -298,11 +310,13 @@ private slots:
         auto conflicts = findConflicts(fakeFolder.currentLocalState().children["A"]);
         QByteArray a1conflict;
         QByteArray a2conflict;
-        for (const auto & conflict : conflicts) {
-            if (conflict.contains("a1"))
+        for (const auto & conflict : std::as_const(conflicts)) {
+            if (conflict.contains("a1")) {
                 a1conflict = conflict.toUtf8();
-            if (conflict.contains("a2"))
+            }
+            if (conflict.contains("a2")) {
                 a2conflict = conflict.toUtf8();
+            }
         }
 
         // A nothing-to-sync keeps them alive
@@ -553,8 +567,9 @@ private slots:
         QVERIFY(conflicts.size() == 2);
         QVERIFY(conflicts[0].contains("A (conflicted copy"));
         QVERIFY(conflicts[1].contains("B (conflicted copy"));
-        for (const auto& conflict : conflicts)
+        for (const auto &conflict : std::as_const(conflicts)) {
             QDir(fakeFolder.localPath() + conflict).removeRecursively();
+        }
         QCOMPARE(fakeFolder.currentLocalState(), fakeFolder.currentRemoteState());
 
         // Currently a1 and b1 don't get moved, but redownloaded
@@ -591,8 +606,9 @@ private slots:
         auto conflicts = findConflicts(fakeFolder.currentLocalState());
         QVERIFY(conflicts.size() == 1);
         QVERIFY(conflicts[0].contains("A (conflicted copy"));
-        for (const auto& conflict : conflicts)
+        for (const auto &conflict : std::as_const(conflicts)) {
             QDir(fakeFolder.localPath() + conflict).removeRecursively();
+        }
 
         QVERIFY(fakeFolder.syncEngine().isAnotherSyncNeeded() == ImmediateFollowUp);
         QVERIFY(fakeFolder.syncOnce());

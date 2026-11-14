@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2017 Nextcloud GmbH and Nextcloud contributors
+# SPDX-FileCopyrightText: 2014 ownCloud GmbH
+# SPDX-License-Identifier: GPL-2.0-or-later
 project(libsync)
 find_package(KF6Archive REQUIRED)
 include(DefinePlatformDefaults)
@@ -10,6 +13,12 @@ if ( APPLE )
          /System/Library/Frameworks/Foundation.framework
          /System/Library/Frameworks/AppKit.framework
     )
+endif()
+
+if (WIN32)
+  list(APPEND OS_SPECIFIC_LINK_LIBRARIES
+    Crypt32
+  )
 endif()
 
 set(libsync_SRCS
@@ -49,6 +58,8 @@ set(libsync_SRCS
     helpers.cpp
     httplogger.h
     httplogger.cpp
+    updatechannel.h
+    updatechannel.cpp
     logger.h
     logger.cpp
     accessmanager.h
@@ -81,6 +92,8 @@ set(libsync_SRCS
     propagateuploadng.cpp
     bulkpropagatorjob.h
     bulkpropagatorjob.cpp
+    bulkpropagatordownloadjob.h
+    bulkpropagatordownloadjob.cpp
     putmultifilejob.h
     putmultifilejob.cpp
     propagateremotedelete.h
@@ -123,6 +136,8 @@ set(libsync_SRCS
     clientsideencryptionjobs.cpp
     clientsideencryptionprimitives.h
     clientsideencryptionprimitives.cpp
+    clientsideencryptiontokenselector.h
+    clientsideencryptiontokenselector.cpp
     datetimeprovider.h
     datetimeprovider.cpp
     rootencryptedfolderinfo.h
@@ -149,11 +164,44 @@ set(libsync_SRCS
     creds/keychainchunk.cpp
     caseclashconflictsolver.h
     caseclashconflictsolver.cpp
+    settings/migration.h
+    settings/migration.cpp
+    settings/managedproxysettings.h
+    settings/settingpriorities.h
+    settings/managedsettings.h
+    settings/managedsettings.cpp
+    settings/managedsettingsschema.h
+    settings/managedsettingsschema.cpp
+    settings/devicesources.h
+    settings/devicesources.cpp
+    settings/settingsources.h
+    settings/settingsources.cpp
+    settings/servermanagedsettings.h
+    settings/servermanagedsettings.cpp
+    settings/managedconfig.h
+    settings/managedconfig.cpp
+    chronoelapsedtimer.h
+    chronoelapsedtimer.cpp
+    hydrationjob.h
+    hydrationjob.cpp
 )
 
 if (WIN32)
     # to fix warnings from ntstatus.h
     add_definitions(-DUMDF_USING_NTSTATUS)
+endif()
+
+if(APPLE)
+    list(APPEND libsync_SRCS
+        theme_mac.h
+        theme_mac.mm
+        settings/settingsources_mac.mm
+    )
+    set_property(SOURCE
+        theme_mac.mm
+        settings/settingsources_mac.mm
+        APPEND PROPERTY COMPILE_OPTIONS -fobjc-arc
+    )
 endif()
 
 if(TOKEN_AUTH_ONLY)
@@ -184,6 +232,19 @@ set(creds_HEADERS
     creds/httpcredentials.h
 )
 
+try_compile(HAS_CLOCK_CAST
+        SOURCE_FROM_CONTENT chrono_test.cpp "
+#include <chrono>
+int main() {
+    std::chrono::clock_cast<std::chrono::system_clock>;
+}"
+)
+message(STATUS "HAS_CLOCK_CAST: ${HAS_CLOCK_CAST}")
+
+if(HAS_CLOCK_CAST)
+    set_source_files_properties(filesystem.cpp PROPERTIES COMPILE_DEFINITIONS HAS_CLOCK_CAST)
+endif()
+
 IF (NOT APPLE)
     INSTALL(
         FILES ${owncloudsync_HEADERS}
@@ -193,9 +254,9 @@ IF (NOT APPLE)
         FILES ${creds_HEADERS}
 	DESTINATION ${INCLUDE_INSTALL_DIR}/nextcloudsync/creds
     )
-ENDIF(NOT APPLE)
+ENDIF()
 
-find_package(Qt${QT_MAJOR_VERSION} REQUIRED COMPONENTS WebSockets Xml Sql)
+find_package(Qt${QT_MAJOR_VERSION} REQUIRED COMPONENTS WebSockets Xml Sql Gui Svg Widgets)
 
 add_library(nextcloudsync SHARED ${libsync_SRCS})
 add_library(Nextcloud::sync ALIAS nextcloudsync)
@@ -205,15 +266,32 @@ target_link_libraries(nextcloudsync
   Nextcloud::csync
   OpenSSL::Crypto
   OpenSSL::SSL
+  PkgConfig::OPENSC-LIBP11
   ${OS_SPECIFIC_LINK_LIBRARIES}
   Qt::Core
   Qt::Network
   Qt::WebSockets
   Qt::Xml
   Qt::Sql
+  Qt::Gui
+  Qt::Svg
+  Qt::Widgets
   KF6::Archive
   Qt::Core5Compat
 )
+
+# needed to allow the dynamic load of the openvfs based VFS plug-in inside the AppImage package
+find_package(OpenVFS 0.1.0 QUIET)
+set_package_properties(OpenVFS PROPERTIES TYPE OPTIONAL
+        DESCRIPTION "A Virtual Filesystem Layer for cloud storages for the free desktop"
+        URL "https://github.com/opencloud-eu/openvfs/")
+
+if(TARGET OpenVFS::OpenVFS)
+    target_link_libraries(nextcloudsync
+      PUBLIC
+      OpenVFS::LibOpenVFS
+  )
+endif()
 
 target_compile_features(nextcloudsync
     PRIVATE
@@ -221,6 +299,7 @@ target_compile_features(nextcloudsync
 )
 
 target_compile_definitions(nextcloudsync PRIVATE OPENSSL_SUPPRESS_DEPRECATED)
+target_compile_definitions(nextcloudsync PRIVATE QT_NO_KEYWORDS)
 
 if (NOT TOKEN_AUTH_ONLY)
     find_package(Qt${QT_MAJOR_VERSION} COMPONENTS REQUIRED Widgets Svg)
@@ -258,6 +337,24 @@ set_target_properties(
         ${APPLICATION_EXECUTABLE}sync
 )
 
+if(BUILD_OWNCLOUD_OSX_BUNDLE)
+    # macdeployqt (POST_BUILD on nextcloud) replaces the build-tree RPATH with
+    # @loader_path/../Frameworks.  Setting BUILD_WITH_INSTALL_RPATH prevents CMake
+    # from trying to adjust RPATHs at cmake --install time (which would conflict
+    # with changes macdeployqt has already made).
+    #
+    # INSTALL_NAME_DIR "@rpath" keeps the dylib's install_name as
+    # @rpath/libnextcloudsync.0.dylib through cmake --install.  Without it CMake
+    # defaults to ${CMAKE_INSTALL_PREFIX}/lib/libnextcloudsync.0.dylib and rewrites
+    # the nextcloud executable's @rpath reference to that absolute path during
+    # install -- a path nothing is ever installed to -- causing dyld to fail at
+    # launch with "Library not loaded: .../build/.../lib/libnextcloudsync.0.dylib".
+    set_target_properties(nextcloudsync PROPERTIES
+        BUILD_WITH_INSTALL_RPATH TRUE
+        INSTALL_NAME_DIR "@rpath"
+    )
+endif()
+
 if(NOT BUILD_OWNCLOUD_OSX_BUNDLE)
     install(TARGETS nextcloudsync
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
@@ -268,5 +365,8 @@ else()
     install(TARGETS nextcloudsync DESTINATION ${OWNCLOUD_OSX_BUNDLE}/Contents/MacOS)
 endif()
 
+if (WIN32)
+    install(FILES $<TARGET_PDB_FILE:nextcloudsync> DESTINATION bin OPTIONAL)
+endif()
 
 add_subdirectory(vfs)

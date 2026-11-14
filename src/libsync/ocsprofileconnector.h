@@ -1,3 +1,7 @@
+/*
+ * SPDX-FileCopyrightText: 2021 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
 #pragma once
 
 #include "accountfwd.h"
@@ -36,7 +40,7 @@ public:
     void fetchHovercard(const QString &userId);
     [[nodiscard]] const Hovercard &hovercard() const;
 
-signals:
+Q_SIGNALS:
     void error();
     void hovercardFetched();
     void iconLoaded(const std::size_t hovercardActionIndex);

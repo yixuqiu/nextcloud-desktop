@@ -1,8 +1,11 @@
 /*
- *    This software is in the public domain, furnished "as is", without technical
- *    support, and with no warranty, express or implied, as to its usefulness for
- *    any purpose.
+ * SPDX-FileCopyrightText: 2022 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2018 ownCloud GmbH
+ * SPDX-License-Identifier: CC0-1.0
  *
+ * This software is in the public domain, furnished "as is", without technical
+ * support, and with no warranty, express or implied, as to its usefulness for
+ * any purpose.
  */
 
 #include <QtTest>
@@ -22,7 +25,15 @@ class TestBlacklist : public QObject
 {
     Q_OBJECT
 
-private slots:
+private Q_SLOTS:
+    void initTestCase()
+    {
+        OCC::Logger::instance()->setLogFlush(true);
+        OCC::Logger::instance()->setLogDebug(true);
+
+        QStandardPaths::setTestModeEnabled(true);
+    }
+
     void testBlacklistBasic_data()
     {
         QTest::addColumn<bool>("remote");
@@ -38,7 +49,7 @@ private slots:
         QCOMPARE(fakeFolder.currentLocalState(), fakeFolder.currentRemoteState());
         ItemCompletedSpy completeSpy(fakeFolder);
 
-        auto &modifier = remote ? fakeFolder.remoteModifier() : fakeFolder.localModifier();
+        auto &modifier = remote ? fakeFolder.remoteModifier() : static_cast<FileModifier&>(fakeFolder.localModifier());
 
         int counter = 0;
         const QByteArray testFileName = QByteArrayLiteral("A/new");
@@ -47,10 +58,12 @@ private slots:
             if (req.url().path().endsWith(testFileName)) {
                 reqId = req.rawHeader("X-Request-ID");
             }
-            if (!remote && op == QNetworkAccessManager::PutOperation)
+            if (!remote && op == QNetworkAccessManager::PutOperation) {
                 ++counter;
-            if (remote && op == QNetworkAccessManager::GetOperation)
+            }
+            if (remote && op == QNetworkAccessManager::GetOperation) {
                 ++counter;
+            }
             return nullptr;
         });
 
@@ -79,8 +92,9 @@ private slots:
             QVERIFY(entry._ignoreDuration > 0);
             QCOMPARE(entry._requestId, reqId);
 
-            if (remote)
+            if (remote) {
                 QCOMPARE(journalRecord(fakeFolder, "A")._etag, initialEtag);
+            }
         }
         cleanup();
 
@@ -100,8 +114,9 @@ private slots:
             QVERIFY(entry._ignoreDuration > 0);
             QCOMPARE(entry._requestId, reqId);
 
-            if (remote)
+            if (remote) {
                 QCOMPARE(journalRecord(fakeFolder, "A")._etag, initialEtag);
+            }
         }
         cleanup();
 
@@ -127,8 +142,9 @@ private slots:
             QVERIFY(entry._ignoreDuration > 0);
             QCOMPARE(entry._requestId, reqId);
 
-            if (remote)
+            if (remote) {
                 QCOMPARE(journalRecord(fakeFolder, "A")._etag, initialEtag);
+            }
         }
         cleanup();
 
@@ -149,8 +165,9 @@ private slots:
             QVERIFY(entry._ignoreDuration > 0);
             QCOMPARE(entry._requestId, reqId);
 
-            if (remote)
+            if (remote) {
                 QCOMPARE(journalRecord(fakeFolder, "A")._etag, initialEtag);
+            }
         }
         cleanup();
 
@@ -173,8 +190,9 @@ private slots:
             QVERIFY(!entry.isValid());
             QCOMPARE(counter, 4);
 
-            if (remote)
+            if (remote) {
                 QCOMPARE(journalRecord(fakeFolder, "A")._etag, fakeFolder.currentRemoteState().find("A")->etag);
+            }
         }
         cleanup();
 

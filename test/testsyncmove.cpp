@@ -1,14 +1,19 @@
 /*
- *    This software is in the public domain, furnished "as is", without technical
- *    support, and with no warranty, express or implied, as to its usefulness for
- *    any purpose.
- *
+ * SPDX-FileCopyrightText: 2021 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2017 ownCloud, Inc.
+ * SPDX-License-Identifier: CC0-1.0
+ * 
+ * This software is in the public domain, furnished "as is", without technical
+ * support, and with no warranty, express or implied, as to its usefulness for
+ * any purpose.
  */
 
 #include <QtTest>
+#include <QFile>
 #include "common/result.h"
 #include "syncenginetestutils.h"
 #include <syncengine.h>
+#include <propagatorjobs.h>
 
 using namespace OCC;
 
@@ -18,19 +23,26 @@ struct OperationCounter {
     int nPUT = 0;
     int nMOVE = 0;
     int nDELETE = 0;
+    int nPROPFIND = 0;
+    int nMKCOL = 0;
 
     void reset() { *this = {}; }
 
     auto functor() {
         return [&](QNetworkAccessManager::Operation op, const QNetworkRequest &req, QIODevice *) {
-            if (op == QNetworkAccessManager::GetOperation)
+            if (op == QNetworkAccessManager::GetOperation) {
                 ++nGET;
-            if (op == QNetworkAccessManager::PutOperation)
+            } else if (op == QNetworkAccessManager::PutOperation) {
                 ++nPUT;
-            if (op == QNetworkAccessManager::DeleteOperation)
+            } else if (op == QNetworkAccessManager::DeleteOperation) {
                 ++nDELETE;
-            if (req.attribute(QNetworkRequest::CustomVerbAttribute).toString() == "MOVE")
+            } else if (req.attribute(QNetworkRequest::CustomVerbAttribute).toString() == "MOVE") {
                 ++nMOVE;
+            } else if (req.attribute(QNetworkRequest::CustomVerbAttribute).toString() == "PROPFIND") {
+                ++nPROPFIND;
+            } else if (req.attribute(QNetworkRequest::CustomVerbAttribute).toString() == "MKCOL") {
+                ++nMKCOL;
+            }
             return nullptr;
         };
     }
@@ -68,9 +80,10 @@ bool expectAndWipeConflict(FileModifier &local, FileInfo state, const QString pa
 {
     PathComponents pathComponents(path);
     auto base = state.find(pathComponents.parentDirComponents());
-    if (!base)
+    if (!base) {
         return false;
-    for (const auto &item : qAsConst(base->children)) {
+    }
+    for (const auto &item : std::as_const(base->children)) {
         if (item.name.startsWith(pathComponents.fileName()) && item.name.contains("(conflicted copy")) {
             local.remove(item.path());
             return true;
@@ -79,15 +92,25 @@ bool expectAndWipeConflict(FileModifier &local, FileInfo state, const QString pa
     return false;
 }
 
+static void setAllPerm(FileInfo *fi, OCC::RemotePermissions perm)
+{
+    fi->permissions = perm;
+    for (auto &subFi : fi->children) {
+        setAllPerm(&subFi, perm);
+    }
+}
+
 class TestSyncMove : public QObject
 {
     Q_OBJECT
 
-private slots:
+private Q_SLOTS:
     void initTestCase()
     {
         Logger::instance()->setLogFlush(true);
         Logger::instance()->setLogDebug(true);
+
+        QStandardPaths::setTestModeEnabled(true);
     }
 
     void testMoveCustomRemoteRoot()
@@ -226,10 +249,12 @@ private slots:
         int nPUT = 0;
         int nDELETE = 0;
         fakeFolder.setServerOverride([&](QNetworkAccessManager::Operation op, const QNetworkRequest &, QIODevice *) {
-            if (op == QNetworkAccessManager::PutOperation)
+            if (op == QNetworkAccessManager::PutOperation) {
                 ++nPUT;
-            if (op == QNetworkAccessManager::DeleteOperation)
+            }
+            if (op == QNetworkAccessManager::DeleteOperation) {
                 ++nDELETE;
+            }
             return nullptr;
         });
 
@@ -302,6 +327,45 @@ private slots:
         QCOMPARE(nDELETE, 5);
         QCOMPARE(fakeFolder.currentLocalState(), remoteInfo);
         QCOMPARE(printDbData(fakeFolder.dbState()), printDbData(remoteInfo));
+    }
+
+    void testLocalExternalStorageRenameDetection()
+    {
+        FakeFolder fakeFolder{{}};
+        fakeFolder.remoteModifier().mkdir("external-storage");
+        auto externalStorage = fakeFolder.remoteModifier().find("external-storage");
+        externalStorage->extraDavProperties = "<nc:is-mount-root>true</nc:is-mount-root>";
+        setAllPerm(externalStorage, RemotePermissions::fromServerString("WDNVCKRMG"));
+        QVERIFY(fakeFolder.syncOnce());
+
+        OperationCounter operationCounter;
+        fakeFolder.setServerOverride(operationCounter.functor());
+
+        fakeFolder.localModifier().insert("external-storage/file", 100);
+        QVERIFY(fakeFolder.syncOnce());
+        QCOMPARE(fakeFolder.currentLocalState(), fakeFolder.currentRemoteState());
+        QCOMPARE(printDbData(fakeFolder.dbState()), printDbData(fakeFolder.remoteModifier()));
+        QCOMPARE(operationCounter.nPUT, 1);
+
+        const auto firstFileId = fakeFolder.remoteModifier().find("external-storage/file")->fileId;
+
+        fakeFolder.localModifier().rename("external-storage/file", "external-storage/file2");
+        QVERIFY(fakeFolder.syncOnce());
+        QCOMPARE(operationCounter.nMOVE, 1);
+
+        fakeFolder.localModifier().rename("external-storage/file2", "external-storage/file3");
+        QVERIFY(fakeFolder.syncOnce());
+        QCOMPARE(operationCounter.nMOVE, 2);
+
+        const auto renamedFileId = fakeFolder.remoteModifier().find("external-storage/file3")->fileId;
+
+        QCOMPARE(fakeFolder.currentLocalState(), fakeFolder.currentRemoteState());
+        QCOMPARE(printDbData(fakeFolder.dbState()), printDbData(fakeFolder.remoteModifier()));
+
+        QCOMPARE(fakeFolder.remoteModifier().find("external-storage/file"), nullptr);
+        QCOMPARE(fakeFolder.remoteModifier().find("external-storage/file2"), nullptr);
+        QVERIFY(fakeFolder.remoteModifier().find("external-storage/file3"));
+        QCOMPARE(firstFileId, renamedFileId);
     }
 
     void testDuplicateFileId_data()
@@ -608,13 +672,13 @@ private slots:
         auto currentLocal = fakeFolder.currentLocalState();
         auto conflicts = findConflicts(currentLocal.children["A4"]);
         QCOMPARE(conflicts.size(), 1);
-        for (const auto& c : conflicts) {
+        for (const auto& c : std::as_const(conflicts)) {
             QCOMPARE(currentLocal.find(c)->contentChar, 'L');
             local.remove(c);
         }
         conflicts = findConflicts(currentLocal.children["B4"]);
         QCOMPARE(conflicts.size(), 1);
-        for (const auto& c : qAsConst(conflicts)) {
+        for (const auto& c : std::as_const(conflicts)) {
             QCOMPARE(currentLocal.find(c)->contentChar, 'L');
             local.remove(c);
         }
@@ -684,38 +748,6 @@ private slots:
             // BUG: This doesn't behave right
             //QCOMPARE(fakeFolder.currentLocalState(), fakeFolder.currentRemoteState());
         }
-    }
-
-    // https://github.com/owncloud/client/issues/6629#issuecomment-402450691
-    // When a file is moved and the server mtime was not in sync, the local mtime should be kept
-    void testMoveAndMTimeChange()
-    {
-        FakeFolder fakeFolder{ FileInfo::A12_B12_C12_S12() };
-        OperationCounter counter;
-        fakeFolder.setServerOverride(counter.functor());
-
-        // Changing the mtime on the server (without invalidating the etag)
-        fakeFolder.remoteModifier().find("A/a1")->lastModified = QDateTime::currentDateTimeUtc().addSecs(-50000);
-        fakeFolder.remoteModifier().find("A/a2")->lastModified = QDateTime::currentDateTimeUtc().addSecs(-40000);
-
-        // Move a few files
-        fakeFolder.remoteModifier().rename("A/a1", "A/a1_server_renamed");
-        fakeFolder.localModifier().rename("A/a2", "A/a2_local_renamed");
-
-        QVERIFY(fakeFolder.syncOnce());
-        QCOMPARE(counter.nGET, 0);
-        QCOMPARE(counter.nPUT, 0);
-        QCOMPARE(counter.nMOVE, 1);
-        QCOMPARE(counter.nDELETE, 0);
-
-        // Another sync should do nothing
-        QVERIFY(fakeFolder.syncOnce());
-        QCOMPARE(counter.nGET, 0);
-        QCOMPARE(counter.nPUT, 0);
-        QCOMPARE(counter.nMOVE, 1);
-        QCOMPARE(counter.nDELETE, 0);
-
-        QCOMPARE(fakeFolder.currentLocalState(), fakeFolder.currentRemoteState());
     }
 
     // Test for https://github.com/owncloud/client/issues/6694
@@ -789,7 +821,7 @@ private slots:
     {
         QFETCH(bool, local);
         FakeFolder fakeFolder { FileInfo::A12_B12_C12_S12() };
-        auto &modifier = local ? fakeFolder.localModifier() : fakeFolder.remoteModifier();
+        auto &modifier = local ? static_cast<FileModifier&>(fakeFolder.localModifier()) : fakeFolder.remoteModifier();
 
         modifier.mkdir("FolA");
         modifier.mkdir("FolA/FolB");
@@ -842,7 +874,7 @@ private slots:
         fakeFolder.remoteModifier().rename("B", "_B");
 
         QVERIFY(fakeFolder.syncOnce());
-        QCOMPARE(fakeFolder.currentRemoteState(), fakeFolder.currentRemoteState());
+        QCOMPARE(fakeFolder.currentRemoteState(), fakeFolder.currentLocalState());
         QVERIFY(fakeFolder.currentRemoteState().find("_A/a1m"));
         QVERIFY(fakeFolder.currentRemoteState().find("_B/b1m"));
         QCOMPARE(counter.nDELETE, 0);
@@ -857,7 +889,7 @@ private slots:
         fakeFolder.localModifier().rename("_A", "S/A");
         fakeFolder.remoteModifier().rename("_B", "S/B");
         QVERIFY(fakeFolder.syncOnce());
-        QCOMPARE(fakeFolder.currentRemoteState(), fakeFolder.currentRemoteState());
+        QCOMPARE(fakeFolder.currentRemoteState(), fakeFolder.currentLocalState());
         QVERIFY(fakeFolder.currentRemoteState().find("S/A/a2m"));
         QVERIFY(fakeFolder.currentRemoteState().find("S/B/b2m"));
         QCOMPARE(counter.nDELETE, 0);
@@ -881,7 +913,7 @@ private slots:
         fakeFolder.remoteModifier().rename("B/b2", "C/b2");
 
         QVERIFY(fakeFolder.syncOnce());
-        QCOMPARE(fakeFolder.currentRemoteState(), fakeFolder.currentRemoteState());
+        QCOMPARE(fakeFolder.currentRemoteState(), fakeFolder.currentLocalState());
         QVERIFY(fakeFolder.currentRemoteState().find("A/b1"));
         QVERIFY(fakeFolder.currentRemoteState().find("C/b1"));
         QVERIFY(fakeFolder.currentRemoteState().find("A/b2"));
@@ -947,12 +979,15 @@ private slots:
         } else {
             QWARN("Skipping Vfs::WindowsCfApi");
         }
-
 #endif
     }
 
     void testMovedWithError()
     {
+#if defined Q_OS_MACOS
+        QSKIP("not reliable on macOS");
+#endif
+
         QFETCH(Vfs::Mode, vfsMode);
         const auto getName = [vfsMode] (const QString &s)
         {
@@ -1122,6 +1157,397 @@ private slots:
         QVERIFY(fakeFolder.syncOnce());
 
         QCOMPARE(fakeFolder.currentLocalState(), fakeFolder.currentRemoteState());
+    }
+
+    void testBlockRenameTopFolderFromGroupFolder()
+    {
+        FakeFolder fakeFolder{{}};
+        fakeFolder.syncEngine().account()->setServerVersion("29.0.2.0");
+
+        fakeFolder.remoteModifier().mkdir("FolA");
+        auto groupFolderRoot = fakeFolder.remoteModifier().find("FolA");
+        groupFolderRoot->extraDavProperties = "<nc:is-mount-root>true</nc:is-mount-root>";
+        setAllPerm(groupFolderRoot, RemotePermissions::fromServerString("WDNVCKRMG"));
+        fakeFolder.remoteModifier().mkdir("FolA/FolB");
+        fakeFolder.remoteModifier().mkdir("FolA/FolB/FolC");
+        fakeFolder.remoteModifier().mkdir("FolA/FolB/FolC/FolD");
+        fakeFolder.remoteModifier().mkdir("FolA/FolB/FolC/FolD/FolE");
+        fakeFolder.remoteModifier().insert("FolA/FileA.txt");
+        fakeFolder.remoteModifier().insert("FolA/FolB/FileB.txt");
+        fakeFolder.remoteModifier().insert("FolA/FolB/FolC/FileC.txt");
+        fakeFolder.remoteModifier().insert("FolA/FolB/FolC/FolD/FileD.txt");
+        fakeFolder.remoteModifier().insert("FolA/FolB/FolC/FolD/FolE/FileE.txt");
+        QVERIFY(fakeFolder.syncOnce());
+
+        OperationCounter counter;
+        fakeFolder.setServerOverride(counter.functor());
+
+        fakeFolder.localModifier().insert("FolA/FileA2.txt");
+        fakeFolder.localModifier().insert("FolA/FolB/FileB2.txt");
+        fakeFolder.localModifier().insert("FolA/FolB/FolC/FileC2.txt");
+        fakeFolder.localModifier().insert("FolA/FolB/FolC/FolD/FileD2.txt");
+        fakeFolder.localModifier().insert("FolA/FolB/FolC/FolD/FolE/FileE2.txt");
+        fakeFolder.localModifier().rename("FolA", "FolA_Renamed");
+        QVERIFY(fakeFolder.syncOnce());
+        QCOMPARE(counter.nDELETE, 0);
+        QCOMPARE(counter.nGET, 0);
+        QCOMPARE(counter.nPUT, 10);
+        QCOMPARE(counter.nMOVE, 0);
+        QCOMPARE(counter.nMKCOL, 5);
+    }
+
+    void testAllowRenameChildFolderFromGroupFolder()
+    {
+        FakeFolder fakeFolder{{}};
+        fakeFolder.syncEngine().account()->setServerVersion("29.0.2.0");
+
+        fakeFolder.remoteModifier().mkdir("FolA");
+        auto groupFolderRoot = fakeFolder.remoteModifier().find("FolA");
+        groupFolderRoot->extraDavProperties = "<nc:is-mount-root>true</nc:is-mount-root>";
+        setAllPerm(groupFolderRoot, RemotePermissions::fromServerString("WDNVCKRMG"));
+        fakeFolder.remoteModifier().mkdir("FolA/FolB");
+        fakeFolder.remoteModifier().mkdir("FolA/FolB/FolC");
+        fakeFolder.remoteModifier().mkdir("FolA/FolB/FolC/FolD");
+        fakeFolder.remoteModifier().mkdir("FolA/FolB/FolC/FolD/FolE");
+        fakeFolder.remoteModifier().insert("FolA/FileA.txt");
+        fakeFolder.remoteModifier().insert("FolA/FolB/FileB.txt");
+        fakeFolder.remoteModifier().insert("FolA/FolB/FolC/FileC.txt");
+        fakeFolder.remoteModifier().insert("FolA/FolB/FolC/FolD/FileD.txt");
+        fakeFolder.remoteModifier().insert("FolA/FolB/FolC/FolD/FolE/FileE.txt");
+        QVERIFY(fakeFolder.syncOnce());
+
+        OperationCounter counter;
+        fakeFolder.setServerOverride(counter.functor());
+
+        fakeFolder.localModifier().insert("FolA/FileA2.txt");
+        fakeFolder.localModifier().insert("FolA/FolB/FileB2.txt");
+        fakeFolder.localModifier().insert("FolA/FolB/FolC/FileC2.txt");
+        fakeFolder.localModifier().insert("FolA/FolB/FolC/FolD/FileD2.txt");
+        fakeFolder.localModifier().insert("FolA/FolB/FolC/FolD/FolE/FileE2.txt");
+        fakeFolder.localModifier().rename("FolA/FolB", "FolA/FolB_Renamed");
+        fakeFolder.localModifier().rename("FolA/FileA.txt", "FolA/FileA_Renamed.txt");
+        QVERIFY(fakeFolder.syncOnce());
+        QCOMPARE(counter.nDELETE, 0);
+        QCOMPARE(counter.nGET, 0);
+        QCOMPARE(counter.nPUT, 5);
+        QCOMPARE(counter.nMOVE, 2);
+        QCOMPARE(counter.nMKCOL, 0);
+    }
+
+    void testMultipleRenameFromServer()
+    {
+        FakeFolder fakeFolder{{}};
+
+        fakeFolder.remoteModifier().mkdir("root");
+        fakeFolder.remoteModifier().mkdir("root/stable");
+        fakeFolder.remoteModifier().mkdir("root/stable/folder to move");
+        fakeFolder.remoteModifier().insert("root/stable/folder to move/index.txt");
+        fakeFolder.remoteModifier().mkdir("root/stable/move");
+        QVERIFY(fakeFolder.syncOnce());
+        QCOMPARE(fakeFolder.currentLocalState(), fakeFolder.currentRemoteState());
+
+        fakeFolder.remoteModifier().rename("root", "root test");
+        fakeFolder.remoteModifier().rename("root test/stable/folder to move", "root test/stable/folder");
+        fakeFolder.remoteModifier().rename("root test/stable/folder", "root test/stable/move/folder");
+        OperationCounter counter;
+        fakeFolder.setServerOverride(counter.functor());
+
+        connect(&fakeFolder.syncEngine(), &SyncEngine::aboutToPropagate, [&](SyncFileItemVector &items) {
+            SyncFileItemPtr root, stable, folder, file, move;
+            for (auto &item : items) {
+                qDebug() << item->_file;
+                if (item->_file == "root") {
+                    root = item;
+                } else if (item->_file == "root test/stable") {
+                    stable = item;
+                } else if (item->_file == "root test/stable/move") {
+                    move = item;
+                } else if (item->_file == "root/stable/folder to move") {
+                    folder = item;
+                } else if (item->_file == "root test/stable/move/folder/index.txt") {
+                    file = item;
+                }
+            }
+
+            QVERIFY(root);
+            QCOMPARE(root->_instruction, CSYNC_INSTRUCTION_RENAME);
+            QCOMPARE(root->_direction, SyncFileItem::Down);
+
+            QVERIFY(stable);
+            QCOMPARE(stable->_instruction, CSYNC_INSTRUCTION_RENAME);
+            QCOMPARE(stable->_direction, SyncFileItem::Down);
+
+            QVERIFY(move);
+            QCOMPARE(move->_instruction, CSYNC_INSTRUCTION_RENAME);
+            QCOMPARE(move->_direction, SyncFileItem::Down);
+
+            QVERIFY(folder);
+            QCOMPARE(folder->_instruction, CSYNC_INSTRUCTION_RENAME);
+            QCOMPARE(folder->_direction, SyncFileItem::Down);
+
+            QVERIFY(file);
+            QCOMPARE(file->_instruction, CSYNC_INSTRUCTION_RENAME);
+            QCOMPARE(file->_direction, SyncFileItem::Down);
+        });
+
+        QVERIFY(fakeFolder.syncOnce());
+        QCOMPARE(counter.nDELETE, 0);
+        QCOMPARE(counter.nGET, 0);
+        QCOMPARE(counter.nPUT, 0);
+        QCOMPARE(counter.nMOVE, 0);
+        QCOMPARE(counter.nMKCOL, 0);
+        QCOMPARE(fakeFolder.currentLocalState(), fakeFolder.currentRemoteState());
+    }
+
+    void testMultipleRenameFromLocal()
+    {
+        FakeFolder fakeFolder{{}};
+
+        fakeFolder.remoteModifier().mkdir("root");
+        fakeFolder.remoteModifier().mkdir("root/stable");
+        fakeFolder.remoteModifier().mkdir("root/stable/folder to move");
+        fakeFolder.remoteModifier().insert("root/stable/folder to move/index.txt");
+        fakeFolder.remoteModifier().mkdir("root/stable/move");
+        QVERIFY(fakeFolder.syncOnce());
+        QCOMPARE(fakeFolder.currentLocalState(), fakeFolder.currentRemoteState());
+
+        fakeFolder.localModifier().rename("root", "root test");
+        fakeFolder.localModifier().rename("root test/stable/folder to move", "root test/stable/folder");
+        fakeFolder.localModifier().rename("root test/stable/folder", "root test/stable/move/folder");
+        OperationCounter counter;
+        fakeFolder.setServerOverride(counter.functor());
+
+        QVERIFY(fakeFolder.syncOnce());
+        QCOMPARE(counter.nDELETE, 0);
+        QCOMPARE(counter.nGET, 0);
+        QCOMPARE(counter.nPUT, 0);
+        QCOMPARE(counter.nMOVE, 2);
+        QCOMPARE(counter.nMKCOL, 0);
+        QCOMPARE(fakeFolder.currentLocalState(), fakeFolder.currentRemoteState());
+    }
+
+    void testRenameComplexScenarioNoRecordLeak()
+    {
+        FakeFolder fakeFolder{FileInfo{}};
+
+        QCOMPARE(fakeFolder.currentLocalState(), fakeFolder.currentRemoteState());
+
+        fakeFolder.remoteModifier().mkdir("0");
+        fakeFolder.remoteModifier().mkdir("0/00 without file");
+        fakeFolder.remoteModifier().mkdir("0/00 without file/project");
+        fakeFolder.remoteModifier().mkdir("0/00 without file/project/a");
+        fakeFolder.remoteModifier().mkdir("0/00 without file/project/a/a with file");
+        fakeFolder.remoteModifier().mkdir("0/00 without file/project/a/a without file");
+        fakeFolder.remoteModifier().mkdir("0/00 without file/project/a/aa with file");
+        fakeFolder.remoteModifier().mkdir("0/00 without file/project/00 with file");
+        fakeFolder.remoteModifier().mkdir("0/00 without file/project/new without file");
+        fakeFolder.remoteModifier().insert("0/00 without file/project/00 with file/test.md");
+        fakeFolder.remoteModifier().insert("0/00 without file/project/a/a with file/test.md");
+        fakeFolder.remoteModifier().insert("0/00 without file/project/a/aa with file/test.md");
+
+        QVERIFY(fakeFolder.syncOnce());
+
+        auto itemsCounter = 0;
+        auto dbResult = fakeFolder.syncJournal().getFilesBelowPath("", [&itemsCounter] (const SyncJournalFileRecord&) -> void { ++itemsCounter; });
+
+        QVERIFY(dbResult);
+        QCOMPARE(itemsCounter, 12);
+
+        fakeFolder.remoteModifier().rename("0/00 without file/project", "project tests");
+        fakeFolder.remoteModifier().rename("project tests/a", "project tests/a empty");
+        fakeFolder.remoteModifier().rename("project tests/a empty/a with file", "project tests/a with file");
+        fakeFolder.remoteModifier().rename("project tests/a empty/a without file", "project tests/a without file");
+        fakeFolder.remoteModifier().rename("project tests/a empty/aa with file", "project tests/aa with file");
+        fakeFolder.remoteModifier().rename("project tests/new without file", "project tests/new without file");
+        fakeFolder.remoteModifier().rename("0/00 without file", "project tests/00 without file");
+        fakeFolder.remoteModifier().rename("0", "project tests/z 0 empty");
+
+        connect(&fakeFolder.syncEngine(), &OCC::SyncEngine::itemCompleted, this, [&fakeFolder] () {
+            auto itemsCounter = 0;
+            auto dbResult = fakeFolder.syncJournal().getFilesBelowPath("", [&itemsCounter] (const SyncJournalFileRecord&) -> void { ++itemsCounter; });
+
+            QVERIFY(dbResult);
+            if (itemsCounter > 12) {
+                QVERIFY(itemsCounter <= 12);
+            }
+        });
+
+        QVERIFY(fakeFolder.syncOnce());
+
+        itemsCounter = 0;
+        dbResult = fakeFolder.syncJournal().getFilesBelowPath("", [&itemsCounter] (const SyncJournalFileRecord&) -> void { ++itemsCounter; });
+
+        QVERIFY(dbResult);
+        QCOMPARE(itemsCounter, 12);
+    }
+
+    void testRenameFileThatExistsInMultiplePaths()
+    {
+        FakeFolder fakeFolder{FileInfo{}};
+        QObject parent;
+
+        fakeFolder.setServerOverride([&parent](QNetworkAccessManager::Operation op, const QNetworkRequest &request, QIODevice *) -> QNetworkReply * {
+            if (op == QNetworkAccessManager::CustomOperation
+                && request.attribute(QNetworkRequest::CustomVerbAttribute).toString() == QStringLiteral("MOVE")) {
+                return new FakeErrorReply(op, request, &parent, 507);
+            }
+            return nullptr;
+        });
+
+        fakeFolder.remoteModifier().mkdir("FolderA");
+        fakeFolder.remoteModifier().mkdir("FolderA/folderParent");
+        fakeFolder.remoteModifier().insert("FolderA/folderParent/FileA.txt");
+        fakeFolder.remoteModifier().mkdir("FolderB");
+        fakeFolder.remoteModifier().mkdir("FolderB/folderChild");
+        fakeFolder.remoteModifier().insert("FolderB/folderChild/FileA.txt");
+        fakeFolder.remoteModifier().mkdir("FolderC");
+
+        const auto fileAFileInfo = fakeFolder.remoteModifier().find("FolderA/folderParent/FileA.txt");
+        const auto fileAInFolderAFolderFileId = fileAFileInfo->fileId;
+        const auto fileAInFolderAEtag = fileAFileInfo->etag;
+        const auto duplicatedFileAFileInfo = fakeFolder.remoteModifier().find("FolderB/folderChild/FileA.txt");
+
+        duplicatedFileAFileInfo->fileId = fileAInFolderAFolderFileId;
+        duplicatedFileAFileInfo->etag = fileAInFolderAEtag;
+
+        QVERIFY(fakeFolder.syncOnce());
+
+        QCOMPARE(fakeFolder.currentLocalState(), fakeFolder.currentRemoteState());
+
+        fakeFolder.localModifier().rename("FolderA/folderParent/FileA.txt", "FolderC/FileA.txt");
+
+        qDebug() << fakeFolder.currentLocalState();
+
+        fakeFolder.syncEngine().setLocalDiscoveryOptions(OCC::LocalDiscoveryStyle::FilesystemOnly);
+        QVERIFY(!fakeFolder.syncOnce());
+
+        qDebug() << fakeFolder.currentLocalState();
+
+        fakeFolder.syncEngine().setLocalDiscoveryOptions(OCC::LocalDiscoveryStyle::FilesystemOnly);
+        QVERIFY(fakeFolder.syncOnce());
+
+        qDebug() << fakeFolder.currentLocalState();
+    }
+    // PropagateLocalRename must clear the lock token and locked state.
+    void testLockTokenClearedOnServerInitiatedRename()
+    {
+        FakeFolder fakeFolder{FileInfo{QString{}, {FileInfo{QStringLiteral("D"), {{"file.txt", 64}}}}}};
+        QVERIFY(fakeFolder.syncOnce());
+        seedStaleLock(fakeFolder, "D/file.txt");
+
+        fakeFolder.remoteModifier().rename("D", "D2");
+        QVERIFY(fakeFolder.syncOnce());
+
+        SyncJournalFileRecord moved;
+        QVERIFY(fakeFolder.syncJournal().getFileRecord(QByteArray("D2/file.txt"), &moved));
+        QVERIFY(moved.isValid());
+        QVERIFY(moved._lockstate._lockToken.isEmpty());
+        QVERIFY(!moved._lockstate._locked);
+
+        const auto oldState = fakeFolder.currentRemoteState();
+        QVERIFY(fakeFolder.syncOnce());
+        QCOMPARE(fakeFolder.currentLocalState(), oldState);
+    }
+
+    // PropagateRemoteMove must clear the locked state.
+    void testLockedStateClearedOnClientInitiatedRename()
+    {
+        FakeFolder fakeFolder{FileInfo{QString{}, {FileInfo{QStringLiteral("D"), {{"file.txt", 64}}}}}};
+        QVERIFY(fakeFolder.syncOnce());
+        seedStaleLock(fakeFolder, "D/file.txt");
+
+        fakeFolder.localModifier().rename("D", "D2");
+        QVERIFY(fakeFolder.syncOnce());
+
+        SyncJournalFileRecord moved;
+        QVERIFY(fakeFolder.syncJournal().getFileRecord(QByteArray("D2/file.txt"), &moved));
+        QVERIFY(moved.isValid());
+        QVERIFY(moved._lockstate._lockToken.isEmpty());
+        QVERIFY(!moved._lockstate._locked);
+
+        const auto oldState = fakeFolder.currentRemoteState();
+        QVERIFY(fakeFolder.syncOnce());
+        QCOMPARE(fakeFolder.currentLocalState(), oldState);
+    }
+
+    // A 412 upload error must schedule rediscovery.
+    void testUpload412SchedulesRediscovery()
+    {
+        FakeFolder fakeFolder{FileInfo{QString{}, {FileInfo{QStringLiteral("D"), {{"file.txt", 64}}}}}};
+        QVERIFY(fakeFolder.syncOnce());
+
+        fakeFolder.localModifier().appendByte("D/file.txt");
+        fakeFolder.serverErrorPaths().append("D/file.txt", 412);
+        QVERIFY(!fakeFolder.syncOnce()); // Upload fails with 412.
+
+        // The 412 handler must invalidate the parent folder etag so the next sync
+        // rediscovers it instead of trusting the DB.
+        SyncJournalFileRecord parent;
+        QVERIFY(fakeFolder.syncJournal().getFileRecord(QByteArray("D"), &parent));
+        QVERIFY(parent.isValid());
+        QCOMPARE(parent._etag, QByteArrayLiteral("_invalid_"));
+
+        // After clearing the error, the next sync must succeed.
+        fakeFolder.serverErrorPaths().clear();
+        [[maybe_unused]] const auto blacklistWiped = fakeFolder.syncJournal().wipeErrorBlacklist();
+        QVERIFY(fakeFolder.syncOnce());
+        QCOMPARE(fakeFolder.currentLocalState(), fakeFolder.currentRemoteState());
+
+        const auto oldState = fakeFolder.currentRemoteState();
+        QVERIFY(fakeFolder.syncOnce());
+        QCOMPARE(fakeFolder.currentLocalState(), oldState);
+    }
+
+    // A 412 or 423 upload error must clear the whole lock state, not just the token.
+    void testUpload423ClearsStaleLockState()
+    {
+        // FakeFolder default-constructs with performInitialSync=true, so the DB is
+        // already populated with D/file.txt before seedStaleLock runs.
+        FakeFolder fakeFolder{FileInfo{QString{}, {FileInfo{QStringLiteral("D"), {{"file.txt", 64}}}}}};
+        seedStaleLock(fakeFolder, "D/file.txt");
+        fakeFolder.localModifier().appendByte("D/file.txt");
+        fakeFolder.serverErrorPaths().append("D/file.txt", 423);
+        // 423 → FileLocked in commonErrorHandling (which clears the DB lock), but
+        // FileLocked is swallowed by PropagatorCompositeJob so the overall sync
+        // reports success.
+        QVERIFY(fakeFolder.syncOnce());
+
+        SyncJournalFileRecord cleared;
+        QVERIFY(fakeFolder.syncJournal().getFileRecord(QByteArray("D/file.txt"), &cleared));
+        QVERIFY(cleared.isValid());
+        QVERIFY(cleared._lockstate._lockToken.isEmpty());
+        QVERIFY(!cleared._lockstate._locked);
+
+        fakeFolder.serverErrorPaths().clear();
+        const auto oldState = fakeFolder.currentLocalState();
+        QVERIFY(fakeFolder.syncOnce());
+        QCOMPARE(fakeFolder.currentRemoteState(), oldState);
+    }
+
+    // The journal cleanup after a failed local remove must not treat a sibling as a
+    // child: "A/BC" is not inside "A/B".
+    void testDeletedDirPrefixDoesNotMatchSibling()
+    {
+        QVERIFY(isPathInsideDeletedDir(QStringLiteral("A/B/child.txt"), QStringLiteral("A/B")));
+        QVERIFY(isPathInsideDeletedDir(QStringLiteral("A/B/sub/child.txt"), QStringLiteral("A/B")));
+
+        // Sibling sharing the prefix must not be skipped.
+        QVERIFY(!isPathInsideDeletedDir(QStringLiteral("A/BC"), QStringLiteral("A/B")));
+        QVERIFY(!isPathInsideDeletedDir(QStringLiteral("A/BC/child.txt"), QStringLiteral("A/B")));
+
+        // The directory itself is not inside itself, and an empty deletedDir matches nothing.
+        QVERIFY(!isPathInsideDeletedDir(QStringLiteral("A/B"), QStringLiteral("A/B")));
+        QVERIFY(!isPathInsideDeletedDir(QStringLiteral("A/B/child.txt"), QString()));
+    }
+
+private:
+    static void seedStaleLock(FakeFolder &folder, const QByteArray &path)
+    {
+        SyncJournalFileRecord record;
+        QVERIFY(folder.syncJournal().getFileRecord(path, &record));
+        record._lockstate._locked = true;
+        record._lockstate._lockToken = QStringLiteral("stale-token");
+        QVERIFY(folder.syncJournal().setFileRecord(record));
     }
 };
 

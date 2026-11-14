@@ -1,8 +1,10 @@
 /*
- *    This software is in the public domain, furnished "as is", without technical
- *    support, and with no warranty, express or implied, as to its usefulness for
- *    any purpose.
- *
+ * SPDX-FileCopyrightText: 2021 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: CC0-1.0
+ * 
+ * This software is in the public domain, furnished "as is", without technical
+ * support, and with no warranty, express or implied, as to its usefulness for
+ * any purpose.
  */
 
 #include <QtTest>
@@ -91,7 +93,7 @@ class TestSyncXAttr : public QObject
 {
     Q_OBJECT
 
-private slots:
+private Q_SLOTS:
     void testVirtualFileLifecycle_data()
     {
         QTest::addColumn<bool>("doLocalDiscovery");
@@ -111,8 +113,9 @@ private slots:
 
         auto cleanup = [&]() {
             completeSpy.clear();
-            if (!doLocalDiscovery)
+            if (!doLocalDiscovery) {
                 fakeFolder.syncEngine().setLocalDiscoveryOptions(LocalDiscoveryStyle::DatabaseAndFilesystem);
+            }
         };
         cleanup();
 
@@ -160,8 +163,9 @@ private slots:
         cleanup();
 
         // If the local virtual file is removed, this will be propagated remotely
-        if (!doLocalDiscovery)
+        if (!doLocalDiscovery) {
             fakeFolder.syncEngine().setLocalDiscoveryOptions(LocalDiscoveryStyle::DatabaseAndFilesystem, { "A" });
+        }
         fakeFolder.localModifier().remove("A/a1");
         QVERIFY(fakeFolder.syncOnce());
         QVERIFY(!fakeFolder.currentLocalState().find("A/a1"));

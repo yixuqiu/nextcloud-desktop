@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2021 Nextcloud GmbH and Nextcloud contributors
+# SPDX-License-Identifier: GPL-2.0-or-later
 if (WIN32)
     add_definitions(-D_WIN32_WINNT=_WIN32_WINNT_WIN10)
 
@@ -16,6 +18,8 @@ if (WIN32)
         Nextcloud::sync
         cldapi
     )
+
+    target_compile_definitions(nextcloudsync_vfs_cfapi PRIVATE QT_NO_KEYWORDS)
 
     set_target_properties(nextcloudsync_vfs_cfapi
       PROPERTIES
@@ -47,4 +51,6 @@ if (WIN32)
       LIBRARY DESTINATION "${vfs_installdir}"
       RUNTIME DESTINATION "${vfs_installdir}"
     )
+
+    install(FILES $<TARGET_PDB_FILE:nextcloudsync_vfs_cfapi> DESTINATION bin OPTIONAL)
 endif()

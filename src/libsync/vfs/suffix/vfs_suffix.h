@@ -1,15 +1,7 @@
 /*
- * Copyright (C) by Christian Kamm <mail@ckamm.de>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2020 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2018 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 #pragma once
 
@@ -38,11 +30,13 @@ public:
     [[nodiscard]] bool socketApiPinStateActionsShown() const override { return true; }
     [[nodiscard]] bool isHydrating() const override;
 
-    Result<void, QString> updateMetadata(const QString &filePath, time_t modtime, qint64 size, const QByteArray &fileId) override;
-    Result<Vfs::ConvertToPlaceholderResult, QString> updatePlaceholderMarkInSync(const QString &filePath, const QByteArray &fileId) override {Q_UNUSED(filePath) Q_UNUSED(fileId) return {QString{}};}
+    OCC::Result<OCC::Vfs::ConvertToPlaceholderResult, QString> updateMetadata(const SyncFileItem &syncItem, const QString &filePath, const QString &replacesFile) override;
+    Result<Vfs::ConvertToPlaceholderResult, QString> updatePlaceholderMarkInSync(const QString &filePath, const SyncFileItem &item) override {Q_UNUSED(filePath) Q_UNUSED(item) return {QString{}};}
     [[nodiscard]] bool isPlaceHolderInSync(const QString &filePath) const override { Q_UNUSED(filePath) return true; }
 
     Result<void, QString> createPlaceholder(const SyncFileItem &item) override;
+    Result<void, QString> createPlaceholders(const QList<SyncFileItemPtr> &items) override;
+
     Result<void, QString> dehydratePlaceholder(const SyncFileItem &item) override;
     Result<Vfs::ConvertToPlaceholderResult, QString> convertToPlaceholder(const QString &filename, const SyncFileItem &item, const QString &, UpdateMetadataTypes updateType) override;
 
@@ -55,7 +49,9 @@ public:
     { return pinStateInDb(folderPath); }
     AvailabilityResult availability(const QString &folderPath, const AvailabilityRecursivity recursiveCheck) override;
 
-public slots:
+    [[nodiscard]] HydrationJob *hydrateFile(const QByteArray &fileId, const QString &targetPath) override;
+
+public Q_SLOTS:
     void fileStatusChanged(const QString &, OCC::SyncFileStatus) override {}
 
 protected:
@@ -67,6 +63,9 @@ class SuffixVfsPluginFactory : public QObject, public DefaultPluginFactory<VfsSu
     Q_OBJECT
     Q_PLUGIN_METADATA(IID "org.owncloud.PluginFactory" FILE "vfspluginmetadata.json")
     Q_INTERFACES(OCC::PluginFactory)
+
+public:
+    [[nodiscard]] Result<void, QString> prepare(const QString &path, const QUuid &accountUuid) const override;
 };
 
 } // namespace OCC

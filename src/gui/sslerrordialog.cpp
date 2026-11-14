@@ -1,16 +1,9 @@
 /*
- * Copyright (C) by Klaas Freitag <freitag@kde.org>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2018 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2012 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
+
 #include "configfile.h"
 #include "sslerrordialog.h"
 #include "theme.h"
@@ -37,6 +30,27 @@ bool SslDialogErrorHandler::handleErrors(QList<QSslError> errors, const QSslConf
     if (!certs) {
         qCCritical(lcSslErrorDialog) << "Certs parameter required but is NULL!";
         return false;
+    }
+
+    if (!account) {
+        return false;
+    }
+
+    // Check if HSTS is active for this host
+    auto qnam = account->networkAccessManager();
+    if (qnam && qnam->isStrictTransportSecurityEnabled()) {
+        // Get the host from the account URL
+        QString host = account->url().host();
+
+        // Check if this host has an active HSTS policy
+        auto hstsPolicies = qnam->strictTransportSecurityHosts();
+        for (const auto &policy : std::as_const(hstsPolicies)) {
+            if (policy.host() == host && !policy.isExpired()) {
+                // HSTS is active for this host, don't show the dialog
+                qCInfo(lcSslErrorDialog) << "SSL certificate error, but HSTS is active. Rejecting connection.";
+                return false;
+            }
+        }
     }
 
     SslErrorDialog dlg(account);
@@ -135,13 +149,13 @@ bool SslErrorDialog::checkFailingCertsKnown(const QList<QSslError> &errors)
     msg += QL("</head><body>");
 
     auto host = _account->url().host();
-    msg += QL("<h3>") + tr("Cannot connect securely to <i>%1</i>:").arg(host) + QL("</h3>");
+    msg += QL("<h3>") + tr("Cannot connect securely to <i>%1</i>:").arg(Utility::escape(host)) + QL("</h3>");
     // loop over the unknown certs and line up their errors.
     msg += QL("<div id=\"ca_errors\">");
-    foreach (const QSslCertificate &cert, _unknownCerts) {
+    for (const auto &cert : std::as_const(_unknownCerts)) {
         msg += QL("<div id=\"ca_error\">");
         // add the errors for this cert
-        foreach (QSslError err, errors) {
+        for (const auto &err : errors) {
             if (err.certificate() == cert) {
                 msg += QL("<p>") + err.errorString() + QL("</p>");
             }
@@ -188,12 +202,15 @@ QString SslErrorDialog::certDiv(QSslCertificate cert) const
     QString org = Utility::escape(cert.subjectInfo(QSslCertificate::Organization));
     QString unit = Utility::escape(cert.subjectInfo(QSslCertificate::OrganizationalUnitName));
     QString country = Utility::escape(cert.subjectInfo(QSslCertificate::CountryName));
-    if (unit.isEmpty())
+    if (unit.isEmpty()) {
         unit = tr("&lt;not specified&gt;");
-    if (org.isEmpty())
+    }
+    if (org.isEmpty()) {
         org = tr("&lt;not specified&gt;");
-    if (country.isEmpty())
+    }
+    if (country.isEmpty()) {
         country = tr("&lt;not specified&gt;");
+    }
     li << tr("Organization: %1").arg(org);
     li << tr("Unit: %1").arg(unit);
     li << tr("Country: %1").arg(country);
@@ -201,7 +218,7 @@ QString SslErrorDialog::certDiv(QSslCertificate cert) const
 
     msg += QL("<p>");
 
-    if (cert.effectiveDate() < QDateTime(QDate(2016, 1, 1), QTime(), Qt::UTC)) {
+    if (cert.effectiveDate() < QDateTime(QDate(2016, 1, 1), QTime(), QTimeZone::UTC)) {
 	QString sha1sum = Utility::formatFingerprint(cert.digest(QCryptographicHash::Sha1).toHex());
         msg += tr("Fingerprint (SHA1): <tt>%1</tt>").arg(sha1sum) + QL("<br/>");
     }
@@ -231,8 +248,9 @@ QString SslErrorDialog::certDiv(QSslCertificate cert) const
 
 bool SslErrorDialog::trustConnection()
 {
-    if (_allTrusted)
+    if (_allTrusted) {
         return true;
+    }
 
     bool stat = (_ui->_cbTrustConnect->checkState() == Qt::Checked);
     qCInfo(lcSslErrorDialog) << "SSL-Connection is trusted: " << stat;

@@ -1,15 +1,7 @@
 /*
- * Copyright (C) by Klaas Freitag <freitag@owncloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2018 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2014 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include <QRegularExpression>
@@ -42,17 +34,22 @@ void SyncRunFileLog::start(const QString &folderPath)
     QString filename = logpath + QLatin1String("/") + filenameSingle + QLatin1String("_sync.log");
 
     int depthIndex = 2;
-    while(QFile::exists(filename)) {
+    while (FileSystem::fileExists(filename)) {
 
         QFile file(filename);
-        file.open(QIODevice::ReadOnly| QIODevice::Text);
+        const auto openResult = file.open(QIODevice::ReadOnly| QIODevice::Text);
+        if (!openResult) {
+            qWarning() << "error while opening the file" << filename;
+        }
         QTextStream in(&file);
         QString line = in.readLine();
 
-        if(QString::compare(folderPath,line,Qt::CaseSensitive)!=0) {
+        if (QString::compare(folderPath, line, Qt::CaseSensitive) == 0) {
+            break;
+        } else {
             depthIndex++;
             if(depthIndex <= length) {
-                filenameSingle = folderPath.split(QLatin1String("/")).at(length - depthIndex) + QString("_") ///
+                filenameSingle = folderPath.split(QLatin1String("/")).at(length - depthIndex) + QStringLiteral("_") ///
                         + filenameSingle;
                 filename = logpath+ QLatin1String("/") + filenameSingle + QLatin1String("_sync.log");
             }
@@ -61,13 +58,11 @@ void SyncRunFileLog::start(const QString &folderPath)
                 filename = logpath + QLatin1String("/") + filenameSingle + QLatin1String("_sync.log");
             }
         }
-        else break;
     }
 
     // When the file is too big, just rename it to an old name.
-    QFileInfo info(filename);
-    bool exists = info.exists();
-    if (exists && info.size() > logfileMaxSize) {
+    bool exists = FileSystem::fileExists(filename);
+    if (exists && FileSystem::getSize(filename) > logfileMaxSize) {
         exists = false;
         QString newFilename = filename + QLatin1String(".1");
         QFile::remove(newFilename);
@@ -75,7 +70,10 @@ void SyncRunFileLog::start(const QString &folderPath)
     }
     _file.reset(new QFile(filename));
 
-    _file->open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text);
+    const auto openResult = _file->open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text);
+    if (!openResult) {
+        qWarning() << "error while opening the file" << filename;
+    }
     _out.setDevice(_file.data());
 
 

@@ -1,31 +1,28 @@
 /*
- * Copyright (C) 2023 by Claudio Cambra <claudio.cambra@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2023 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
-
-#include <QObject>
-#include <QHash>
-
-#include "accountstate.h"
 
 #pragma once
 
+#include <QDateTime>
+#include <QHash>
+#include <QObject>
+
+#include <optional>
+
+#include "accountstate.h"
+#include "fileproviderxpcconnection.h"
+
 namespace OCC::Mac {
 
+class FileProvider;
+
 /*
- * Establishes communication between the app and the file provider extension.
- * This is done via File Provider's XPC services API.
- * Note that this is for client->extension communication, not the other way around.
- * This is because the extension does not have a way to communicate with the client through the File Provider XPC API
+ * Establishes communication between the app and the file provider extension processes.
+ * This is done via services exposed by the file provider extension through XPC.
+ * Note that this is for desktop client app to file provider extension communication only, not the other way around.
+ * This is because the extension does not have a way to communicate with the client through XPC.
  */
 class FileProviderXPC : public QObject
 {
@@ -33,24 +30,34 @@ class FileProviderXPC : public QObject
 
 public:
     explicit FileProviderXPC(QObject *parent = nullptr);
+    ~FileProviderXPC() override;
 
-    // Returns enabled and set state of fast enumeration for the given extension
-    [[nodiscard]] std::optional<std::pair<bool, bool>> fastEnumerationStateForExtension(const QString &extensionAccountId) const;
+    [[nodiscard]] bool fileProviderDomainReachable(const QString &fileProviderDomainIdentifier, bool retry = true, bool reconfigureOnFail = true);
+    [[nodiscard]] bool processFileIdsChanged(const QString &fileProviderDomainIdentifier, const QList<qint64> &fileIds) const;
 
-public slots:
-    void connectToExtensions();
-    void configureExtensions();
-    void authenticateExtension(const QString &extensionAccountId) const;
-    void unauthenticateExtension(const QString &extensionAccountId) const;
-    void createDebugArchiveForExtension(const QString &extensionAccountId, const QString &filename) const;
+public Q_SLOTS:
+    void connectToFileProviderDomains();
+    void authenticateFileProviderDomains();
+    void authenticateFileProviderDomain(const QString &fileProviderDomainIdentifier) const;
+    void unauthenticateFileProviderDomain(const QString &fileProviderDomainIdentifier) const;
 
-    void setFastEnumerationEnabledForExtension(const QString &extensionAccountId, bool enabled) const;
+    void setIgnoreList() const;
 
-private slots:
+private Q_SLOTS:
     void slotAccountStateChanged(AccountState::State state) const;
 
 private:
-    QHash<QString, void*> _clientCommServices;
+    friend class FileProvider;
+
+    [[nodiscard]] std::optional<bool> fileProviderDomainHasDirtyUserData(const QString &fileProviderDomainIdentifier) const;
+
+    void disconnectFromFileProviderDomains();
+    void disconnectFromFileProviderDomain(const QString &fileProviderDomainIdentifier);
+
+    //! keys are File Provider domain identifiers
+    FileProviderXPCUtils::ClientCommunicationConnections _clientCommConnections;
+    //! keys are File Provider domain identifiers
+    QHash<QString, QDateTime> _unreachableFileProviderDomains;
 };
 
 } // namespace OCC::Mac

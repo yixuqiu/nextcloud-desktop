@@ -1,10 +1,19 @@
 /*
- *    This software is in the public domain, furnished "as is", without technical
- *       support, and with no warranty, express or implied, as to its usefulness for
- *          any purpose.
- *          */
+ * SPDX-FileCopyrightText: 2021 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2016 ownCloud GmbH
+ * SPDX-License-Identifier: CC0-1.0
+ *
+ * This software is in the public domain, furnished "as is", without technical
+ * support, and with no warranty, express or implied, as to its usefulness for
+ * any purpose.
+ */
 
 #include <QtTest>
+
+#include <array>
+#include <climits>
+#include <sys/inotify.h>
+#include <unistd.h>
 
 #include "folderwatcher_linux.h"
 #include "common/utility.h"
@@ -18,7 +27,7 @@ class TestInotifyWatcher: public FolderWatcherPrivate
 private:
     QString _root;
 
-private slots:
+private Q_SLOTS:
     void initTestCase()
     {
         _root = QDir::tempPath() + "/" + "test_" + QString::number(OCC::Utility::rand());
@@ -60,9 +69,33 @@ private slots:
         QVERIFY2(ok, "findFoldersBelow failed.");
     }
 
+    void testStaleWatchDescriptorIsIgnored()
+    {
+        QVERIFY(!testWatchContains(INT_MAX));
+
+        std::array<int, 2> pipeFds {};
+        QVERIFY(::pipe(pipeFds.data()) == 0);
+
+        QByteArray payload(sizeof(inotify_event) + sizeof("lib"), '\0');
+        const auto event = reinterpret_cast<inotify_event *>(payload.data());
+        event->wd = INT_MAX;
+        event->mask = IN_CREATE;
+        event->cookie = 0;
+        event->len = sizeof("lib");
+        memcpy(event->name, "lib", sizeof("lib"));
+
+        QCOMPARE(::write(pipeFds[1], payload.constData(), payload.size()), payload.size());
+        slotReceivedNotification(pipeFds[0]);
+
+        ::close(pipeFds[0]);
+        ::close(pipeFds[1]);
+
+        QVERIFY(!testWatchContains(INT_MAX));
+    }
+
     void cleanupTestCase() {
         if( _root.startsWith(QDir::tempPath() )) {
-           system( QString("rm -rf %1").arg(_root).toLocal8Bit() );
+           system( QStringLiteral("rm -rf %1").arg(_root).toLocal8Bit() );
         }
     }
 };

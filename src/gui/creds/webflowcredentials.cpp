@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2017 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
 #include "webflowcredentials.h"
 
 #include "creds/httpcredentials.h"
@@ -6,10 +11,7 @@
 #include "account.h"
 #include "configfile.h"
 #include "theme.h"
-#ifdef WITH_WEBENGINE
-#include "wizard/webview.h"
-#endif // WITH_WEBENGINE
-#include "webflowcredentialsdialog.h"
+#include "wizard/browserreauthwindow.h"
 #include "networkjobs.h"
 
 #include <QAuthenticator>
@@ -17,9 +19,6 @@
 #include <QNetworkReply>
 #include <QPointer>
 #include <QTimer>
-#include <QDialog>
-#include <QVBoxLayout>
-#include <QLabel>
 
 using namespace QKeychain;
 
@@ -47,7 +46,7 @@ protected:
     QNetworkReply *createRequest(Operation op, const QNetworkRequest &request, QIODevice *outgoingData) override
     {
         QNetworkRequest req(request);
-        if (!req.attribute(WebFlowCredentials::DontAddCredentialsAttribute).toBool()) {
+        if (!req.attribute(AbstractCredentials::DontAddCredentialsAttribute).toBool()) {
             if (_cred && !_cred->password().isEmpty()) {
                 QByteArray credHash = QByteArray(_cred->user().toUtf8() + ":" + _cred->password().toUtf8()).toBase64();
                 req.setRawHeader("Authorization", "Basic " + credHash);
@@ -127,14 +126,15 @@ bool WebFlowCredentials::ready() const {
     return _ready;
 }
 
-void WebFlowCredentials::fetchFromKeychain() {
+void WebFlowCredentials::fetchFromKeychain(const QString &appName) {
     _wasFetched = true;
+    _appName = appName;
 
     // Make sure we get the user from the config file
     fetchUser();
 
     if (ready()) {
-        emit fetched();
+        Q_EMIT fetched();
     } else {
         qCInfo(lcWebFlowCredentials()) << "Fetch from keychain!";
         fetchFromKeychainHelper();
@@ -142,43 +142,31 @@ void WebFlowCredentials::fetchFromKeychain() {
 }
 
 void WebFlowCredentials::askFromUser() {
-    // Determine if the old flow has to be used (GS for now)
-    // Do a DetermineAuthTypeJob to make sure that the server is still using Flow2
-    auto job = new DetermineAuthTypeJob(_account->sharedFromThis(), this);
-    connect(job, &DetermineAuthTypeJob::authType, [this](DetermineAuthTypeJob::AuthType type) {
-    // LoginFlowV2 > WebViewFlow > Shib > Basic
-#ifdef WITH_WEBENGINE
-        bool useFlow2 = (type != DetermineAuthTypeJob::WebViewFlow);
-#else // WITH_WEBENGINE
-        Q_UNUSED(type)
-        bool useFlow2 = true;
-#endif // WITH_WEBENGINE
+    if (_reAuthWindow) {
+        _reAuthWindow->show();
+        return;
+    }
 
-        _askDialog = new WebFlowCredentialsDialog(_account, useFlow2);
+    _reAuthWindow = new BrowserReAuthWindow(_account, this);
 
-        if (!useFlow2) {
-            QUrl url = _account->url();
-            QString path = url.path() + "/index.php/login/flow";
-            url.setPath(path);
-            _askDialog->setUrl(url);
-        }
+    QString msg = tr("You have been logged out of your account %1 at %2. Please login again.")
+                      .arg(_account->prettyName(), _account->url().toDisplayString());
+    _reAuthWindow->setInfoText(msg);
 
-        QString msg = tr("You have been logged out of your account %1 at %2. Please login again.")
-                          .arg(_account->prettyName(), _account->url().toDisplayString());
-        _askDialog->setInfo(msg);
+    connect(_reAuthWindow, &BrowserReAuthWindow::credentialsReady, this, &WebFlowCredentials::slotAskFromUserCredentialsProvided);
+    connect(_reAuthWindow, &BrowserReAuthWindow::cancelled, this, &WebFlowCredentials::slotAskFromUserCancelled);
 
-        _askDialog->show();
-
-        connect(_askDialog, &WebFlowCredentialsDialog::urlCatched, this, &WebFlowCredentials::slotAskFromUserCredentialsProvided);
-        connect(_askDialog, &WebFlowCredentialsDialog::onClose, this, &WebFlowCredentials::slotAskFromUserCancelled);
-    });
-    job->start();
+    _reAuthWindow->show();
 
     qCDebug(lcWebFlowCredentials()) << "User needs to reauth!";
 }
 
-void WebFlowCredentials::slotAskFromUserCredentialsProvided(const QString &user, const QString &pass, const QString &host) {
-    Q_UNUSED(host)
+void WebFlowCredentials::slotAskFromUserCredentialsProvided(const QString &user, const QString &pass) {
+    auto *const reAuthWindow = qobject_cast<BrowserReAuthWindow *>(sender());
+    if (!reAuthWindow || reAuthWindow != _reAuthWindow) {
+        return;
+    }
+    _reAuthWindow = nullptr;
 
     qCInfo(lcWebFlowCredentials()) << "Obtained a new password";
 
@@ -187,20 +175,19 @@ void WebFlowCredentials::slotAskFromUserCredentialsProvided(const QString &user,
     _ready = true;
     _credentialsValid = true;
     persist();
-    emit asked();
-
-    _askDialog->close();
-    _askDialog->deleteLater();
-    _askDialog = nullptr;
+    Q_EMIT asked();
 }
 
 void WebFlowCredentials::slotAskFromUserCancelled() {
+    auto *const reAuthWindow = qobject_cast<BrowserReAuthWindow *>(sender());
+    if (!reAuthWindow || reAuthWindow != _reAuthWindow) {
+        return;
+    }
+    _reAuthWindow = nullptr;
+
     qCDebug(lcWebFlowCredentials()) << "User cancelled reauth!";
 
-    emit asked();
-
-    _askDialog->deleteLater();
-    _askDialog = nullptr;
+    Q_EMIT asked();
 }
 
 bool WebFlowCredentials::stillValid(QNetworkReply *reply) {
@@ -214,11 +201,11 @@ bool WebFlowCredentials::stillValid(QNetworkReply *reply) {
 void WebFlowCredentials::persist() {
     if (_user.isEmpty()) {
         // We don't even have a user nothing to see here move along
+        qCWarning(lcWebFlowCredentials) << "_user is unset, nothing to persist ...";
         return;
     }
 
     _account->setCredentialSetting(userC, _user);
-    emit _account->wantsAccountSaved(_account);
 
     // write cert if there is one
     if (!_clientSslCertificate.isNull()) {
@@ -334,6 +321,7 @@ void WebFlowCredentials::slotWriteJobDone(QKeychain::Job *job)
     default:
         qCWarning(lcWebFlowCredentials) << "Error while writing password" << job->errorString();
     }
+    Q_EMIT credentialsPersisted();
 }
 
 void WebFlowCredentials::invalidateToken() {
@@ -356,9 +344,9 @@ void WebFlowCredentials::forgetSensitiveData() {
 
     _account->deleteAppPassword();
 
-    const QString kck = keychainKey(_account->url().toString(), _user, _account->id());
+    const auto kck = keychainKey(_account->url().toString(), _user, _account->id(), _appName);
     if (kck.isEmpty()) {
-        qCDebug(lcWebFlowCredentials()) << "InvalidateToken: User is empty, bailing out!";
+        qCWarning(lcWebFlowCredentials()) << "InvalidateToken: User is empty, bailing out!";
         return;
     }
 
@@ -403,7 +391,7 @@ void WebFlowCredentials::slotAuthentication(QNetworkReply *reply, QAuthenticator
 }
 
 void WebFlowCredentials::slotFinished(QNetworkReply *reply) {
-    qCInfo(lcWebFlowCredentials()) << "request finished";
+    qCInfo(lcWebFlowCredentials()) << "request finished" << reply->request().url() << "with request id" << reply->request().rawHeader("X-Request-ID");
 
     if (reply->error() == QNetworkReply::NoError) {
         _credentialsValid = true;
@@ -419,6 +407,8 @@ void WebFlowCredentials::fetchFromKeychainHelper() {
                                           _user + clientCertificatePEMC,
                                           _keychainMigration,
                                           this);
+    job->setAppName(_appName);
+    job->setEntryNotFoundExpected(true);
     connect(job, &KeychainChunk::ReadJob::finished, this, &WebFlowCredentials::slotReadClientCertPEMJobDone);
     job->start();
 }
@@ -438,6 +428,8 @@ void WebFlowCredentials::slotReadClientCertPEMJobDone(KeychainChunk::ReadJob *re
                                           _user + clientKeyPEMC,
                                           _keychainMigration,
                                           this);
+    job->setAppName(_appName);
+    job->setEntryNotFoundExpected(true);
     connect(job, &KeychainChunk::ReadJob::finished, this, &WebFlowCredentials::slotReadClientKeyPEMJobDone);
     job->start();
 }
@@ -460,7 +452,7 @@ void WebFlowCredentials::slotReadClientKeyPEMJobDone(KeychainChunk::ReadJob *rea
             qCWarning(lcWebFlowCredentials) << "Could not load SSL key into Qt!";
         }
         clientKeyPEM.clear();
-    } else {
+    } else if (readJob->error() != QKeychain::Error::EntryNotFound) {
         qCWarning(lcWebFlowCredentials) << "Unable to read client key" << readJob->errorString();
     }
 
@@ -478,6 +470,8 @@ void WebFlowCredentials::readSingleClientCaCertPEM()
                                               _user + clientCaCertificatePEMC + QString::number(_clientSslCaCertificates.count()),
                                               _keychainMigration,
                                               this);
+        job->setAppName(_appName);
+        job->setEntryNotFoundExpected(true);
         connect(job, &KeychainChunk::ReadJob::finished, this, &WebFlowCredentials::slotReadClientCaCertsPEMJobDone);
         job->start();
     } else {
@@ -500,8 +494,7 @@ void WebFlowCredentials::slotReadClientCaCertsPEMJobDone(KeychainChunk::ReadJob 
             readSingleClientCaCertPEM();
             return;
         } else {
-            if (readJob->error() != QKeychain::Error::EntryNotFound ||
-                ((readJob->error() == QKeychain::Error::EntryNotFound) && _clientSslCaCertificates.count() == 0)) {
+            if (readJob->error() != QKeychain::Error::EntryNotFound) {
                 qCWarning(lcWebFlowCredentials) << "Unable to read client CA cert slot" << QString::number(_clientSslCaCertificates.count()) << readJob->errorString();
             }
         }
@@ -511,7 +504,8 @@ void WebFlowCredentials::slotReadClientCaCertsPEMJobDone(KeychainChunk::ReadJob 
     const QString kck = keychainKey(
         _account->url().toString(),
         _user,
-        _keychainMigration ? QString() : _account->id());
+        _keychainMigration ? QString() : _account->id(),
+        _appName);
 
     auto job = new ReadPasswordJob(Theme::instance()->appName(), this);
 #if defined(KEYCHAINCHUNK_ENABLE_INSECURE_FALLBACK)
@@ -542,10 +536,11 @@ void WebFlowCredentials::slotReadPasswordJobDone(Job *incomingJob) {
         _password = job->textData();
         _ready = true;
         _credentialsValid = true;
+        persist();
     } else {
         _ready = false;
     }
-    emit fetched();
+    Q_EMIT fetched();
 
     // If keychain data was read from legacy location, wipe these entries and store new ones
     if (_keychainMigration && _ready) {

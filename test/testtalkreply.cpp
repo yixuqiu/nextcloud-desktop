@@ -1,4 +1,9 @@
-#include "tray/talkreply.h"
+/*
+ * SPDX-FileCopyrightText: 2022 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+#include "activity/talkreply.h"
 
 #include "account.h"
 #include "accountstate.h"
@@ -33,9 +38,14 @@ public:
     QScopedPointer<FakeQNAM> fakeQnam;
     QScopedPointer<OCC::AccountState> accountState;
 
-private slots:
+private Q_SLOTS:
     void initTestCase()
     {
+        OCC::Logger::instance()->setLogFlush(true);
+        OCC::Logger::instance()->setLogDebug(true);
+
+        QStandardPaths::setTestModeEnabled(true);
+
         fakeQnam.reset(new FakeQNAM({}));
         account = OCC::Account::create();
         account->setCredentials(new FakeCredentials{fakeQnam.data()});

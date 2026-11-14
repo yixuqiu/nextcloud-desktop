@@ -1,17 +1,7 @@
 /*
- * Copyright (C) by Klaas Freitag <freitag@kde.org>
- * Copyright (C) by Olivier Goffart <ogoffart@woboq.com>
- *
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2017 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2015 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "folderstatusdelegate.h"
@@ -27,6 +17,7 @@
 #include <QApplication>
 #include <QMouseEvent>
 #include <QStyleFactory>
+#include <QAbstractItemView>
 
 inline static QFont makeAliasFont(const QFont &normalFont)
 {
@@ -85,12 +76,34 @@ QSize FolderStatusDelegate::sizeHint(const QStyleOptionViewItem &option,
     // this already includes the bottom margin
 
     // add some space for the message boxes.
-    int margin = fm.height() / 4;
+    const int margin = fm.height() / 4;
+    const int aliasMargin = aliasFm.height() / 2;
+    // Mirrors the inner text width used in paint()'s drawTextBox():
+    // box spans from (option.rect.left() + aliasMargin) to (option.rect.right() - margin),
+    // with an additional `margin` of inner padding on each side.
+    const auto rect = option.widget ? option.widget->rect() : option.rect;
+    const int textWidth = qMax(1, rect.width() - aliasMargin - 3 * margin);
     for (auto role : {FolderConflictMsg, FolderErrorMsg, FolderInfoMsg}) {
         auto msgs = qvariant_cast<QStringList>(index.data(role));
-        if (!msgs.isEmpty()) {
-            h += margin + 2 * margin + msgs.count() * fm.height();
+        if (msgs.isEmpty()) {
+            continue;
         }
+        int textBlockHeight = 0;
+        for (const auto &msg : msgs) {
+            textBlockHeight += fm.boundingRect(QRect(0, 0, textWidth, 0),
+                                               Qt::TextWordWrap, msg).height();
+        }
+        h += margin + 2 * margin + textBlockHeight;
+    }
+
+    // add space for the "Grant access" button when sandbox re-approval is needed
+    if (index.data(FolderNeedsSandboxBookmark).toBool()) {
+        QFontMetrics buttonFm(qApp->font("QPushButton"));
+        QStyleOptionButton btnOpt;
+        btnOpt.text = tr("Grant access");
+        const auto btnSize = QApplication::style()->sizeFromContents(
+            QStyle::CT_PushButton, &btnOpt, buttonFm.size(Qt::TextSingleLine, btnOpt.text));
+        h += margin + btnSize.height();
     }
 
     return {0, h};
@@ -143,7 +156,16 @@ void FolderStatusDelegate::paint(QPainter *painter, const QStyleOptionViewItem &
             opt.state |= QStyle::State_Raised;
         }
         opt.text = addFolderText();
-        opt.rect = addButtonRect(option.rect, option.direction);
+        auto buttonArea = option.rect;
+        auto *view = qobject_cast<const QAbstractItemView *>(option.widget);
+        if (!view && option.widget) {
+            view = qobject_cast<const QAbstractItemView *>(option.widget->parentWidget());
+        }
+        if (view) {
+            buttonArea.setLeft(view->viewport()->rect().left());
+            buttonArea.setWidth(view->viewport()->width());
+        }
+        opt.rect = addButtonRect(buttonArea, option.direction);
         painter->save();
         painter->setFont(qApp->font("QPushButton"));
         QApplication::style()->drawControl(QStyle::CE_PushButton, &opt, painter, option.widget);
@@ -166,8 +188,6 @@ void FolderStatusDelegate::paint(QPainter *painter, const QStyleOptionViewItem &
     auto overallPercent = qvariant_cast<int>(index.data(SyncProgressOverallPercent));
     auto overallString = qvariant_cast<QString>(index.data(SyncProgressOverallString));
     auto itemString = qvariant_cast<QString>(index.data(SyncProgressItemString));
-    auto warningCount = qvariant_cast<int>(index.data(WarningCount));
-    auto syncOngoing = qvariant_cast<bool>(index.data(SyncRunning));
     auto syncEnabled = qvariant_cast<bool>(index.data(FolderAccountConnected));
     auto syncText = qvariant_cast<QString>(index.data(FolderSyncText));
 
@@ -192,35 +212,24 @@ void FolderStatusDelegate::paint(QPainter *painter, const QStyleOptionViewItem &
     localPathRect.setTop(remotePathRect.bottom() + margin);
     localPathRect.setBottom(localPathRect.top() + subFm.height());
 
-    iconRect.setBottom(localPathRect.bottom());
-    iconRect.setWidth(iconRect.height());
-
+    constexpr int statusIconSize = 24;
+    constexpr int statusIconTopOffset = 4;
+    iconRect.setSize(QSize(statusIconSize, statusIconSize));
+    iconRect.moveTop(iconRect.top() + statusIconTopOffset);
+    
     const auto nextToIcon = iconRect.right() + aliasMargin;
     aliasRect.setLeft(nextToIcon);
     localPathRect.setLeft(nextToIcon);
     remotePathRect.setLeft(nextToIcon);
 
-    const auto iconSize = iconRect.width();
-
     auto optionsButtonVisualRect = optionsButtonRect(option.rect, option.direction);
 
-    const auto statusPixmap = statusIcon.pixmap(iconSize, iconSize, syncEnabled ? QIcon::Normal : QIcon::Disabled);
-    painter->drawPixmap(QStyle::visualRect(option.direction, option.rect, iconRect).left(), iconRect.top(), statusPixmap);
-
-    // only show the warning icon if the sync is running. Otherwise its
-    // encoded in the status icon.
-    if (warningCount > 0 && syncOngoing) {
-        QRect warnRect;
-        warnRect.setLeft(iconRect.left());
-        warnRect.setTop(iconRect.bottom() - 17);
-        warnRect.setWidth(16);
-        warnRect.setHeight(16);
-
-        QIcon warnIcon(":/client/theme/warning");
-        const auto warnPixmap = warnIcon.pixmap(16, 16, syncEnabled ? QIcon::Normal : QIcon::Disabled);
-        warnRect = QStyle::visualRect(option.direction, option.rect, warnRect);
-        painter->drawPixmap(QPoint(warnRect.left(), warnRect.top()), warnPixmap);
-    }
+    statusIcon.paint(
+        painter,
+        QStyle::visualRect(option.direction, option.rect, iconRect),
+        Qt::AlignCenter,
+        syncEnabled ? QIcon::Normal : QIcon::Disabled
+    );
 
     auto palette = option.palette;
 
@@ -249,15 +258,30 @@ void FolderStatusDelegate::paint(QPainter *painter, const QStyleOptionViewItem &
         painter->drawText(QStyle::visualRect(option.direction, option.rect, localPathRect), textAlign, elidedPathText);
     }
 
-    auto textBoxTop = iconRect.bottom() + margin;
+    auto textBoxTop = localPathRect.bottom() + margin;
 
     // paint an error overlay if there is an error string or conflict string
     auto drawTextBox = [&](const QStringList &texts, QColor color) {
         auto rect = localPathRect;
         rect.setLeft(iconRect.left());
         rect.setTop(textBoxTop);
-        rect.setHeight(texts.count() * subFm.height() + 2 * margin);
         rect.setRight(option.rect.right() - margin);
+
+        const int innerWidth = qMax(1, rect.width() - 2 * margin);
+
+        // Pre-compute each message's wrapped height so the box fits the full,
+        // line-wrapped text instead of eliding with an ellipsis. This must stay
+        // in sync with the height reserved in sizeHint().
+        QList<int> messageHeights;
+        messageHeights.reserve(texts.size());
+        int totalTextHeight = 0;
+        for (const auto &eText : texts) {
+            const auto hMsg = subFm.boundingRect(QRect(0, 0, innerWidth, 0),
+                                                 Qt::TextWordWrap, eText).height();
+            messageHeights.append(hMsg);
+            totalTextHeight += hMsg;
+        }
+        rect.setHeight(totalTextHeight + 2 * margin);
 
         // save previous state to not mess up colours with the background (fixes issue: https://github.com/nextcloud/desktop/issues/1237)
         painter->save();
@@ -269,12 +293,15 @@ void FolderStatusDelegate::paint(QPainter *painter, const QStyleOptionViewItem &
         painter->setFont(errorFont);
         QRect textRect(rect.left() + margin,
             rect.top() + margin,
-            rect.width() - 2 * margin,
-            subFm.height());
+            innerWidth,
+            0);
 
-        for (const auto &eText : texts) {
-            painter->drawText(QStyle::visualRect(option.direction, option.rect, textRect), textAlign, subFm.elidedText(eText, Qt::ElideLeft, textRect.width()));
-            textRect.translate(0, textRect.height());
+        for (int i = 0; i < texts.size(); ++i) {
+            textRect.setHeight(messageHeights.at(i));
+            painter->drawText(QStyle::visualRect(option.direction, option.rect, textRect),
+                              textAlign | Qt::TextWordWrap,
+                              texts.at(i));
+            textRect.translate(0, messageHeights.at(i));
         }
         // restore previous state
         painter->restore();
@@ -288,12 +315,36 @@ void FolderStatusDelegate::paint(QPainter *painter, const QStyleOptionViewItem &
     if (!errorTexts.isEmpty()) {
         drawTextBox(errorTexts, QColor(0xbb, 0x4d, 0x4d));
     }
+
+    // Paint "Grant access" button when sandbox re-approval is needed
+    if (index.data(FolderNeedsSandboxBookmark).toBool()) {
+        QStyleOptionButton btnOpt;
+        static_cast<QStyleOption &>(btnOpt) = option;
+        btnOpt.state |= QStyle::State_Raised;
+        btnOpt.text = tr("Grant access");
+
+        QFontMetrics buttonFm(qApp->font("QPushButton"));
+        const auto btnSize = QApplication::style()->sizeFromContents(
+            QStyle::CT_PushButton, &btnOpt, buttonFm.size(Qt::TextSingleLine, btnOpt.text));
+
+        QRect btnRect(iconRect.left(), textBoxTop, btnSize.width(), btnSize.height());
+
+        btnOpt.rect = QStyle::visualRect(option.direction, option.rect, btnRect);
+        painter->save();
+        painter->setFont(qApp->font("QPushButton"));
+        QApplication::style()->drawControl(QStyle::CE_PushButton, &btnOpt, painter, option.widget);
+        painter->restore();
+
+        textBoxTop = btnRect.bottom() + margin;
+    }
+
     if (!infoTexts.isEmpty()) {
         drawTextBox(infoTexts, QColor(0x4d, 0x4d, 0xba));
     }
 
     // Sync File Progress Bar: Show it if syncFile is not empty.
     if (showProgess) {
+        //: Representative file label used to calculate the height of a file progress row.
         const auto fileNameTextHeight = subFm.boundingRect(tr("File")).height();
         constexpr auto barHeight = 7; // same height as quota bar
         const auto overallWidth = option.rect.right() - aliasMargin - optionsButtonVisualRect.width() - nextToIcon;
@@ -320,15 +371,18 @@ void FolderStatusDelegate::paint(QPainter *painter, const QStyleOptionViewItem &
         QApplication::style()->drawControl(QStyle::CE_ProgressBar, &progressBarOpt, painter, option.widget);
 #endif
 
-        // Overall Progress Text
-        QRect overallProgressRect;
-        overallProgressRect.setTop(progressBarRect.bottom() + margin);
-        overallProgressRect.setHeight(fileNameTextHeight);
-        overallProgressRect.setLeft(progressBarRect.left());
-        overallProgressRect.setWidth(progressBarRect.width());
+        // itemString is e.g. Syncing fileName1, filename2
+        // syncText is Synchronizing files in local folders or Synchronizing virtual files in local folder
+        const auto generalSyncStatus = !itemString.isEmpty() ? itemString : syncText;
+        QRect generalSyncStatusRect;
+        generalSyncStatusRect.setTop(progressBarRect.bottom() + margin);
+        generalSyncStatusRect.setHeight(fileNameTextHeight);
+        generalSyncStatusRect.setLeft(progressBarRect.left());
+        generalSyncStatusRect.setWidth(progressBarRect.width());
         painter->setFont(progressFont);
 
-        painter->drawText(QStyle::visualRect(option.direction, option.rect, overallProgressRect), Qt::AlignLeft | Qt::AlignVCenter, overallString);
+        painter->drawText(QStyle::visualRect(option.direction, option.rect, generalSyncStatusRect), Qt::AlignLeft | Qt::AlignVCenter, generalSyncStatus);
+
         painter->restore();
     }
 
@@ -404,6 +458,16 @@ QRect FolderStatusDelegate::addButtonRect(QRect within, Qt::LayoutDirection dire
     QSize size = QApplication::style()->sizeFromContents(QStyle::CT_PushButton, &opt, fm.size(Qt::TextSingleLine, opt.text));
     QRect r(QPoint(within.left(), within.top() + within.height() / 2 - size.height() / 2), size);
     return QStyle::visualRect(direction, within, r);
+}
+
+QRect FolderStatusDelegate::sandboxButtonRect(QRect errorBannerRect)
+{
+    QFontMetrics fm(qApp->font("QPushButton"));
+    QStyleOptionButton opt;
+    opt.text = tr("Grant access");
+    const auto size = QApplication::style()->sizeFromContents(
+        QStyle::CT_PushButton, &opt, fm.size(Qt::TextSingleLine, opt.text));
+    return QRect(QPoint(errorBannerRect.left(), errorBannerRect.bottom()), size);
 }
 
 QRect FolderStatusDelegate::errorsListRect(QRect within)

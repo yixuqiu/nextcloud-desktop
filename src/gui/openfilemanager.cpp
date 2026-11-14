@@ -1,16 +1,7 @@
 /*
- * Copyright (C) by Klaas Freitag <freitag@owncloud.com>
- * Copyright (C) by Daniel Molkentin <danimo@owncloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2019 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2014 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "openfilemanager.h"
@@ -21,12 +12,7 @@
 #include <QUrl>
 #include <QDesktopServices>
 #include <QApplication>
-
-#define QTLEGACY (QT_VERSION < QT_VERSION_CHECK(5,9,0))
-
-#if !(QTLEGACY)
 #include <QOperatingSystemVersion>
-#endif
 
 namespace OCC {
 
@@ -61,16 +47,15 @@ static QString findDefaultFileManager()
         QFile::ReadOnly);
     p.waitForFinished();
     QString fileName = QString::fromUtf8(p.readAll().trimmed());
-    if (fileName.isEmpty())
+    if (fileName.isEmpty()) {
         return QString();
+    }
 
     QFileInfo fi;
-    QStringList dirs = xdgDataDirs();
-    QStringList subdirs;
-    subdirs << "/applications/"
-            << "/applications/kde4/";
-    foreach (QString dir, dirs) {
-        foreach (QString subdir, subdirs) {
+    const QStringList dirs = xdgDataDirs();
+    const QStringList subdirs { "/applications/", "/applications/kde4/" };
+    for (const auto &dir : dirs) {
+        for (const auto &subdir : subdirs) {
             fi.setFile(dir + subdir + fileName);
             if (fi.exists()) {
                 return fi.absoluteFilePath();
@@ -95,11 +80,7 @@ void showInFileManager(const QString &localPath)
 {
     if (Utility::isWindows()) {
 #ifdef Q_OS_WIN
-        #if QTLEGACY
-            if (QSysInfo::windowsVersion() < QSysInfo::WV_WINDOWS10)
-        #else
             if (QOperatingSystemVersion::current() < QOperatingSystemVersion::Windows7)
-        #endif
                 return;
 #endif
 
@@ -127,15 +108,7 @@ void showInFileManager(const QString &localPath)
             p.waitForFinished(5000);
         }
     } else if (Utility::isMac()) {
-        QStringList scriptArgs;
-        scriptArgs << QLatin1String("-e")
-                   << QString::fromLatin1(R"(tell application "Finder" to reveal POSIX file "%1")")
-                          .arg(localPath);
-        QProcess::execute(QLatin1String("/usr/bin/osascript"), scriptArgs);
-        scriptArgs.clear();
-        scriptArgs << QLatin1String("-e")
-                   << QLatin1String("tell application \"Finder\" to activate");
-        QProcess::execute(QLatin1String("/usr/bin/osascript"), scriptArgs);
+        QProcess::startDetached("/usr/bin/open", {"-R", localPath});
     } else {
         QString app;
         QStringList args;
@@ -149,8 +122,9 @@ void showInFileManager(const QString &localPath)
         bool canHandleFile = false; // assume dumb fm
 
         args = exec.split(' ');
-        if (args.count() > 0)
+        if (args.count() > 0) {
             app = args.takeFirst();
+        }
 
         QString kdeSelectParam("--select");
 
@@ -194,9 +168,9 @@ void showInFileManager(const QString &localPath)
             args.insert(it, QString::fromLatin1("--icon")); // before
         }
 
-
-        if (args.count() == 0)
+        if (args.count() == 0) {
             args << fileToOpen;
+        }
 
         if (app.isEmpty() || args.isEmpty() || !canHandleFile) {
             // fall back: open the default file manager, without ever selecting the file

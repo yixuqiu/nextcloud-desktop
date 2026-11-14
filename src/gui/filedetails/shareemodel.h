@@ -1,15 +1,6 @@
 /*
- * Copyright (C) 2022 by Claudio Cambra <claudio.cambra@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2022 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #pragma once
@@ -65,7 +56,7 @@ public:
     [[nodiscard]] LookupMode lookupMode() const;
     [[nodiscard]] QVariantList shareeBlocklist() const;
 
-signals:
+Q_SIGNALS:
     void accountStateChanged();
     void shareItemIsFolderChanged();
     void searchStringChanged();
@@ -76,7 +67,7 @@ signals:
     void shareesReady();
     void displayErrorMessage(const int code, const QString &message);
 
-public slots:
+public Q_SLOTS:
     void setAccountState(OCC::AccountState *accountState);
     void setShareItemIsFolder(const bool shareItemIsFolder);
     void setSearchString(const QString &searchString);
@@ -86,7 +77,7 @@ public slots:
 
     void fetch();
 
-private slots:
+private Q_SLOTS:
     void shareesFetched(const QJsonDocument &reply);
     void insertSearchGloballyItem(const QVector<OCC::ShareePtr> &newShareesFetched);
     void filterSharees();

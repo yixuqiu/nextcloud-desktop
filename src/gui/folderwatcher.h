@@ -1,15 +1,7 @@
 /*
- * Copyright (C) by Klaas Freitag <freitag@owncloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2018 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2014 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #ifndef MIRALL_FOLDERWATCHER_H
@@ -69,6 +61,8 @@ public:
      */
     [[nodiscard]] bool isReliable() const;
 
+    [[nodiscard]] bool canSetPermissions() const;
+
     /**
      * Triggers a change in the path and verifies a notification arrives.
      *
@@ -76,6 +70,13 @@ public:
      * The path must be ignored by the watcher.
      */
     void startNotificatonTest(const QString &path);
+
+    /**
+     * Attempts to set a file's permissions to read-only.
+     *
+     * If that fails, the folderwatcher marsk itself as not able to set permissions reliably.
+     */
+    void performSetPermissionsTest(const QString &path);
 
     /// For testing linux behavior only
     [[nodiscard]] int testLinuxWatchCount() const;
@@ -85,14 +86,14 @@ public:
     void setShouldWatchForFileUnlocking(bool shouldWatchForFileUnlocking);
     [[nodiscard]] int lockChangeDebouncingTimout() const;
 
-signals:
+Q_SIGNALS:
     /** Emitted when one of the watched directories or one
      *  of the contained files is changed. */
     void pathChanged(const QString &path);
 
     /*
-    * Emitted when lock files were removed
-    */
+     * Emitted when lock files were removed
+     */
     void filesLockReleased(const QSet<QString> &files);
 
     /*
@@ -118,13 +119,13 @@ signals:
      */
     void becameUnreliable(const QString &message);
 
-protected slots:
+protected Q_SLOTS:
     // called from the implementations to indicate a change in path
     void changeDetected(const QString &path);
     void changeDetected(const QStringList &paths);
     void folderAccountCapabilitiesChanged();
 
-private slots:
+private Q_SLOTS:
     void startNotificationTestWhenReady();
     void lockChangeDebouncingTimerTimedOut();
 
@@ -137,6 +138,7 @@ private:
     QSet<QString> _lastPaths;
     Folder *_folder;
     bool _isReliable = true;
+    bool _canSetPermissions = true;
 
     bool _shouldWatchForFileUnlocking = false;
 

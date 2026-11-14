@@ -1,7 +1,8 @@
 # - MACRO_ENSURE_OUT_OF_SOURCE_BUILD(<errorMessage>)
 # MACRO_ENSURE_OUT_OF_SOURCE_BUILD(<errorMessage>)
 
-# Copyright (c) 2006, Alexander Neundorf, <neundorf@kde.org>
+# SPDX-FileCopyrightText: 2006 Alexander Neundorf <neundorf@kde.org>
+# SPDX-License-Identifier: BSD-3-Clause
 #
 # Redistribution and use is allowed according to the terms of the BSD license.
 # For details see the accompanying COPYING-CMAKE-SCRIPTS file.
@@ -12,6 +13,6 @@ macro (MACRO_ENSURE_OUT_OF_SOURCE_BUILD _errorMessage)
    if (_insource)
      message(SEND_ERROR "${_errorMessage}")
      message(FATAL_ERROR "Remove the file CMakeCache.txt in ${CMAKE_SOURCE_DIR} first.")
-   endif (_insource)
+   endif ()
 
-endmacro (MACRO_ENSURE_OUT_OF_SOURCE_BUILD)
+endmacro ()

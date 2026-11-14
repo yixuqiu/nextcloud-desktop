@@ -1,25 +1,14 @@
 /*
- * Copyright (C) 2022 by Camila Ayres <camila@nextcloud.com>
- * Copyright (C) 2022 by Claudio Cambra <claudio.cambra@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2022 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
-import QtQuick 2.15
-import QtQuick.Window 2.15
-import Style 1.0
-import com.nextcloud.desktopclient 1.0
-import QtQuick.Layouts 1.2
-import QtMultimedia 5.15
-import QtQuick.Controls 2.15
+import QtQuick
+import QtQuick.Window
+import Style
+import com.nextcloud.desktopclient
+import QtQuick.Layouts
+import QtQuick.Controls
 import Qt5Compat.GraphicalEffects
 
 ApplicationWindow {
@@ -44,6 +33,11 @@ ApplicationWindow {
 
     readonly property bool usingUserAvatar: root.talkNotificationData.userAvatar !== ""
 
+    Shortcut {
+        sequences: [StandardKey.Close]
+        onActivated: root.closeNotification()
+    }
+
     function closeNotification() {
         callStateChecker.checking = false;
         ringSound.stop();
@@ -52,28 +46,11 @@ ApplicationWindow {
         Systray.destroyDialog(root);
     }
 
+    LayoutMirroring.enabled: Application.layoutDirection === Qt.RightToLeft
+    LayoutMirroring.childrenInherit: true
+
     width: root.windowWidth
     height: rootBackground.height
-
-    // TODO: Rather than setting all these palette colours manually,
-    // create a custom style and do it for all components globally
-    palette {
-        text: Style.ncTextColor
-        windowText: Style.ncTextColor
-        buttonText: Style.ncTextColor
-        brightText: Style.ncTextBrightColor
-        highlight: Style.lightHover
-        highlightedText: Style.ncTextColor
-        light: Style.lightHover
-        midlight: Style.ncSecondaryTextColor
-        mid: Style.darkerHover
-        dark: Style.menuBorder
-        button: Style.buttonBackgroundColor
-        window: Style.backgroundColor
-        base: Style.backgroundColor
-        toolTipBase: Style.backgroundColor
-        toolTipText: Style.ncTextColor
-    }
 
     Component.onCompleted: {
         Systray.forceWindowInit(root);
@@ -95,11 +72,10 @@ ApplicationWindow {
         onStopNotifying: root.closeNotification()
     }
 
-    Audio {
+    NotificationSoundPlayer {
         id: ringSound
         source: root.ringtonePath
         loops: 9 // about 45 seconds of audio playing
-        audioRole: Audio.RingtoneRole
     }
 
     Rectangle {
@@ -107,7 +83,7 @@ ApplicationWindow {
         width: parent.width
         height: contentLayout.height + (root.windowSpacing * 2)
         radius: Systray.useNormalWindow ? 0.0 : Style.trayWindowRadius
-        color: Style.backgroundColor
+        color: Style.colorWithoutTransparency(palette.base)
         border.width: Style.trayWindowBorderWidth
         border.color: palette.dark
         clip: true
@@ -184,7 +160,7 @@ ApplicationWindow {
                     cache: true
 
                     source: root.usingUserAvatar ? root.talkNotificationData.userAvatar :
-                                                   Theme.darkMode ? root.talkIcon + palette.windowText : root.talkIcon + Style.ncBlue
+                                                   Style.darkMode ? root.talkIcon + palette.windowText : root.talkIcon + Style.ncBlue
                     sourceSize.width: Style.accountAvatarSize
                     sourceSize.height: Style.accountAvatarSize
 
@@ -215,7 +191,6 @@ ApplicationWindow {
             EnforcedPlainTextLabel {
                 id: message
                 text: root.subject
-                color: root.usingUserAvatar ? palette.brightText : palette.windowText
                 font.pixelSize: Style.topLinePixelSize
                 wrapMode: Text.WordWrap
                 horizontalAlignment: Text.AlignHCenter
@@ -232,27 +207,21 @@ ApplicationWindow {
                     id: linksRepeater
                     model: root.links
 
-                    CustomButton {
+                    Button {
                         id: answerCall
                         readonly property string verb: modelData.verb
                         readonly property bool isAnswerCallButton: verb === "WEB"
 
                         visible: isAnswerCallButton
                         text: modelData.label
-                        contentsFont.bold: true
-                        bgColor: Style.ncBlue
-                        bgNormalOpacity: 0.8
-
-                        textColor: palette.brightText
 
                         icon.source: root.talkIcon + palette.brightText
-                        imageSourceHover: root.talkIcon + palette.brightText
 
                         Layout.fillWidth: true
                         Layout.preferredHeight: Style.callNotificationPrimaryButtonMinHeight
 
                         onClicked: {
-                            Qt.openUrlExternally(root.link);
+                            Systray.openUrlInBrowser(modelData.link);
                             root.closeNotification();
                         }
 
@@ -260,20 +229,13 @@ ApplicationWindow {
                         Accessible.name: qsTr("Answer Talk call notification")
                         Accessible.onPressAction: answerCall.clicked()
                     }
-
                 }
 
-                CustomButton {
+                Button {
                     id: declineCall
                     text: qsTr("Decline")
-                    contentsFont.bold: true
-                    bgColor: Style.errorBoxBackgroundColor
-                    bgNormalOpacity: 0.8
-
-                    textColor: palette.brightText
 
                     icon.source: root.deleteIcon + "white"
-                    imageSourceHover: root.deleteIcon + "white"
 
                     Layout.fillWidth: true
                     Layout.preferredHeight: Style.callNotificationPrimaryButtonMinHeight

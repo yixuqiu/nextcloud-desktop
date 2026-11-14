@@ -1,8 +1,11 @@
 /*
- *    This software is in the public domain, furnished "as is", without technical
- *    support, and with no warranty, express or implied, as to its usefulness for
- *    any purpose.
- *
+ * SPDX-FileCopyrightText: 2020 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2016 ownCloud, Inc.
+ * SPDX-License-Identifier: CC0-1.0
+ * 
+ * This software is in the public domain, furnished "as is", without technical
+ * support, and with no warranty, express or implied, as to its usefulness for
+ * any purpose.
  */
 
 #include <QtTest>
@@ -25,8 +28,9 @@ public:
         auto locPath = _syncEngine.localPath();
         // Start from the end to get the latest status
         for (int i = size() - 1; i >= 0; --i) {
-            if (QFileInfo(at(i)[0].toString()) == file)
+            if (QFileInfo(at(i)[0].toString()) == file) {
                 return at(i)[1].value<SyncFileStatus>();
+            }
         }
         return {};
     }
@@ -37,14 +41,16 @@ public:
         // Start from the end to get the latest status
         int i = size() - 1;
         for (; i >= 0; --i) {
-            if (QFileInfo(at(i)[0].toString()) == secondFile)
+            if (QFileInfo(at(i)[0].toString()) == secondFile) {
                 break;
-            else if (QFileInfo(at(i)[0].toString()) == firstFile)
+            } else if (QFileInfo(at(i)[0].toString()) == firstFile) {
                 return false;
+            }
         }
         for (; i >= 0; --i) {
-            if (QFileInfo(at(i)[0].toString()) == firstFile)
+            if (QFileInfo(at(i)[0].toString()) == firstFile) {
                 return true;
+            }
         }
         return false;
     }
@@ -60,12 +66,21 @@ class TestSyncFileStatusTracker : public QObject
         while (it.hasNext()) {
             QString filePath = it.next().mid(root.size());
             SyncFileStatus pushedStatus = statusSpy.statusOf(filePath);
-            if (pushedStatus != SyncFileStatus())
+            if (pushedStatus != SyncFileStatus()) {
                 QCOMPARE(fakeFolder.syncEngine().syncFileStatusTracker().fileStatus(filePath), pushedStatus);
+            }
         }
     }
 
-private slots:
+private Q_SLOTS:
+    void initTestCase()
+    {
+        OCC::Logger::instance()->setLogFlush(true);
+        OCC::Logger::instance()->setLogDebug(true);
+
+        QStandardPaths::setTestModeEnabled(true);
+    }
+
     void parentsGetSyncStatusUploadDownload() {
         FakeFolder fakeFolder{FileInfo::A12_B12_C12_S12()};
         fakeFolder.localModifier().appendByte("B/b1");
@@ -439,7 +454,7 @@ private slots:
         fakeFolder.remoteModifier().insert("B/b3");
         fakeFolder.remoteModifier().find("B/b3")->extraDavProperties = "<oc:share-types><oc:share-type>0</oc:share-type></oc:share-types>";
         fakeFolder.remoteModifier().find("A/a1")->isShared = true; // becomes shared
-        fakeFolder.remoteModifier().find("A", true); // change the etags of the parent
+        fakeFolder.remoteModifier().find("A", FileInfo::Invalidate); // change the etags of the parent
 
         StatusPushSpy statusSpy(fakeFolder.syncEngine());
 

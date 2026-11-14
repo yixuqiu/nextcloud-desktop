@@ -1,23 +1,16 @@
 /*
- * Copyright (C) by Klaas Freitag <freitag@owncloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2020 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2014 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "clientproxy.h"
-
 #include "configfile.h"
+
 #include <QLoggingCategory>
 #include <QUrl>
 #include <QThreadPool>
+#include <QSettings>
 
 namespace OCC {
 
@@ -32,8 +25,9 @@ static QNetworkProxy proxyFromConfig(const ConfigFile &cfg)
 {
     QNetworkProxy proxy;
 
-    if (cfg.proxyHostName().isEmpty())
+    if (cfg.proxyHostName().isEmpty()) {
         return QNetworkProxy();
+    }
 
     proxy.setHostName(cfg.proxyHostName());
     proxy.setPort(cfg.proxyPort());
@@ -54,6 +48,18 @@ bool ClientProxy::isUsingSystemDefault()
     }
 
     return true;
+}
+
+ClientProxy::AccountProxyMode ClientProxy::accountProxyMode(const Account &account)
+{
+    if (account.proxyType() != QNetworkProxy::DefaultProxy) {
+        // The account has its own proxy; do not overwrite it with a system lookup.
+        return AccountProxyMode::AccountProxy;
+    }
+    if (account.proxySettingsAreManaged() || isUsingSystemDefault()) {
+        return AccountProxyMode::SystemProxy;
+    }
+    return AccountProxyMode::ApplicationProxy;
 }
 
 const char *ClientProxy::proxyTypeToCStr(QNetworkProxy::ProxyType type)
@@ -78,7 +84,7 @@ const char *ClientProxy::proxyTypeToCStr(QNetworkProxy::ProxyType type)
 
 QString ClientProxy::printQNetworkProxy(const QNetworkProxy &proxy)
 {
-    return QString("%1://%2:%3").arg(proxyTypeToCStr(proxy.type())).arg(proxy.hostName()).arg(proxy.port());
+    return QStringLiteral("%1://%2:%3").arg(proxyTypeToCStr(proxy.type())).arg(proxy.hostName()).arg(proxy.port());
 }
 
 void ClientProxy::setupQtProxyFromConfig()
@@ -91,6 +97,18 @@ void ClientProxy::setupQtProxyFromConfig()
     if (cfg.exists()) {
         proxyType = cfg.proxyType();
         proxy = proxyFromConfig(cfg);
+    }
+
+    const auto managedProxy = cfg.managedProxySettings();
+    const auto followsSystemProxy = proxyType == QNetworkProxy::DefaultProxy;
+    if (managedProxy.typeEnforced || (managedProxy.typeManaged && followsSystemProxy)) {
+        proxyType = managedProxy.proxyType;
+    }
+    if (managedProxy.hostEnforced || (managedProxy.hostManaged && followsSystemProxy)) {
+        proxy.setHostName(managedProxy.proxyHostName);
+    }
+    if (managedProxy.portEnforced || (managedProxy.portManaged && followsSystemProxy)) {
+        proxy.setPort(managedProxy.proxyPort);
     }
 
     switch (proxyType) {
@@ -128,6 +146,36 @@ void ClientProxy::setupQtProxyFromConfig()
     }
 }
 
+void ClientProxy::saveProxyConfigurationFromSettings(const QSettings &settings)
+{
+    if (settings.value(QLatin1String(proxyTypeC)).isNull()) {
+        qCDebug(lcClientProxy) << "No Proxy settings found.";
+        return;
+    }
+
+    OCC::ConfigFile configFile;
+    const auto proxyType = settings.value(QLatin1String(proxyTypeC)).toInt();
+    configFile.setProxyType(proxyType,
+                            settings.value(QLatin1String(proxyHostC)).toString(),
+                            settings.value(QLatin1String(proxyPortC)).toInt(),
+                            settings.value(QLatin1String(proxyNeedsAuthC)).toBool(),
+                            settings.value(QLatin1String(proxyUserC)).toString(),
+                            settings.value(QLatin1String(proxyPassC)).toString());
+}
+
+void ClientProxy::cleanupGlobalNetworkConfiguration()
+{
+    OCC::ConfigFile configFile;
+    QSettings settings(configFile.configFile(), QSettings::IniFormat);
+    settings.remove(proxyTypeC);
+    settings.remove(proxyHostC);
+    settings.remove(proxyPortC);
+    settings.remove(proxyUserC);
+    settings.remove(proxyPassC);
+    settings.remove(proxyNeedsAuthC);
+    settings.sync();
+}
+
 void ClientProxy::lookupSystemProxyAsync(const QUrl &url, QObject *dst, const char *slot)
 {
     auto *runnable = new SystemProxyRunnable(url);
@@ -148,9 +196,9 @@ void SystemProxyRunnable::run()
     QList<QNetworkProxy> proxies = QNetworkProxyFactory::systemProxyForQuery(QNetworkProxyQuery(_url));
 
     if (proxies.isEmpty()) {
-        emit systemProxyLookedUp(QNetworkProxy(QNetworkProxy::NoProxy));
+        Q_EMIT systemProxyLookedUp(QNetworkProxy(QNetworkProxy::NoProxy));
     } else {
-        emit systemProxyLookedUp(proxies.first());
+        Q_EMIT systemProxyLookedUp(proxies.first());
         // FIXME Would we really ever return more?
     }
 }

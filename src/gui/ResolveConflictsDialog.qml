@@ -1,25 +1,16 @@
 /*
- * Copyright (C) 2023 by Matthieu Gallien <matthieu.gallien@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2023 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
-import QtQml 2.15
-import QtQuick 2.15
-import QtQuick.Window 2.15 as QtWindow
-import QtQuick.Layouts 1.15
-import QtQuick.Controls 2.15
-import QtQml.Models 2.15
-import Style 1.0
-import com.nextcloud.desktopclient 1.0
+import QtQml
+import QtQuick
+import QtQuick.Window as QtWindow
+import QtQuick.Layouts
+import QtQuick.Controls
+import QtQml.Models
+import Style
+import com.nextcloud.desktopclient
 import "./tray"
 
 ApplicationWindow {
@@ -30,30 +21,18 @@ ApplicationWindow {
     flags: Qt.Window | Qt.Dialog
     visible: true
 
+    LayoutMirroring.enabled: Application.layoutDirection === Qt.RightToLeft
+    LayoutMirroring.childrenInherit: true
+
     width: Style.minimumWidthResolveConflictsDialog
     height: Style.minimumHeightResolveConflictsDialog
     minimumWidth: Style.minimumWidthResolveConflictsDialog
     minimumHeight: Style.minimumHeightResolveConflictsDialog
     title: qsTr('Solve sync conflicts')
 
-    // TODO: Rather than setting all these palette colours manually,
-    // create a custom style and do it for all components globally
-    palette {
-        text: Style.ncTextColor
-        windowText: Style.ncTextColor
-        buttonText: Style.ncTextColor
-        brightText: Style.ncTextBrightColor
-        highlight: Style.lightHover
-        highlightedText: Style.ncTextColor
-        light: Style.lightHover
-        midlight: Style.ncSecondaryTextColor
-        mid: Style.darkerHover
-        dark: Style.menuBorder
-        button: Style.buttonBackgroundColor
-        window: Style.backgroundColor
-        base: Style.backgroundColor
-        toolTipBase: Style.backgroundColor
-        toolTipText: Style.ncTextColor
+    Shortcut {
+        sequences: [StandardKey.Close]
+        onActivated: conflictsDialog.close()
     }
 
     onClosing: function(close) {
@@ -63,10 +42,10 @@ ApplicationWindow {
 
     ColumnLayout {
         anchors.fill: parent
-        anchors.leftMargin: 20
-        anchors.rightMargin: 20
-        anchors.bottomMargin: 20
-        anchors.topMargin: 20
+        anchors.leftMargin: 10
+        anchors.rightMargin: 10
+        anchors.bottomMargin: 5
+        anchors.topMargin: 10
         spacing: 15
         z: 2
 
@@ -87,30 +66,12 @@ ApplicationWindow {
 
         RowLayout {
             Layout.fillWidth: true
-            Layout.topMargin: 15
+            Layout.topMargin: 5
 
             CheckBox {
                 id: selectExisting
 
                 Layout.fillWidth: true
-
-                palette {
-                    text: Style.ncTextColor
-                    windowText: Style.ncTextColor
-                    buttonText: Style.ncTextColor
-                    brightText: Style.ncTextBrightColor
-                    highlight: Style.lightHover
-                    highlightedText: Style.ncTextColor
-                    light: Style.lightHover
-                    midlight: Style.ncSecondaryTextColor
-                    mid: Style.darkerHover
-                    dark: Style.menuBorder
-                    button: Style.buttonBackgroundColor
-                    window: palette.dark // NOTE: Fusion theme uses darker window colour for the border of the checkbox
-                    base: Style.backgroundColor
-                    toolTipBase: Style.backgroundColor
-                    toolTipText: Style.ncTextColor
-                }
 
                 text: qsTr('All local versions')
 
@@ -129,24 +90,6 @@ ApplicationWindow {
                 id: selectConflict
 
                 Layout.fillWidth: true
-
-                palette {
-                    text: Style.ncTextColor
-                    windowText: Style.ncTextColor
-                    buttonText: Style.ncTextColor
-                    brightText: Style.ncTextBrightColor
-                    highlight: Style.lightHover
-                    highlightedText: Style.ncTextColor
-                    light: Style.lightHover
-                    midlight: Style.ncSecondaryTextColor
-                    mid: Style.darkerHover
-                    dark: Style.menuBorder
-                    button: Style.buttonBackgroundColor
-                    window: palette.dark // NOTE: Fusion theme uses darker window colour for the border of the checkbox
-                    base: Style.backgroundColor
-                    toolTipBase: Style.backgroundColor
-                    toolTipText: Style.ncTextColor
-                }
 
                 text: qsTr('All server versions')
 
@@ -223,7 +166,7 @@ ApplicationWindow {
     }
 
     Rectangle {
-        color: Style.backgroundColor
+        color: palette.base
         anchors.fill: parent
         z: 1
     }

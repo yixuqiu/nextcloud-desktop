@@ -1,15 +1,6 @@
 /*
- * Copyright (C) by Oleksandr Zolotov <alex@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2018 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "propagateremotedeleteencrypted.h"
@@ -41,7 +32,7 @@ void PropagateRemoteDeleteEncrypted::start()
 void PropagateRemoteDeleteEncrypted::slotFolderUnLockFinished(const QByteArray &folderId, int statusCode)
 {
     BasePropagateRemoteDeleteEncrypted::slotFolderUnLockFinished(folderId, statusCode);
-    emit finished(!_isTaskFailed);
+    Q_EMIT finished(!_isTaskFailed);
 }
 
 void PropagateRemoteDeleteEncrypted::slotFetchMetadataJobFinished(int statusCode, const QString &message)
@@ -65,15 +56,7 @@ void PropagateRemoteDeleteEncrypted::slotFetchMetadataJobFinished(int statusCode
     const QString fileName = info.fileName();
 
     // Find existing metadata for this file
-    bool found = false;
-    const QVector<FolderMetadata::EncryptedFile> files = metadata->files();
-    for (const FolderMetadata::EncryptedFile &file : files) {
-        if (file.originalFilename == fileName) {
-            metadata->removeEncryptedFile(file);
-            found = true;
-            break;
-        }
-    }
+    bool found = metadata->removeEncryptedFile(fileName);
 
     if (!found) {
         // file is not found in the metadata, but we still need to remove it
@@ -91,3 +74,5 @@ void PropagateRemoteDeleteEncrypted::slotUpdateMetadataJobFinished(int statusCod
     Q_UNUSED(message);
     deleteRemoteItem(_item->_encryptedFileName);
 }
+
+#include "moc_propagateremotedeleteencrypted.cpp"

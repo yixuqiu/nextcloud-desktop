@@ -1,15 +1,7 @@
 /*
- * Copyright (C) by Olivier Goffart <ogoffart@owncloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2018 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2014 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "propagateremotemove.h"
@@ -18,6 +10,7 @@
 #include "account.h"
 #include "common/syncjournalfilerecord.h"
 #include "filesystem.h"
+#include "common/filesystembase.h"
 #include "common/asserts.h"
 #include <QFileInfo>
 #include <QFile>
@@ -70,14 +63,15 @@ bool MoveJob::finished()
     qCInfo(lcMoveJob) << "MOVE of" << reply()->request().url() << "FINISHED WITH STATUS"
                       << replyStatusString();
 
-    emit finishedSignal();
+    Q_EMIT finishedSignal();
     return true;
 }
 
 void PropagateRemoteMove::start()
 {
-    if (propagator()->_abortRequested)
+    if (propagator()->_abortRequested) {
         return;
+    }
 
     QString origin = propagator()->adjustRenamedPath(_item->_file);
     qCInfo(lcPropagateRemoteMove) << origin << _item->_renameTarget;
@@ -128,10 +122,12 @@ void PropagateRemoteMove::start()
         bool destinationHadSuffix = remoteDestination.endsWith(suffix);
 
         // Remote source and destination definitely shouldn't have the suffix
-        if (sourceHadSuffix)
+        if (sourceHadSuffix) {
             remoteSource.chop(suffix.size());
-        if (destinationHadSuffix)
+        }
+        if (destinationHadSuffix) {
             remoteDestination.chop(suffix.size());
+        }
 
         QString folderTarget = _item->_renameTarget;
 
@@ -184,11 +180,12 @@ void PropagateRemoteMove::start()
 
 void PropagateRemoteMove::abort(PropagatorJob::AbortType abortType)
 {
-    if (_job && _job->reply())
+    if (_job && _job->reply()) {
         _job->reply()->abort();
+    }
 
     if (abortType == AbortType::Asynchronous) {
-        emit abortFinished();
+        Q_EMIT abortFinished();
     }
 }
 
@@ -208,7 +205,9 @@ void PropagateRemoteMove::slotMoveJobFinished()
             &propagator()->_anotherSyncNeeded);
         const auto filePath = propagator()->fullLocalPath(_item->_renameTarget);
         const auto filePathOriginal = propagator()->fullLocalPath(_item->_originalFile);
+        const auto oldFile = QFileInfo{filePathOriginal};
         QFile file(filePath);
+        auto permissionsHandler = FileSystem::FilePermissionsRestore{oldFile.absolutePath(), FileSystem::FolderPermissions::ReadWrite};
         if (!file.rename(filePathOriginal)) {
             qCWarning(lcPropagateRemoteMove) << "Could not MOVE file" << filePathOriginal << " to" << filePath
                                              << " with error:" << _job->errorString() << " and failed to restore it !";
@@ -216,7 +215,19 @@ void PropagateRemoteMove::slotMoveJobFinished()
             qCWarning(lcPropagateRemoteMove)
                 << "Could not MOVE file" << filePathOriginal << " to" << filePath
                 << " with error:" << _job->errorString() << " and successfully restored it.";
+
+            auto restoredItem = *_item;
+            restoredItem._renameTarget = _item->_originalFile;
+            const auto result = propagator()->updateMetadata(restoredItem);
+            if (!result) {
+                done(SyncFileItem::FatalError, tr("Error updating metadata: %1").arg(result.error()), ErrorCategory::GenericError);
+                return;
+            } else if (*result == Vfs::ConvertToPlaceholderResult::Locked) {
+                done(SyncFileItem::SoftError, tr("The file %1 is currently in use").arg(restoredItem._file), ErrorCategory::GenericError);
+                return;
+            }
         }
+
         done(status, _job->errorString(), ErrorCategory::GenericError);
         return;
     }
@@ -244,8 +255,8 @@ void PropagateRemoteMove::finalize()
     // to the new record. It is not a problem to skip it here.
     SyncJournalFileRecord oldRecord;
     if (!propagator()->_journal->getFileRecord(_item->_originalFile, &oldRecord)) {
-        qCWarning(lcPropagateRemoteMove) << "could not get file from local DB" << _item->_originalFile;
-        done(SyncFileItem::NormalError, tr("could not get file %1 from local DB").arg(_item->_originalFile), ErrorCategory::GenericError);
+        qCWarning(lcPropagateRemoteMove) << "Could not get file from local DB" << _item->_originalFile;
+        done(SyncFileItem::NormalError, tr("Could not get file %1 from local DB").arg(_item->_originalFile), ErrorCategory::GenericError);
         return;
     }
     auto &vfs = propagator()->syncOptions()._vfs;
@@ -253,7 +264,7 @@ void PropagateRemoteMove::finalize()
 
     const auto targetFile = propagator()->fullLocalPath(_item->_renameTarget);
 
-    if (QFileInfo::exists(targetFile)) {
+    if (FileSystem::fileExists(targetFile)) {
         // Delete old db data.
         if (!propagator()->_journal->deleteFileRecord(_item->_originalFile)) {
             qCWarning(lcPropagateRemoteMove) << "could not delete file from local DB" << _item->_originalFile;
@@ -267,6 +278,8 @@ void PropagateRemoteMove::finalize()
 
     SyncFileItem newItem(*_item);
     newItem._type = _item->_type;
+    newItem._lockToken.clear();
+    newItem._locked = SyncFileItem::LockStatus::UnlockedItem;
     if (oldRecord.isValid()) {
         newItem._checksumHeader = oldRecord._checksumHeader;
         if (newItem._size != oldRecord._fileSize) {
@@ -277,22 +290,17 @@ void PropagateRemoteMove::finalize()
         }
     }
 
-    if (!QFileInfo::exists(targetFile)) {
-        propagator()->_journal->commit("Remote Rename");
-        done(SyncFileItem::Success, {}, ErrorCategory::NoError);
-        return;
-    }
-
     const auto result = propagator()->updateMetadata(newItem);
-    if (!result) {
+    if (!result && QFileInfo::exists(targetFile)) {
         done(SyncFileItem::FatalError, tr("Error updating metadata: %1").arg(result.error()), ErrorCategory::GenericError);
         return;
     } else if (*result == Vfs::ConvertToPlaceholderResult::Locked) {
         done(SyncFileItem::SoftError, tr("The file %1 is currently in use").arg(newItem._file), ErrorCategory::GenericError);
         return;
     }
-    if (pinState && *pinState != PinState::Inherited
-        && !vfs->setPinState(newItem._renameTarget, *pinState)) {
+    if (pinState && *pinState != PinState::Inherited &&
+        !vfs->setPinState(newItem._renameTarget, *pinState) &&
+        QFileInfo::exists(targetFile)) {
         done(SyncFileItem::NormalError, tr("Error setting pin state"), ErrorCategory::GenericError);
         return;
     }
@@ -315,8 +323,9 @@ bool PropagateRemoteMove::adjustSelectiveSync(SyncJournalDb *journal, const QStr
     // We only care about preserving the blacklist.   The white list should anyway be empty.
     // And the undecided list will be repopulated on the next sync, if there is anything too big.
     QStringList list = journal->getSelectiveSyncList(SyncJournalDb::SelectiveSyncBlackList, &ok);
-    if (!ok)
+    if (!ok) {
         return false;
+    }
 
     bool changed = false;
     ASSERT(!from_.endsWith(QLatin1String("/")));
@@ -337,3 +346,5 @@ bool PropagateRemoteMove::adjustSelectiveSync(SyncJournalDb *journal, const QStr
     return true;
 }
 }
+
+#include "moc_propagateremotemove.cpp"

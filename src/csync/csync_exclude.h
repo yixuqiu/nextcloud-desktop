@@ -1,21 +1,10 @@
 /*
  * libcsync -- a library to sync a directory with another
  *
- * Copyright (c) 2008-2013 by Andreas Schneider <asn@cryptomilk.org>
- *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * SPDX-FileCopyrightText: 2020 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2014 ownCloud GmbH
+ * SPDX-FileCopyrightText: 2008-2013 Andreas Schneider <asn@cryptomilk.org>
+ * SPDX-License-Identifier: LGPL-2.1-or-later
  */
 
 #ifndef _CSYNC_EXCLUDE_H
@@ -48,6 +37,7 @@ enum CSYNC_EXCLUDE_TYPE {
   CSYNC_FILE_EXCLUDE_SERVER_BLACKLISTED,
   CSYNC_FILE_EXCLUDE_LEADING_SPACE,
   CSYNC_FILE_EXCLUDE_LEADING_AND_TRAILING_SPACE,
+  CSYNC_FILE_LOCKED_SILENTLY_EXCLUDED,
 };
 
 class ExcludedFilesTest;
@@ -72,6 +62,15 @@ class OCSYNC_EXPORT ExcludedFiles : public QObject
 public:
     using Version = std::tuple<int, int, int>;
 
+    /**
+     * Where a caller-supplied exclude file's patterns are anchored, see
+     * addExcludeFilePath().
+     */
+    enum class ExcludeFileAnchor {
+        FileDirectory, // anchor at the exclude file's own containing directory
+        SyncRoot // anchor at the sync root (_localPath), regardless of the file's name
+    };
+
     explicit ExcludedFiles(const QString &localPath = QStringLiteral("/"));
     ~ExcludedFiles() override;
 
@@ -79,8 +78,22 @@ public:
      * Adds a new path to a file containing exclude patterns.
      *
      * Does not load the file. Use reloadExcludeFiles() afterwards.
+     *
+     * By default (ExcludeFileAnchor::FileDirectory) the patterns are
+     * anchored at the directory the exclude file itself lives in, unless
+     * that file is literally named "sync-exclude.lst" (case-insensitive),
+     * in which case they're anchored at the sync root (_localPath)
+     * regardless. That heuristic exists to distinguish the GUI's global
+     * exclude list (always named sync-exclude.lst, but stored outside any
+     * sync folder) from a per-directory .sync-exclude.lst discovered
+     * during traversal.
+     *
+     * It does not fit a caller-supplied exclude file of arbitrary name,
+     * such as nextcloudcmd's --exclude option: pass
+     * ExcludeFileAnchor::SyncRoot there to force sync-root anchoring
+     * regardless of the file's name.
      */
-    void addExcludeFilePath(const QString &path);
+    void addExcludeFilePath(const QString &path, ExcludeFileAnchor anchor = ExcludeFileAnchor::FileDirectory);
 
     /**
      * Whether conflict files shall be excluded.
@@ -143,7 +156,12 @@ public:
      */
     CSYNC_EXCLUDE_TYPE traversalPatternMatch(const QString &path, ItemType filetype);
 
-public slots:
+    /**
+     * @brief Provide all active exclude patterns.
+     */
+    [[nodiscard]] QStringList activeExcludePatterns() const;
+
+public Q_SLOTS:
     /**
      * Reloads the exclude patterns from the registered paths.
      */

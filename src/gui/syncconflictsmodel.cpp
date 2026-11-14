@@ -1,15 +1,6 @@
 /*
- * Copyright (C) 2023 by Matthieu Gallien <matthieu.gallien@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2023 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "syncconflictsmodel.h"
@@ -181,7 +172,7 @@ void SyncConflictsModel::setConflictActivities(ActivityList conflicts)
     beginResetModel();
 
     _data = conflicts;
-    emit conflictActivitiesChanged();
+    Q_EMIT conflictActivitiesChanged();
 
     updateConflictsData();
 
@@ -224,13 +215,19 @@ void SyncConflictsModel::selectAllConflicting(bool selected)
 
 void SyncConflictsModel::applySolution()
 {
-    for(const auto &syncConflict : qAsConst(_conflictData)) {
+    bool yesToAllRequested = false;
+    bool isBulkSolution = _conflictData.size() > 1; // no need to display the "Yes for all" button if only one file is affected
+
+    for (const auto &syncConflict : std::as_const(_conflictData)) {
         if (syncConflict.isValid()) {
             qCInfo(lcSyncConflictsModel) << syncConflict.mExistingFilePath << syncConflict.mConflictingFilePath << syncConflict.solution();
             ConflictSolver solver;
+            solver.setIsBulkSolution(isBulkSolution);
+            solver.setYesToAllRequested(yesToAllRequested);
             solver.setLocalVersionFilename(syncConflict.mConflictingFilePath);
             solver.setRemoteVersionFilename(syncConflict.mExistingFilePath);
             solver.exec(syncConflict.solution());
+            yesToAllRequested = solver.yesToAllRequested();
         }
     }
 }
@@ -240,7 +237,7 @@ void SyncConflictsModel::updateConflictsData()
     _conflictData.clear();
     _conflictData.reserve(_data.size());
 
-    for (const auto &oneConflict : qAsConst(_data)) {
+    for (const auto &oneConflict : std::as_const(_data)) {
         const auto folder = FolderMan::instance()->folder(oneConflict._folder);
         if (!folder) {
             qCWarning(lcSyncConflictsModel) << "no Folder instance for" << oneConflict._folder;

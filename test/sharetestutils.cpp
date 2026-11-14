@@ -1,15 +1,6 @@
 /*
- * Copyright (C) 2022 by Claudio Cambra <claudio.cambra@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2022 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "sharetestutils.h"
@@ -112,6 +103,7 @@ QByteArray FakeShareDefinition::toRequestReply() const
 // Below is ShareTestHelper
 ShareTestHelper::ShareTestHelper(QObject *parent)
     : QObject(parent)
+    , fm{FolderMan::instance()}
 {
 }
 
@@ -142,7 +134,7 @@ void ShareTestHelper::setup()
     fakeFolder.localModifier().insert(testFileName);
 
     const auto folderMan = FolderMan::instance();
-    QCOMPARE(folderMan, &fm);
+    QCOMPARE(folderMan, fm);
     auto folderDef = folderDefinition(fakeFolder.localPath());
     folderDef.targetPath = QString();
     QVERIFY(folderMan->addFolder(accountState.data(), folderDef));
@@ -153,6 +145,7 @@ void ShareTestHelper::setup()
 
     const auto fakeFileInfo = fakeFolder.remoteModifier().find(testFileName);
     QVERIFY(fakeFileInfo);
+    fakeFileInfo->permissions.setPermission(RemotePermissions::CanRead);
     fakeFileInfo->permissions.setPermission(RemotePermissions::CanReshare);
     QVERIFY(fakeFolder.syncOnce());
     QCOMPARE(fakeFolder.currentLocalState(), fakeFolder.currentRemoteState());
@@ -223,7 +216,7 @@ void ShareTestHelper::setup()
         fileStorageId,
     };
 
-    emit setupSucceeded();
+    Q_EMIT setupSucceeded();
 }
 
 QNetworkReply *ShareTestHelper::qnamOverride(QNetworkAccessManager::Operation op, const QNetworkRequest &req, QIODevice *device)
@@ -348,10 +341,10 @@ QNetworkReply *ShareTestHelper::handleSharePutOperation(const QNetworkAccessMana
                 auto requestKey = requestSplit.first();
                 auto requestValue = requestSplit.last();
 
-                     // We send expireDate without time but the server returns with time at 00:00:00
+                     // We send expireDate without time but the server returns with time at 23:59:59
                 if (requestKey == "expireDate") {
                     requestKey = "expiration";
-                    requestValue.append(" 00:00:00");
+                    requestValue.append(" 23:59:59");
                 }
 
                 shareObject.insert(QString(requestKey), QString(requestValue));
@@ -398,7 +391,12 @@ QNetworkReply *ShareTestHelper::handleShareGetOperation(const QNetworkAccessMana
     const auto urlQuery = QUrlQuery(req.url());
     const auto pathParam = urlQuery.queryItemValue(QStringLiteral("path"));
     const auto resharesParam = urlQuery.queryItemValue(QStringLiteral("reshares"));
+    const auto sharedWithMeParam = urlQuery.queryItemValue(QStringLiteral("shared_with_me"));
     const auto formatParam = urlQuery.queryItemValue(QStringLiteral("format"));
+
+    if (sharedWithMeParam == QStringLiteral("true")) {
+        _sharedWithMeRequestUrls.append(req.url());
+    }
 
     if (formatParam != QStringLiteral("json") || (!pathParam.isEmpty() && !pathParam.endsWith(QString(testFileName)))) {
         reply = new FakeErrorReply(op, req, this, 400, _fake400Response);
@@ -425,6 +423,16 @@ const QByteArray ShareTestHelper::createNewShare(const Share::ShareType shareTyp
 int ShareTestHelper::shareCount() const
 {
     return _sharesReplyData.count();
+}
+
+const QList<QUrl> &ShareTestHelper::sharedWithMeRequestUrls() const
+{
+    return _sharedWithMeRequestUrls;
+}
+
+void ShareTestHelper::resetSharedWithMeRequestUrls()
+{
+    _sharedWithMeRequestUrls.clear();
 }
 
 void ShareTestHelper::appendShareReplyData(const FakeShareDefinition &definition)

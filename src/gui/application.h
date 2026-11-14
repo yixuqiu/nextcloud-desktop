@@ -1,44 +1,38 @@
 /*
- * Copyright (C) by Duncan Mac-Vicar P. <duncan@kde.org>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2018 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2014 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #ifndef APPLICATION_H
 #define APPLICATION_H
 
-#include <QApplication>
-#include <QPointer>
-#include <QQueue>
-#include <QTimer>
-#include <QElapsedTimer>
-#include <QNetworkInformation>
-
-#include "qtsingleapplication.h"
-
-#include "syncresult.h"
-#include "logbrowser.h"
 #include "owncloudgui.h"
-#include "connectionvalidator.h"
 #include "progressdispatcher.h"
 #include "clientproxy.h"
 #include "folderman.h"
 
+#ifdef Q_OS_MACOS
+#include "macOS/singleinstancemanager_mac.h"
+#else
+#include <KDSingleApplication>
+#endif
+
+#if defined KF6DBusAddons_FOUND && KF6DBusAddons_FOUND
+#include <KDBusService>
+#endif
+
+#include <QApplication>
+#include <QPointer>
+#include <QQueue>
+#include <QSet>
+#include <QTimer>
+#include <QElapsedTimer>
+#include <QNetworkInformation>
+
 class QMessageBox;
 class QSystemTrayIcon;
 class QSocket;
-
-namespace CrashReporter {
-class Handler;
-}
 
 namespace OCC {
 
@@ -49,9 +43,10 @@ class Folder;
 class ShellExtensionsServer;
 class SslErrorDialog;
 
-#ifdef Q_OS_MACOS
+#if defined(Q_OS_MACOS)
 namespace Mac {
-class FileProvider;
+class FinderSyncXPC;
+class FinderSyncService;
 }
 #endif
 
@@ -59,7 +54,7 @@ class FileProvider;
  * @brief The Application class
  * @ingroup gui
  */
-class Application : public SharedTools::QtSingleApplication
+class Application : public QApplication
 {
     Q_OBJECT
 public:
@@ -74,13 +69,22 @@ public:
     bool versionOnly(); // only display the version?
     void showVersion();
 
+    [[nodiscard]] bool isRunning() const;
+
+    bool sendMessage(const QString &message);
+
     void showMainDialog();
+    bool handleUriSchemeRequest(const QUrl &url);
 
     [[nodiscard]] ownCloudGui *gui() const;
 
+#if defined(Q_OS_MACOS)
+    [[nodiscard]] Mac::FinderSyncXPC *finderSyncXPC() const;
+#endif
+
     bool event(QEvent *event) override;
 
-public slots:
+public Q_SLOTS:
     // TODO: this should not be public
     void slotownCloudWizardDone(int);
     void slotCrash();
@@ -98,15 +102,16 @@ protected:
     void setupTranslations();
     void setupLogging();
 
-signals:
+Q_SIGNALS:
     void folderRemoved();
     void folderStateChanged(OCC::Folder *);
     void isShowingSettingsDialog();
+    void systemPaletteChanged();
 
-protected slots:
-    void slotParseMessage(const QString &, QObject *);
+protected Q_SLOTS:
+    void slotParseMessage(const QByteArray &msg);
+    void slotActivateRequestedMessage(const QStringList &arguments, const QString &workingDirectory);
     void slotCheckConnection();
-    void slotUseMonoIconsChanged(bool);
     void slotCleanup();
     void slotAccountStateAdded(OCC::AccountState *accountState);
     void slotAccountStateRemoved(OCC::AccountState *accountState);
@@ -116,11 +121,14 @@ protected slots:
 private:
     void setHelp();
 
-    void handleEditLocallyFromOptions();
+    void handleUriFromOptions();
 
     AccountManager::AccountsRestoreResult restoreLegacyAccount();
     void setupConfigFile();
     void setupAccountsAndFolders();
+
+    void showMainDialogRemoteCommand();
+    void parseOptionsRemoteCommand(const QStringList &options);
 
     /**
      * Maybe a newer version of the client was used with this config file:
@@ -129,6 +137,14 @@ private:
     bool configVersionMigration();
 
     QPointer<ownCloudGui> _gui;
+
+#ifdef Q_OS_MACOS
+    OCC::SingleInstanceManager _singleApp;
+#elif defined KF6DBusAddons_FOUND && KF6DBusAddons_FOUND
+    KDBusService _dbusService;
+#else
+    KDSingleApplication _singleApp;
+#endif
 
     Theme *_theme;
 
@@ -148,7 +164,8 @@ private:
     bool _userTriggeredConnect = false;
     bool _debugMode = false;
     bool _backgroundMode = false;
-    QUrl _editFileLocallyUrl;
+    bool _suppressNextEmptyAccountCheck = false;
+    QUrl _uriSchemeUrl;
 
     ClientProxy _proxy;
 
@@ -156,15 +173,16 @@ private:
 
     QString _overrideServerUrl;
     QString _overrideLocalDir;
+    QString _setLanguage;
 
-#if defined(WITH_CRASHREPORTER)
-    QScopedPointer<CrashReporter::Handler> _crashHandler;
-#endif
-    QScopedPointer<FolderMan> _folderManager;
+    QPointer<FolderMan> _folderManager;
 #if defined(Q_OS_WIN)
     QScopedPointer<ShellExtensionsServer> _shellExtensionsServer;
-#elif defined(Q_OS_MACOS)
-    QScopedPointer<Mac::FileProvider> _fileProvider;
+#endif
+#if defined(Q_OS_MACOS)
+    std::unique_ptr<Mac::FinderSyncXPC> _finderSyncXPC;
+    std::unique_ptr<Mac::FinderSyncService> _finderSyncService;
+    QSet<QString> _registeredFinderSyncPaths;
 #endif
 };
 

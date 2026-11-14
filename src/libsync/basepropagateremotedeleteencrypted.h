@@ -1,15 +1,6 @@
 /*
- * Copyright (C) by Oleksandr Zolotov <alex@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2023 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #pragma once
@@ -39,7 +30,7 @@ public:
 
     virtual void start() = 0;
 
-signals:
+Q_SIGNALS:
     void finished(bool success);
 
 protected:
@@ -57,7 +48,7 @@ protected:
     void unlockFolder(const EncryptedFolderMetadataHandler::UnlockFolderWithResult result);
     void taskFailed();
 
-protected slots:
+protected Q_SLOTS:
     virtual void slotFolderUnLockFinished(const QByteArray &folderId, int statusCode);
     virtual void slotFetchMetadataJobFinished(int statusCode, const QString &message) = 0;
     virtual void slotUpdateMetadataJobFinished(int statusCode, const QString &message) = 0;

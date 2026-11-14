@@ -1,8 +1,12 @@
 /*
- *    This software is in the public domain, furnished "as is", without technical
- *       support, and with no warranty, express or implied, as to its usefulness for
- *          any purpose.
- *          */
+ * SPDX-FileCopyrightText: 2022 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2014 ownCloud, Inc.
+ * SPDX-License-Identifier: CC0-1.0
+ * 
+ * This software is in the public domain, furnished "as is", without technical
+ * support, and with no warranty, express or implied, as to its usefulness for
+ * any purpose.
+ */
 
 #include <QtTest>
 
@@ -10,8 +14,10 @@
 
 #include "common/syncjournaldb.h"
 #include "common/syncjournalfilerecord.h"
+#include "logger.h"
 
 using namespace OCC;
+using namespace Qt::StringLiterals;
 
 class TestSyncJournalDB : public QObject
 {
@@ -31,10 +37,13 @@ public:
         return Utility::qDateTimeToTime_t(time);
     }
 
-private slots:
-
+private Q_SLOTS:
     void initTestCase()
     {
+        OCC::Logger::instance()->setLogFlush(true);
+        OCC::Logger::instance()->setLogDebug(true);
+
+        QStandardPaths::setTestModeEnabled(true);
     }
 
     void cleanupTestCase()
@@ -88,6 +97,128 @@ private slots:
         QVERIFY(_db.deleteFileRecord("foo"));
         QVERIFY(_db.getFileRecord(QByteArrayLiteral("foo"), &record));
         QVERIFY(!record.isValid());
+    }
+
+    void testFolderQuota()
+    {
+        const auto bigFolderRecord = QByteArray("bigfolder");
+        SyncJournalFileRecord record;
+        record._path = bigFolderRecord;
+        record._inode = std::numeric_limits<quint32>::max() + 12ull;
+        record._modtime = dropMsecs(QDateTime::currentDateTime());
+        record._type = ItemTypeDirectory;
+        record._etag = "123123";
+        record._fileId = "abcd";
+        record._fileSize = 213089999;
+        QVERIFY(_db.setFileRecord(record));
+
+        SyncJournalFileRecord storedRecord;
+        QVERIFY(_db.getFileRecord(bigFolderRecord, &storedRecord));
+        QVERIFY(storedRecord == record);
+        // default values
+        QCOMPARE(storedRecord._folderQuota.bytesAvailable, -1);
+        QCOMPARE(storedRecord._folderQuota.bytesUsed, -1);
+
+        record._folderQuota.bytesUsed = 100;
+        record._folderQuota.bytesAvailable = 5000;
+        QVERIFY(_db.setFileRecord(record));
+        QVERIFY(_db.getFileRecord(bigFolderRecord, &storedRecord));
+        QVERIFY(storedRecord == record);
+        QCOMPARE(storedRecord._folderQuota.bytesAvailable, 5000);
+        QCOMPARE(storedRecord._folderQuota.bytesUsed, 100);
+    }
+
+    void testFolderMigration() {
+        const auto quotaBytesUsed =  QStringLiteral("quotaBytesUsed");
+        const auto quotaBytesAvailable =  QStringLiteral("quotaBytesAvailable");
+        const auto metadata = QStringLiteral("metadata");
+        const auto columnsBeforeRemoval = _db.tableColumns(metadata.toLatin1());
+        QCOMPARE_GT(columnsBeforeRemoval.indexOf(quotaBytesUsed.toLatin1()), -1);
+        QCOMPARE_GT(columnsBeforeRemoval.indexOf(quotaBytesAvailable.toLatin1()), -1);
+        QVERIFY(_db.removeColumn(quotaBytesAvailable));
+        QVERIFY(_db.removeColumn(quotaBytesUsed));
+        QVERIFY(_db.updateMetadataTableStructure());
+        const auto columnsAfterConnect = _db.tableColumns(metadata.toLatin1());
+        QVERIFY(columnsAfterConnect.indexOf(quotaBytesUsed.toLatin1()) > -1);
+        QVERIFY(columnsAfterConnect.indexOf(quotaBytesAvailable.toLatin1()) > -1);
+        QVERIFY(_db.hasDefaultValue(quotaBytesUsed));
+        QVERIFY(_db.hasDefaultValue(quotaBytesAvailable));
+    }
+
+    void testUniqueInodeIndexRemoval_data()
+    {
+        QTest::addColumn<bool>("hasUniqueInodeIndex");
+
+        QTest::newRow("existing-index") << true;
+        QTest::newRow("already-removed") << false;
+    }
+
+    void testUniqueInodeIndexRemoval()
+    {
+        QFETCH(bool, hasUniqueInodeIndex);
+
+        SyncJournalDb journal(_tempDir.filePath(u"inode-index-%1.db"_s.arg(hasUniqueInodeIndex)));
+        auto records = QList<SyncJournalFileRecord>{};
+        for (const auto &path : QByteArrayList{"existing", "unknown", "folder"}) {
+            SyncJournalFileRecord record;
+            record._path = path;
+            record._inode = path == "unknown" ? 0 : 100 + records.size();
+            record._modtime = 123456789;
+            record._type = path == "folder" ? ItemTypeDirectory : ItemTypeFile;
+            record._etag = "etag-" + path;
+            record._fileId = "id-" + path;
+            record._fileSize = 123;
+            record._remotePerm = RemotePermissions::fromDbValue("RW");
+            record._checksumHeader = "MD5:checksum-" + path;
+            QVERIFY(journal.setFileRecord(record));
+            records.append(record);
+        }
+        journal.close();
+
+        {
+            SqlDatabase legacyDb;
+            QVERIFY(legacyDb.openOrCreateReadWrite(journal.databaseFilePath()));
+            SqlQuery query(legacyDb);
+            query.prepare("UPDATE metadata SET inode=NULL WHERE path='unknown';");
+            QVERIFY(query.exec());
+            if (hasUniqueInodeIndex) {
+                query.prepare("CREATE UNIQUE INDEX metadata_unique_inode ON metadata(inode);");
+                QVERIFY(query.exec());
+            }
+        }
+
+        for (auto openCount = 0; openCount < 2; ++openCount) {
+            QVERIFY(journal.checkConnect());
+            {
+                SqlQuery query(journal._db);
+                query.prepare("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='metadata_unique_inode';");
+                QVERIFY(query.exec());
+                QVERIFY(query.next().hasData);
+                QCOMPARE(query.intValue(0), 0);
+            }
+
+            if (openCount == 0) {
+                for (const auto &path : QByteArrayList{"duplicate1", "duplicate2", "zero1", "zero2"}) {
+                    auto record = records.first();
+                    record._path = path;
+                    record._inode = path.startsWith("zero") ? 0 : records.first()._inode;
+                    QVERIFY(journal.setFileRecord(record));
+                    if (path == "duplicate1") {
+                        record._inode = 0;
+                    }
+                    QVERIFY(journal.updateLocalMetadata(record.path(), record._modtime, record._fileSize, record._inode, {}));
+                    records.append(record);
+                }
+            }
+
+            QCOMPARE(journal.getFileRecordCount(), records.size());
+            for (const auto &expected : records) {
+                SyncJournalFileRecord actual;
+                QVERIFY(journal.getFileRecord(expected._path, &actual));
+                QVERIFY2(actual == expected, expected._path.constData());
+            }
+            journal.close();
+        }
     }
 
     void testFileRecordChecksum()
@@ -209,6 +340,7 @@ private slots:
         auto initialEtag = QByteArray("etag");
         auto makeEntry = [&](const QByteArray &path, ItemType type) {
             SyncJournalFileRecord record;
+            record._modtime = QDateTime::currentSecsSinceEpoch();
             record._path = path;
             record._type = type;
             record._etag = initialEtag;
@@ -275,6 +407,7 @@ private slots:
             SyncJournalFileRecord record;
             record._path = path;
             record._remotePerm = RemotePermissions::fromDbValue("RW");
+            record._modtime = QDateTime::currentSecsSinceEpoch();
             QVERIFY(_db.setFileRecord(record));
         };
 
@@ -289,13 +422,13 @@ private slots:
             << "foo bla bar/file"
             << "fo_"
             << "fo_/file";
-        for (const auto& elem : qAsConst(elements)) {
+        for (const auto& elem : std::as_const(elements)) {
             makeEntry(elem);
         }
 
         auto checkElements = [&]() {
             bool ok = true;
-            for (const auto& elem : qAsConst(elements)) {
+            for (const auto& elem : std::as_const(elements)) {
                 SyncJournalFileRecord record;
                 if (!_db.getFileRecord(elem, &record) || !record.isValid()) {
                     qWarning() << "Missing record: " << elem;
@@ -451,6 +584,73 @@ private slots:
         QCOMPARE(getRaw("online"), PinState::Inherited);
         list = _db.internalPinStates().rawList();
         QCOMPARE(list->size(), 0);
+    }
+
+    void testHasFileIds()
+    {
+        QList<qint64> allFileIds = {};
+        const auto makeEntry = [this, &allFileIds](const qint64 &fileId) -> void {
+            SyncJournalFileRecord record;
+            record._fileId = u"%1oc123xyz987e"_s.arg(fileId, 8, 10, '0'_L1).toLocal8Bit();
+            record._modtime = QDateTime::currentSecsSinceEpoch();
+            record._path = u"item%1"_s.arg(fileId).toLocal8Bit();
+            record._type = ItemTypeFile;
+            record._etag = "etag"_ba;
+            QVERIFY(_db.setFileRecord(record));
+
+            allFileIds.append(fileId);
+        };
+
+        // generate some test data: -9, 0..32, int32_max..(int32_max + 32), (int64_max - 32)..int64_max
+        makeEntry(-9);
+
+        for (qint64 fileId = 0; fileId <= 32; fileId++) {
+            makeEntry(fileId);
+        }
+
+        constexpr qint64 maxInt32 = std::numeric_limits<qint32>::max();
+        for (qint64 fileId = maxInt32; fileId <= maxInt32 + 32; fileId++) {
+            makeEntry(fileId);
+        }
+
+        constexpr qint64 maxInt64 = std::numeric_limits<qint64>::max();
+        for (qint64 fileId = maxInt64 - 32; fileId < maxInt64; fileId++) {
+            makeEntry(fileId);
+        }
+        makeEntry(maxInt64); // have an entry for the maximum int64 value
+
+        // these exist:
+        QVERIFY(_db.hasFileIds({4}));
+        QVERIFY(_db.hasFileIds({-9}));
+        QVERIFY(_db.hasFileIds({8, 25, 31}));
+        QVERIFY(_db.hasFileIds({maxInt32 + 4, maxInt64 - 17}));
+        QVERIFY(_db.hasFileIds({maxInt64 - 17}));
+        QVERIFY(_db.hasFileIds({maxInt64}));
+
+        // these don't:
+        QVERIFY(!_db.hasFileIds({-8}));
+        QVERIFY(!_db.hasFileIds({-16}));
+        QVERIFY(!_db.hasFileIds({-(maxInt32 + 4)}));
+        QVERIFY(!_db.hasFileIds({maxInt64 - 33}));
+        QVERIFY(!_db.hasFileIds({maxInt32 + 33}));
+        QVERIFY(!_db.hasFileIds({std::numeric_limits<qint32>::min()}));
+        QVERIFY(!_db.hasFileIds({std::numeric_limits<qint64>::min()}));
+
+        // as fileids are padded with zeroes, ensure that there is no accidental base-8 conversion done
+        // 0o37 (octal) == 31 (decimal) --> 37(dec) does not exist, but 31(dec) does.
+        QVERIFY(_db.hasFileIds({037})); // octal
+        QVERIFY(!_db.hasFileIds({37})); // decimal
+
+        QVERIFY(!_db.hasFileIds({33}));    // 33 does not exist...
+        QVERIFY(_db.hasFileIds({33, 25})); // ...but 25 does
+
+        // nothing doesn't exist
+        QVERIFY(!_db.hasFileIds({}));
+
+        // checking for a large amount of file ids should also work just fine, and be reasonably fast.
+        QBENCHMARK {
+            QVERIFY(_db.hasFileIds(allFileIds));
+        }
     }
 
 private:

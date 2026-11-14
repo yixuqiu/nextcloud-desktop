@@ -1,17 +1,9 @@
 /*
- *
- * Copyright (C) by Duncan Mac-Vicar P. <duncan@kde.org>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2018 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2011 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
+
 #include <QtGlobal>
 
 #include <cmath>
@@ -35,22 +27,33 @@
 #include <QMessageBox>
 #include <QDebug>
 #include <QQuickStyle>
+#include <QStyle>
+#include <QStyleFactory>
 #include <QQuickWindow>
 #include <QSurfaceFormat>
+#include <QOperatingSystemVersion>
+#include <QQmlExtensionPlugin>
+
+Q_IMPORT_QML_PLUGIN(com_nextcloud_desktopclient_searchPlugin)
+Q_IMPORT_QML_PLUGIN(com_nextcloud_desktopclient_sharingPlugin)
 
 using namespace OCC;
 
 void warnSystray()
 {
-    QMessageBox::critical(nullptr, qApp->translate("main.cpp", "System Tray not available"),
+    QMessageBox::critical(
+        nullptr,
+        qApp->translate("main.cpp", "System Tray not available"),
         qApp->translate("main.cpp", "%1 requires on a working system tray. "
                                     "If you are running XFCE, please follow "
                                     "<a href=\"http://docs.xfce.org/xfce/xfce4-panel/systray\">these instructions</a>. "
                                     "Otherwise, please install a system tray application such as \"trayer\" and try again.")
-            .arg(Theme::instance()->appNameGUI()));
+            .arg(Theme::instance()->appNameGUI()),
+        QMessageBox::Ok
+    );
 }
 
-int main(int argc, char **argv)
+static int runApplication(int argc, char **argv)
 {
 #ifdef Q_OS_WIN
     SetDllDirectory(L"");
@@ -59,30 +62,51 @@ int main(int argc, char **argv)
 
     Q_INIT_RESOURCE(resources);
     Q_INIT_RESOURCE(theme);
+    Q_INIT_RESOURCE(assistant);
 
     // OpenSSL 1.1.0: No explicit initialisation or de-initialisation is necessary.
-#ifdef Q_OS_MAC
-    Mac::CocoaInitializer cocoaInit; // RIIA
-#endif
-
     auto surfaceFormat = QSurfaceFormat::defaultFormat();
     surfaceFormat.setOption(QSurfaceFormat::ResetNotification);
     QSurfaceFormat::setDefaultFormat(surfaceFormat);
 
     QQuickWindow::setTextRenderType(QQuickWindow::NativeTextRendering);
-    QQuickStyle::setStyle(QStringLiteral("Fusion"));
+
+    auto qmlStyle = QStringLiteral("Fusion");
+    auto widgetsStyle = QStringLiteral("");
+
+#if defined Q_OS_MACOS
+    qmlStyle = QStringLiteral("macOS");
+#elif defined Q_OS_WIN
+    if (const auto osVersion = QOperatingSystemVersion::current().version(); osVersion < QOperatingSystemVersion::Windows11.version()) {
+        qmlStyle = QStringLiteral("Universal");
+        widgetsStyle = QStringLiteral("Fusion");
+        if (qEnvironmentVariableIsEmpty("QT_QUICK_CONTROLS_UNIVERSAL_THEME")) {
+            // initialise theme with the light/dark mode setting from the OS
+            qputenv("QT_QUICK_CONTROLS_UNIVERSAL_THEME", "System");
+        }
+
+        if (osVersion < QOperatingSystemVersion::Windows10_1809.version() && qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM")) {
+            // for Windows Server 2016 to display text as expected, see #8064
+            qputenv("QT_QPA_PLATFORM", "windows:nodirectwrite");
+        }
+    } else {
+        qmlStyle = QStringLiteral("FluentWinUI3");
+        widgetsStyle = QStringLiteral("windows11");
+    }
+#endif
+
+    QQuickStyle::setStyle(qmlStyle);
+
+#if defined KF6DBusAddons_FOUND && KF6DBusAddons_FOUND
+    QCoreApplication::setOrganizationDomain(QLatin1String(APPLICATION_REV_DOMAIN_DBUS));
+    QCoreApplication::setApplicationName(QLatin1String(APPLICATION_EXECUTABLE));
+#endif
 
     OCC::Application app(argc, argv);
 
-#ifdef Q_OS_WIN
-    // The Windows style still has pixelated elements with Qt 5.6,
-    // it's recommended to use the Fusion style in this case, even
-    // though it looks slightly less native. Check here after the
-    // QApplication was constructed, but before any QWidget is
-    // constructed.
-    if (app.devicePixelRatio() > 1)
-        QApplication::setStyle(QStringLiteral("fusion"));
-#endif // Q_OS_WIN
+    if (!widgetsStyle.isEmpty()) {
+        QApplication::setStyle(QStyleFactory::create(widgetsStyle));
+    }
 
 #ifndef Q_OS_WIN
     signal(SIGPIPE, SIG_IGN);
@@ -133,8 +157,9 @@ int main(int argc, char **argv)
         QStringList args = app.arguments();
         if (args.size() > 1) {
             QString msg = args.join(QLatin1String("|"));
-            if (!app.sendMessage(QLatin1String("MSG_PARSEOPTIONS:") + msg))
+            if (!app.sendMessage(QLatin1String("MSG_PARSEOPTIONS:") + msg)) {
                 return -1;
+            }
         } else if (!app.backgroundMode() && !app.sendMessage(QLatin1String("MSG_SHOWMAINDIALOG"))) {
             return -1;
         }
@@ -184,4 +209,15 @@ int main(int argc, char **argv)
     }
 
     return app.exec();
+}
+
+int main(int argc, char **argv)
+{
+#ifdef Q_OS_MACOS
+    return Mac::CocoaInitializer::run([argc, argv] {
+        return runApplication(argc, argv);
+    });
+#else
+    return runApplication(argc, argv);
+#endif
 }

@@ -1,15 +1,6 @@
 /*
- * Copyright (C) 2022 by Claudio Cambra <claudio.cambra@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2022 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #pragma once
@@ -38,6 +29,11 @@ class ShareModel : public QAbstractListModel
     Q_PROPERTY(bool hasInitialShareFetchCompleted READ hasInitialShareFetchCompleted NOTIFY hasInitialShareFetchCompletedChanged)
     Q_PROPERTY(bool serverAllowsResharing READ serverAllowsResharing NOTIFY serverAllowsResharingChanged)
     Q_PROPERTY(QVariantList sharees READ sharees NOTIFY shareesChanged)
+    Q_PROPERTY(bool displayShareOwner READ displayShareOwner NOTIFY displayShareOwnerChanged)
+    Q_PROPERTY(QString shareOwnerDisplayName READ shareOwnerDisplayName NOTIFY shareOwnerDisplayNameChanged)
+    Q_PROPERTY(QString shareOwnerAvatar READ shareOwnerAvatar NOTIFY shareOwnerAvatarChanged)
+    Q_PROPERTY(bool sharedWithMeExpires READ sharedWithMeExpires NOTIFY sharedWithMeExpiresChanged)
+    Q_PROPERTY(QString sharedWithMeRemainingTimeString READ sharedWithMeRemainingTimeString NOTIFY sharedWithMeRemainingTimeStringChanged)
 
 public:
     enum Roles {
@@ -79,7 +75,7 @@ public:
         ShareTypeLink = Share::TypeLink,
         ShareTypeEmail = Share::TypeEmail,
         ShareTypeRemote = Share::TypeRemote,
-        ShareTypeCircle = Share::TypeCircle,
+        ShareTypeTeam = Share::TypeTeam,
         ShareTypeRoom = Share::TypeRoom,
         ShareTypePlaceholderLink = Share::TypePlaceholderLink,
         ShareTypeInternalLink = Share::TypeInternalLink,
@@ -126,9 +122,15 @@ public:
 
     [[nodiscard]] QVariantList sharees() const;
 
+    [[nodiscard]] bool displayShareOwner() const;
+    [[nodiscard]] QString shareOwnerDisplayName() const;
+    [[nodiscard]] QString shareOwnerAvatar() const;
+    [[nodiscard]] bool sharedWithMeExpires() const;
+    [[nodiscard]] QString sharedWithMeRemainingTimeString() const;
+
     [[nodiscard]] Q_INVOKABLE static QString generatePassword();
 
-signals:
+Q_SIGNALS:
     void localPathChanged();
     void accountStateChanged();
     void accountConnectedChanged();
@@ -143,6 +145,11 @@ signals:
     void shareesChanged();
     void internalLinkReady();
     void serverAllowsResharingChanged();
+    void displayShareOwnerChanged();
+    void shareOwnerDisplayNameChanged();
+    void shareOwnerAvatarChanged();
+    void sharedWithMeExpiresChanged();
+    void sharedWithMeRemainingTimeStringChanged();
 
     void serverError(const int code, const QString &message) const;
     void passwordSetError(const QString &shareId, const int code, const QString &message);
@@ -151,7 +158,7 @@ signals:
 
     void sharesChanged();
 
-public slots:
+public Q_SLOTS:
     void setAccountState(OCC::AccountState *accountState);
     void setLocalPath(const QString &localPath);
 
@@ -174,8 +181,6 @@ public slots:
     void toggleSharePasswordProtectFromQml(const QVariant &share, const bool enable);
     void toggleShareExpirationDate(const OCC::SharePtr &share, const bool enable) const;
     void toggleShareExpirationDateFromQml(const QVariant &share, const bool enable) const;
-    void toggleShareNoteToRecipient(const OCC::SharePtr &share, const bool enable) const;
-    void toggleShareNoteToRecipientFromQml(const QVariant &share, const bool enable) const;
     void changePermissionModeFromQml(const QVariant &share, const OCC::ShareModel::SharePermissionsMode permissionMode);
 
     void setLinkShareLabel(const QSharedPointer<OCC::LinkShare> &linkShare, const QString &label) const;
@@ -188,7 +193,7 @@ public slots:
     void setShareNote(const OCC::SharePtr &share, const QString &note) const;
     void setShareNoteFromQml(const QVariant &share, const QString &note) const;
 
-private slots:
+private Q_SLOTS:
     void resetData();
     void updateData();
     void initShareManager();
@@ -200,10 +205,10 @@ private slots:
     void setHideDownloadEnabledChangeInProgress(const QString &shareId, const bool isInProgress);
 
     void slotPropfindReceived(const QVariantMap &result);
-    void slotServerError(const int code, const QString &message);
     void slotAddShare(const OCC::SharePtr &share);
     void slotRemoveShareWithId(const QString &shareId);
     void slotSharesFetched(const QList<OCC::SharePtr> &shares);
+    void slotSharedWithMeFetched(const QList<OCC::SharePtr> &shares);
     void slotAddSharee(const OCC::ShareePtr &sharee);
     void slotRemoveSharee(const OCC::ShareePtr &sharee);
 
@@ -211,13 +216,12 @@ private slots:
     void slotSharePasswordSet(const QString &shareId);
     void slotShareNoteSet(const QString &shareId);
     void slotHideDownloadSet(const QString &shareId);
-    void slotShareNameSet(const QString &shareId);
     void slotShareLabelSet(const QString &shareId);
     void slotShareExpireDateSet(const QString &shareId);
-    void slotDeleteE2EeShare(const SharePtr &share) const;
+    void slotDeleteE2EeShare(const OCC::SharePtr &share) const;
 
 private:
-    [[nodiscard]] QString displayStringForShare(const SharePtr &share) const;
+    [[nodiscard]] QString displayStringForShare(const SharePtr &share, bool verbose = false) const;
     [[nodiscard]] QString iconUrlForShare(const SharePtr &share) const;
     [[nodiscard]] QString avatarUrlForShare(const SharePtr &share) const;
     [[nodiscard]] long long enforcedMaxExpireDateForShare(const SharePtr &share) const;
@@ -246,6 +250,11 @@ private:
     SyncJournalFileLockInfo _filelockState;
     QString _privateLinkUrl;
     QByteArray _fileRemoteId;
+    bool _displayShareOwner = false;
+    QString _shareOwnerDisplayName;
+    QString _shareOwnerAvatar;
+    bool _sharedWithMeExpires = false;
+    QString _sharedWithMeRemainingTimeString;
 
     QSharedPointer<ShareManager> _manager;
 
@@ -253,6 +262,8 @@ private:
     QHash<QString, QPersistentModelIndex> _shareIdIndexHash;
     QHash<QString, QString> _shareIdRecentlySetPasswords;
     QVector<ShareePtr> _sharees;
+    // Buckets of sharees with the same display name
+    QHash<unsigned int, QSharedPointer<QSet<unsigned int>>> _duplicateDisplayNameShareIndices;
 };
 
 } // namespace OCC

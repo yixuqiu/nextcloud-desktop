@@ -1,15 +1,7 @@
 /*
- * Copyright (C) by Daniel Molkentin <danimo@owncloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2024 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2014 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "filesystem.h"
@@ -24,12 +16,18 @@
 #include <QDir>
 #include <QDirIterator>
 #include <QCoreApplication>
+#include <QRegularExpression>
 
 #include <array>
+#include <map>
+#include <optional>
+#include <ranges>
 #include <string_view>
+#include <vector>
 
 #ifdef Q_OS_WIN
 #include <securitybaseapi.h>
+#include <aclapi.h>
 #include <sddl.h>
 #endif
 
@@ -37,6 +35,156 @@ namespace
 {
 constexpr std::array<const char *, 2> lockFilePatterns = {{".~lock.", "~$"}};
 constexpr std::array<std::string_view, 8> officeFileExtensions = {"doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "odp"};
+
+// AutoCAD creates .dwl (plain text) and .dwl2 (XML) lock files when a .dwg drawing
+// is opened. Both share the document's base name — only the extension differs — so
+// the guarded document is resolved by replacing the lock extension with .dwg.
+// Both lock files are deleted when the drawing is closed.
+constexpr std::array<const char *, 2> autoCADLockFileExtensions = {"dwl", "dwl2"};
+constexpr std::string_view autoCADDocumentExtension = "dwg";
+
+// Returns true if the path's suffix is an AutoCAD lock file extension (.dwl/.dwl2).
+bool isAutoCADLockFileExtension(const QString &path)
+{
+    const auto suffix = QFileInfo{path}.suffix().toLower().toStdString();
+    return std::ranges::any_of(autoCADLockFileExtensions, [&suffix](const auto ext) { return ext == suffix; });
+}
+
+// Resolve the document guarded by an AutoCAD lock file. The lock file shares the
+// document's base name, so the document path is derived by replacing the extension
+// with .dwg. Returns std::nullopt if the lock file is not an AutoCAD lock file
+// or the guarded document does not exist.
+std::optional<QString> autoCADLockFileTargetFilePath(const QString &lockFilePath)
+{
+    const QFileInfo lockFileInfo{lockFilePath};
+    const auto baseName = lockFileInfo.completeBaseName();
+    if (baseName.isEmpty()) {
+        return std::nullopt;
+    }
+    const auto dir = lockFileInfo.dir();
+    const auto candidatePath = dir.absoluteFilePath(baseName + QLatin1Char('.') + QString::fromStdString(std::string(autoCADDocumentExtension)));
+    return QFileInfo::exists(candidatePath) ? std::make_optional(candidatePath) : std::nullopt;
+}
+
+// Returns true if a sibling AutoCAD lock file for the same base name still exists
+// on disk. AutoCAD creates .dwl and .dwl2 as a pair; the document must only be
+// unlocked when both are gone.
+bool autoCADSiblingLockFileExists(const QString &lockFilePath)
+{
+    const QFileInfo lockFileInfo{lockFilePath};
+    const auto baseName = lockFileInfo.completeBaseName();
+    if (baseName.isEmpty()) {
+        return false;
+    }
+    const auto deletedExt = lockFileInfo.suffix().toLower().toStdString();
+    const auto dir = lockFileInfo.dir();
+    return std::ranges::any_of(autoCADLockFileExtensions, [&](const auto ext) {
+        return ext != deletedExt && QFileInfo::exists(dir.absoluteFilePath(baseName + QLatin1Char('.') + QString::fromStdString(ext)));
+    });
+}
+
+// Unlike Office (`~$…`) and LibreOffice (`.~lock.…#`) lock files, Adobe lock file
+// names do not encode the guarded document's own extension, only its base name.
+// The guarded document has to be located among the lock file's siblings.
+// - `idlk`: InDesign documents (`indd`) and InCopy stories (`icml`).
+// - `prlock`: Premiere Pro projects (`prproj`).
+static const std::map<std::string_view, std::vector<std::string_view>> adobeLockFileDocumentExtensions = {
+    {"idlk", {"indd", "icml"}},
+    {"prlock", {"prproj"}},
+};
+
+bool isAdobeLockFileExtension(const QString &path)
+{
+    const auto suffix = QFileInfo{path}.suffix().toLower().toStdString();
+    return adobeLockFileDocumentExtensions.contains(suffix);
+}
+
+// Returns the candidate document extensions guarded by the given Adobe lock file
+// extension (lowercased, without the dot), in lookup order. Returns std::nullopt
+// if the extension is not a recognised Adobe lock file extension.
+std::optional<QList<QString>> adobeDocumentExtensionsFor(const QString &lockExtension)
+{
+    const auto lockExt = lockExtension.toStdString();
+    const auto it = adobeLockFileDocumentExtensions.find(lockExt);
+    if (it == adobeLockFileDocumentExtensions.cend()) {
+        return std::nullopt;
+    }
+    QList<QString> result;
+    result.reserve(static_cast<int>(it->second.size()));
+    for (const auto &documentExtension : it->second) {
+        result.append(QString::fromStdString(std::string(documentExtension)));
+    }
+    return result;
+}
+
+// Parses the document base name embedded in an Adobe lock file name.
+//   - InDesign / InCopy (.idlk): `Test` is extracted from `~Test~0kjyv(.idlk`.
+//   - Premiere Pro (.prlock): `Test` is extracted from `Test.prlock`.
+// Adobe lock file names drop the guarded document's own extension, so only the
+// base name can be recovered here. Returns std::nullopt if \a lockExtension is
+// not a recognised Adobe lock file extension, or if \a lockFileName does not
+// match the naming pattern expected for it.
+std::optional<QString> adobeLockFileDocumentBaseName(const QString &lockFileName, const QString &lockExtension)
+{
+    static const QRegularExpression idlkPattern(QStringLiteral(R"(^~(?<base>.+)~[^~]*\(\.idlk$)"),
+                                                QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression prlockPattern(QStringLiteral(R"(^(?<base>.+)\.prlock$)"),
+                                                 QRegularExpression::CaseInsensitiveOption);
+
+    const auto pattern = lockExtension == QLatin1String("idlk")    ? &idlkPattern
+        : lockExtension == QLatin1String("prlock") ? &prlockPattern
+                                                   : nullptr;
+    if (!pattern) {
+        return std::nullopt;
+    }
+
+    const auto match = pattern->match(lockFileName);
+    if (!match.hasMatch()) {
+        return std::nullopt;
+    }
+    return match.captured(QStringLiteral("base"));
+}
+
+// Resolve the document guarded by an Adobe lock file by matching a sibling file
+// in the same directory by base name and expected document extension. Returns
+// the guarded document's absolute file path, or an empty string if no matching
+// document is found.
+std::optional<QString> adobeLockFileTargetFilePath(const QString &lockFilePath)
+{
+    const QFileInfo lockFileInfo{lockFilePath};
+    const auto lockExtension = QFileInfo{lockFileInfo.fileName()}.suffix().toLower();
+    const auto documentExtensions = adobeDocumentExtensionsFor(lockExtension);
+    if (!documentExtensions || documentExtensions->isEmpty()) {
+        return std::nullopt;
+    }
+
+    const auto baseName = adobeLockFileDocumentBaseName(lockFileInfo.fileName(), lockExtension);
+    if (!baseName || baseName->isEmpty()) {
+        return std::nullopt;
+    }
+
+    const QDir dir = lockFileInfo.dir();
+    for (const auto &documentExtension : *documentExtensions) {
+        const auto candidatePath = dir.absoluteFilePath(*baseName + QLatin1Char('.') + documentExtension);
+        if (QFileInfo::exists(candidatePath)) {
+            return candidatePath;
+        }
+    }
+    return std::nullopt;
+}
+
+// Affinity by Canva creates `~lock~` suffix lock files (e.g., Screenshot.af~lock~)
+// when a document is opened. The guarded document name is recovered by stripping
+// the trailing `~lock~` suffix.
+constexpr std::string_view affinityLockFileSuffix = "~lock~";
+
+constexpr std::array<std::string_view, 4> affinityDocumentExtensions = {"afphoto", "afdesign", "afpub", "af"};
+
+bool isAffinityLockFile(const QString &path)
+{
+    return path.endsWith(QStringLiteral("~lock~"));
+}
+
 // iterates through the dirPath to find the matching fileName
 QString findMatchingUnlockedFileInDir(const QString &dirPath, const QString &lockFileName)
 {
@@ -70,19 +218,37 @@ QString FileSystem::filePathLockFilePatternMatch(const QString &path)
     if (pathSplit.isEmpty()) {
         return {};
     }
-    QString lockFilePatternFound;
+
+    // Office / LibreOffice lock files are identified by a filename prefix.
     for (const auto &lockFilePattern : lockFilePatterns) {
         if (pathSplit.last().startsWith(lockFilePattern)) {
-            lockFilePatternFound = lockFilePattern;
-            break;
+            qCDebug(OCC::lcFileSystem) << "Found a lock file with prefix:" << lockFilePattern << "in path:" << path;
+            return lockFilePattern;
         }
     }
 
-    if (!lockFilePatternFound.isEmpty()) {
-        qCDebug(OCC::lcFileSystem) << "Found a lock file with prefix:" << lockFilePatternFound << "in path:" << path;
+    // Affinity lock files are identified by the `~lock~` suffix.
+    if (isAffinityLockFile(pathSplit.last())) {
+        qCDebug(OCC::lcFileSystem) << "Found an Affinity lock file with suffix ~lock~ in path:" << path;
+        return QString::fromStdString(std::string(affinityLockFileSuffix));
     }
 
-    return lockFilePatternFound;
+    // AutoCAD lock files (.dwl / .dwl2) are identified by extension, not prefix.
+    if (isAutoCADLockFileExtension(pathSplit.last())) {
+        const auto suffix = QFileInfo{pathSplit.last()}.suffix().toLower();
+        qCDebug(OCC::lcFileSystem) << "Found an AutoCAD lock file with extension:" << suffix << "in path:" << path;
+        return QStringLiteral(".") + suffix;
+    }
+
+    // Adobe lock files (.idlk / .prlock) are identified by extension, not prefix.
+    const auto suffix = QFileInfo{pathSplit.last()}.suffix().toLower().toStdString();
+    if (adobeLockFileDocumentExtensions.contains(suffix)) {
+        const QString pattern = QStringLiteral(".") + QString::fromStdString(suffix);
+        qCDebug(OCC::lcFileSystem) << "Found an Adobe lock file with extension:" << pattern << "in path:" << path;
+        return pattern;
+    }
+
+    return {};
 }
 
 bool FileSystem::isMatchingOfficeFileExtension(const QString &path)
@@ -92,9 +258,77 @@ bool FileSystem::isMatchingOfficeFileExtension(const QString &path)
     return std::find(std::cbegin(officeFileExtensions), std::cend(officeFileExtensions), extension) != std::cend(officeFileExtensions);
 }
 
+bool FileSystem::isMatchingAutoCADDocumentExtension(const QString &path)
+{
+    return QFileInfo{path}.suffix().toLower().toStdString() == autoCADDocumentExtension;
+}
+
+bool FileSystem::isMatchingAdobeDocumentExtension(const QString &path)
+{
+    const auto pathSplit = path.split(QLatin1Char('.'));
+    const auto extension = pathSplit.size() > 1 ? pathSplit.last().toLower().toStdString() : std::string{};
+    return std::ranges::any_of(adobeLockFileDocumentExtensions, [&extension](const auto &entry) {
+        return std::ranges::any_of(entry.second, [&extension](const auto &documentExtension) { return documentExtension == extension; });
+    });
+}
+
+bool FileSystem::isMatchingAffinityDocumentExtension(const QString &path)
+{
+    const auto extension = QFileInfo{path}.suffix().toLower().toStdString();
+    return std::ranges::any_of(affinityDocumentExtensions, [&extension](const auto &ext) { return ext == extension; });
+}
+
 FileSystem::FileLockingInfo FileSystem::lockFileTargetFilePath(const QString &lockFilePath, const QString &lockFileNamePattern)
 {
     FileLockingInfo result;
+
+    // Affinity lock files use a `~lock~` suffix (e.g., Screenshot.afphoto~lock~).
+    // Strip the suffix to recover the guarded document path.
+    if (isAffinityLockFile(lockFilePath)) {
+        const QFileInfo lockFileInfo{lockFilePath};
+        auto documentName = lockFileInfo.fileName();
+        documentName.chop(affinityLockFileSuffix.length());
+        if (!documentName.isEmpty()) {
+            result.path = lockFileInfo.dir().absoluteFilePath(documentName);
+            if (QFile::exists(result.path)) {
+                result.type = lockFileInfo.exists() ? FileLockingInfo::Type::Locked : FileLockingInfo::Type::Unlocked;
+            } else {
+                result.path.clear();
+            }
+        }
+        return result;
+    }
+
+    // AutoCAD lock files (.dwl / .dwl2) share the document's base name, so the
+    // guarded document is resolved by replacing the extension with .dwg.
+    // AutoCAD creates .dwl and .dwl2 as a pair — only report Unlocked when both
+    // are gone; if a sibling lock file still exists, leave the type as Unset so
+    // the watcher does not prematurely unlock the document.
+    if (isAutoCADLockFileExtension(lockFilePath)) {
+        const auto targetPath = autoCADLockFileTargetFilePath(lockFilePath);
+        if (targetPath) {
+            result.path = *targetPath;
+            if (QFile::exists(lockFilePath)) {
+                result.type = FileLockingInfo::Type::Locked;
+            } else if (!autoCADSiblingLockFileExists(lockFilePath)) {
+                result.type = FileLockingInfo::Type::Unlocked;
+            }
+        }
+        return result;
+    }
+
+    // Adobe lock files (.idlk / .prlock) are resolved by sibling lookup — the lock
+    // file name carries only the document base name, not its extension.
+    if (isAdobeLockFileExtension(lockFilePath)) {
+        const auto adobeResolvedPath = adobeLockFileTargetFilePath(lockFilePath);
+        if (adobeResolvedPath) {
+            result.path = *adobeResolvedPath;
+            if (!result.path.isEmpty()) {
+                result.type = QFile::exists(lockFilePath) ? FileLockingInfo::Type::Locked : FileLockingInfo::Type::Unlocked;
+            }
+        }
+        return result;
+    }
 
     if (lockFileNamePattern.isEmpty()) {
         return result;
@@ -184,7 +418,7 @@ time_t FileSystem::getModTime(const QString &filename)
 {
     csync_file_stat_t stat;
     time_t result = -1;
-    if (csync_vio_local_stat(filename, &stat) != -1 && (stat.modtime != 0)) {
+    if (csync_vio_local_stat(filename, &stat, true) != -1 && (stat.modtime != 0)) {
         result = stat.modtime;
     } else {
         result = Utility::qDateTimeToTime_t(QFileInfo(filename).lastModified());
@@ -196,10 +430,17 @@ time_t FileSystem::getModTime(const QString &filename)
 
 bool FileSystem::setModTime(const QString &filename, time_t modTime)
 {
-    struct timeval times[2];
-    times[0].tv_sec = times[1].tv_sec = modTime;
-    times[0].tv_usec = times[1].tv_usec = 0;
-    int rc = c_utimes(filename, times);
+    if (FileSystem::isSymLink(filename)) {
+        qCWarning(lcFileSystem) << "Do not set mtime through a symlink" << filename;
+        return false;
+    }
+
+#ifdef Q_OS_WINDOWS
+    // the access denied ACEs also prevents us from changing the modtime -> make it writable if needed
+    FilePermissionsRestore restore(filename, FileSystem::FolderPermissions::ReadWrite);
+#endif
+
+    int rc = c_utimes(filename, modTime);
     if (rc != 0) {
         qCWarning(lcFileSystem) << "Error setting mtime for" << filename
                                 << "failed: rc" << rc << ", errno:" << errno;
@@ -236,7 +477,7 @@ static qint64 getSizeWithCsync(const QString &filename)
 {
     qint64 result = 0;
     csync_file_stat_t stat;
-    if (csync_vio_local_stat(filename, &stat) != -1) {
+    if (csync_vio_local_stat(filename, &stat, true) != -1) {
         result = stat.size;
     } else {
         qCWarning(lcFileSystem) << "Could not get size for" << filename << "with csync" << Utility::formatWinError(errno);
@@ -257,48 +498,99 @@ qint64 FileSystem::getSize(const QString &filename)
 }
 
 // Code inspired from Qt5's QDir::removeRecursively
-bool FileSystem::removeRecursively(const QString &path, const std::function<void(const QString &path, bool isDir)> &onDeleted, QStringList *errors)
+bool FileSystem::removeRecursively(const QString &path,
+                                   const std::function<void(const QString &path, bool isDir)> &onDeleted,
+                                   QStringList *errors,
+                                   const std::function<void(const QString &path, bool isDir)> &onError,
+                                   const std::function<bool (const QString &, QString*)> &customDeleteFunction)
 {
+    const auto removeEntry = [&](const QString &entryPath) {
+        const auto parentPermissionsHandler =
+            FileSystem::FilePermissionsRestore{QFileInfo{entryPath}.dir().absolutePath(), FileSystem::FolderPermissions::ReadWrite};
+        QString removeError;
+        const auto removed = customDeleteFunction ? customDeleteFunction(entryPath, &removeError) : FileSystem::remove(entryPath, &removeError);
+        if (removed) {
+            if (onDeleted) {
+                onDeleted(entryPath, false);
+            }
+            return true;
+        }
+        if (errors) {
+            errors->append(QCoreApplication::translate("FileSystem", "Error removing \"%1\": %2").arg(QDir::toNativeSeparators(entryPath), removeError));
+        }
+        if (onError) {
+            onError(entryPath, false);
+        }
+        qCWarning(lcFileSystem) << "Error removing " << entryPath << ':' << removeError;
+        return false;
+    };
+
+    if (FileSystem::isSymLink(path)) {
+        return removeEntry(path);
+    }
+
+    if (!FileSystem::setFolderPermissions(path, FileSystem::FolderPermissions::ReadWrite)) {
+        if (onError) {
+            onError(path, true);
+        }
+    }
+
     bool allRemoved = true;
     QDirIterator di(path, QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot);
 
     while (di.hasNext()) {
         di.next();
-        const QFileInfo &fi = di.fileInfo();
-        bool removeOk = false;
-        // The use of isSymLink here is okay:
-        // we never want to go into this branch for .lnk files
-        bool isDir = fi.isDir() && !fi.isSymLink() && !FileSystem::isJunction(fi.absoluteFilePath());
-        if (isDir) {
-            removeOk = removeRecursively(path + QLatin1Char('/') + di.fileName(), onDeleted, errors); // recursive
-        } else {
-            QString removeError;
-            removeOk = FileSystem::remove(di.filePath(), &removeError);
-            if (removeOk) {
-                if (onDeleted)
-                    onDeleted(di.filePath(), false);
-            } else {
-                if (errors) {
-                    errors->append(QCoreApplication::translate("FileSystem", "Error removing \"%1\": %2")
-                                       .arg(QDir::toNativeSeparators(di.filePath()), removeError));
-                }
-                qCWarning(lcFileSystem) << "Error removing " << di.filePath() << ':' << removeError;
-            }
-        }
-        if (!removeOk)
+        const auto isDir = FileSystem::isDir(di.filePath()) && !FileSystem::isSymLink(di.filePath());
+        const auto removeOk =
+            isDir ? removeRecursively(joinPath(path, di.fileName()), onDeleted, errors, onError, customDeleteFunction) : removeEntry(di.filePath());
+        if (!removeOk) {
             allRemoved = false;
+        }
     }
     if (allRemoved) {
-        allRemoved = QDir().rmdir(path);
+        const auto fileInfo = QFileInfo{path};
+        const auto parentFolderPath = fileInfo.dir().absolutePath();
+        const auto parentPermissionsHandler = FileSystem::FilePermissionsRestore{parentFolderPath, FileSystem::FolderPermissions::ReadWrite};
+        FileSystem::setFolderPermissions(path, FileSystem::FolderPermissions::ReadWrite);
+        auto folderDeleteError = QString{};
+
+        try {
+#ifdef Q_OS_WIN
+            // std::filesystem::remove does not handle paths greater than MAX_PATH, but it seems to be fine with the prefixed UNC paths ...
+            const auto fspath = std::filesystem::path{FileSystem::longWinPath(fileInfo.filePath()).toStdWString()};
+#else
+            const auto fspath = std::filesystem::path{fileInfo.filePath().toStdWString()};
+#endif
+            if (!std::filesystem::remove(fspath)) {
+                qCWarning(lcFileSystem()) << "File is already deleted" << fileInfo.filePath();
+            }
+        }
+        catch (const std::filesystem::filesystem_error &e)
+        {
+            folderDeleteError = QString::fromLatin1(e.what());
+            qCWarning(lcFileSystem()) << e.what() << fileInfo.filePath();
+            allRemoved = false;
+        }
+        catch (...)
+        {
+            folderDeleteError = QObject::tr("Error deleting the file");
+            qCWarning(lcFileSystem()) << "Error deleting the file" << fileInfo.filePath();
+            allRemoved = false;
+        }
+
         if (allRemoved) {
-            if (onDeleted)
+            if (onDeleted) {
                 onDeleted(path, true);
+            }
         } else {
             if (errors) {
                 errors->append(QCoreApplication::translate("FileSystem", "Could not remove folder \"%1\"")
                                    .arg(QDir::toNativeSeparators(path)));
             }
-            qCWarning(lcFileSystem) << "Error removing folder" << path;
+            if (onError) {
+                onError(di.filePath(), false);
+            }
+            qCWarning(lcFileSystem) << "Error removing folder" << path << folderDeleteError;
         }
     }
     return allRemoved;
@@ -307,183 +599,330 @@ bool FileSystem::removeRecursively(const QString &path, const std::function<void
 bool FileSystem::getInode(const QString &filename, quint64 *inode)
 {
     csync_file_stat_t fs;
-    if (csync_vio_local_stat(filename, &fs) == 0) {
+    if (csync_vio_local_stat(filename, &fs, true) == 0) {
         *inode = fs.inode;
         return true;
     }
     return false;
 }
 
-#if !defined(Q_OS_MACOS) || __MAC_OS_X_VERSION_MIN_REQUIRED >= MAC_OS_X_VERSION_10_15
 bool FileSystem::setFolderPermissions(const QString &path,
-                                      FileSystem::FolderPermissions permissions) noexcept
+                                      FileSystem::FolderPermissions permissions,
+                                      bool * const permissionsChanged) noexcept
 {
-    try {
-        switch (permissions) {
-        case OCC::FileSystem::FolderPermissions::ReadOnly:
-            std::filesystem::permissions(path.toStdWString(), std::filesystem::perms::owner_write | std::filesystem::perms::group_write | std::filesystem::perms::others_write, std::filesystem::perm_options::remove);
-            break;
-        case OCC::FileSystem::FolderPermissions::ReadWrite:
-            break;
-        }
+    bool permissionsDidChange = false;
+
+    if (permissionsChanged) {
+        *permissionsChanged = false;
     }
-    catch (const std::filesystem::filesystem_error &e)
-    {
-        qCWarning(lcFileSystem()) << "exception when modifying folder permissions" << e.what() << e.path1().c_str() << e.path2().c_str();
+
+    if (FileSystem::isSymLink(path)) {
+        qCWarning(lcFileSystem) << "Do not change permissions through a symlink" << path;
         return false;
     }
 
 #ifdef Q_OS_WIN
-    SECURITY_INFORMATION info = DACL_SECURITY_INFORMATION;
-    std::unique_ptr<char[]> securityDescriptor;
-    auto neededLength = 0ul;
+    // current read-only folder ACL needs to be removed from files also when making a folder read-write
+    // we currently have a too limited set of authorization for files when applying the restrictive ACL for folders on the child files
+    setFileReadOnly(path, permissions == FileSystem::FolderPermissions::ReadOnly);
+    setAclPermission(path, permissions);
 
-    if (!GetFileSecurityW(path.toStdWString().c_str(), info, nullptr, 0, &neededLength)) {
-        const auto lastError = GetLastError();
-        if (lastError != ERROR_INSUFFICIENT_BUFFER) {
-            qCWarning(lcFileSystem) << "error when calling GetFileSecurityW" << path << lastError;
-            return false;
-        }
+    permissionsDidChange = true;
+#else
+    const auto stdStrPath = path.toStdWString();
 
-        securityDescriptor.reset(new char[neededLength]);
-
-        if (!GetFileSecurityW(path.toStdWString().c_str(), info, securityDescriptor.get(), neededLength, &neededLength)) {
-            qCWarning(lcFileSystem) << "error when calling GetFileSecurityW" << path << GetLastError();
-            return false;
-        }
-    }
-
-    int daclPresent = false, daclDefault = false;
-    PACL resultDacl = nullptr;
-    if (!GetSecurityDescriptorDacl(securityDescriptor.get(), &daclPresent, &resultDacl, &daclDefault)) {
-        qCWarning(lcFileSystem) << "error when calling GetSecurityDescriptorDacl" << path << GetLastError();
-        return false;
-    }
-    if (!daclPresent) {
-        qCWarning(lcFileSystem) << "error when calling DACL needed to set a folder read-only or read-write is missing" << path;
-        return false;
-    }
-
-    PSID sid = nullptr;
-    if (!ConvertStringSidToSidW(L"S-1-5-32-545", &sid))
+    try
     {
-        qCWarning(lcFileSystem) << "error when calling ConvertStringSidToSidA" << path << GetLastError();
-        return false;
-    }
+        static constexpr auto writePerms = std::filesystem::perms::owner_write | std::filesystem::perms::group_write | std::filesystem::perms::others_write;
 
-    ACL_SIZE_INFORMATION aclSize;
-    if (!GetAclInformation(resultDacl, &aclSize, sizeof(aclSize), AclSizeInformation)) {
-        qCWarning(lcFileSystem) << "error when calling GetAclInformation" << path << GetLastError();
-        return false;
-    }
+        const auto currentPermissions = std::filesystem::status(stdStrPath).permissions();
+        qCDebug(lcFileSystem()).nospace() << "current permissions path=" << path << " perms=" << Qt::showbase << Qt::oct << static_cast<int>(currentPermissions);
 
-    const auto newAclSize = aclSize.AclBytesInUse + sizeof(ACCESS_DENIED_ACE) + GetLengthSid(sid);
-    qCDebug(lcFileSystem) << "allocated a new DACL object of size" << newAclSize;
-
-    std::unique_ptr<ACL> newDacl{reinterpret_cast<PACL>(new char[newAclSize])};
-    if (!InitializeAcl(newDacl.get(), newAclSize, ACL_REVISION)) {
-        const auto lastError = GetLastError();
-        if (lastError != ERROR_INSUFFICIENT_BUFFER) {
-            qCWarning(lcFileSystem) << "insufficient memory error when calling InitializeAcl" << path;
-            return false;
-        }
-
-        qCWarning(lcFileSystem) << "error when calling InitializeAcl" << path << lastError;
-        return false;
-    }
-
-    if (permissions == FileSystem::FolderPermissions::ReadOnly) {
-        qCInfo(lcFileSystem) << path << "will be read only";
-        if (!AddAccessDeniedAce(newDacl.get(), ACL_REVISION, FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES | FILE_WRITE_EA | FILE_APPEND_DATA | FILE_DELETE_CHILD, sid)) {
-            qCWarning(lcFileSystem) << "error when calling AddAccessDeniedAce << path" << GetLastError();
-            return false;
-        }
-    }
-
-    for (int i = 0; i < aclSize.AceCount; ++i) {
-        void *currentAce = nullptr;
-        if (!GetAce(resultDacl, i, &currentAce)) {
-            qCWarning(lcFileSystem) << "error when calling GetAce" << path << GetLastError();
-            return false;
-        }
-
-        const auto currentAceHeader = reinterpret_cast<PACE_HEADER>(currentAce);
-
-        if (permissions == FileSystem::FolderPermissions::ReadWrite) {
-            qCInfo(lcFileSystem) << path << "will be read write";
-        }
-        if (permissions == FileSystem::FolderPermissions::ReadWrite && (ACCESS_DENIED_ACE_TYPE == (currentAceHeader->AceType & ACCESS_DENIED_ACE_TYPE))) {
-            qCWarning(lcFileSystem) << "AceHeader" << path << currentAceHeader->AceFlags << currentAceHeader->AceSize << currentAceHeader->AceType;
-            continue;
-        }
-
-        if (!AddAce(newDacl.get(), ACL_REVISION, i + 1, currentAce, currentAceHeader->AceSize)) {
-            const auto lastError = GetLastError();
-            if (lastError != ERROR_INSUFFICIENT_BUFFER) {
-                qCWarning(lcFileSystem) << "insufficient memory error when calling AddAce" << path;
-                return false;
-            }
-
-            if (lastError != ERROR_INVALID_PARAMETER) {
-                qCWarning(lcFileSystem) << "invalid parameter error when calling AddAce" << path << "ACL size" << newAclSize;
-                return false;
-            }
-
-            qCWarning(lcFileSystem) << "error when calling AddAce" << path << lastError << "acl index" << (i + 1);
-            return false;
-        }
-    }
-
-    SECURITY_DESCRIPTOR newSecurityDescriptor;
-    if (!InitializeSecurityDescriptor(&newSecurityDescriptor, SECURITY_DESCRIPTOR_REVISION)) {
-        qCWarning(lcFileSystem) << "error when calling InitializeSecurityDescriptor" << path << GetLastError();
-        return false;
-    }
-
-    if (!SetSecurityDescriptorDacl(&newSecurityDescriptor, true, newDacl.get(), false)) {
-        qCWarning(lcFileSystem) << "error when calling SetSecurityDescriptorDacl" << path << GetLastError();
-        return false;
-    }
-
-    if (!SetFileSecurityW(path.toStdWString().c_str(), info, &newSecurityDescriptor)) {
-        qCWarning(lcFileSystem) << "error when calling SetFileSecurityW" << path << GetLastError();
-        return false;
-    }
-#endif
-
-#if !defined(Q_OS_MACOS) || __MAC_OS_X_VERSION_MIN_REQUIRED >= MAC_OS_X_VERSION_10_15
-    try {
         switch (permissions) {
-        case OCC::FileSystem::FolderPermissions::ReadOnly:
+        case OCC::FileSystem::FolderPermissions::ReadOnly: {
+            qCDebug(lcFileSystem()).nospace() << "ensuring folder is read only path=" << path;
+
+            if ((currentPermissions & writePerms) != std::filesystem::perms::none) {
+                qCDebug(lcFileSystem()).nospace() << "removing owner/group/others write permissions path=" << path;
+                std::filesystem::permissions(stdStrPath, writePerms, std::filesystem::perm_options::remove);
+                permissionsDidChange = true;
+            }
+
             break;
-        case OCC::FileSystem::FolderPermissions::ReadWrite:
-            std::filesystem::permissions(path.toStdWString(), std::filesystem::perms::owner_write, std::filesystem::perm_options::add);
+        }
+        case OCC::FileSystem::FolderPermissions::ReadWrite: {
+            qCDebug(lcFileSystem()).nospace() << "ensuring folder is read/writable path=" << path;
+
+            if ((currentPermissions & std::filesystem::perms::others_write) != std::filesystem::perms::none) {
+                qCDebug(lcFileSystem()).nospace() << "removing others write permissions path=" << path;
+                std::filesystem::permissions(stdStrPath, std::filesystem::perms::others_write, std::filesystem::perm_options::remove);
+                permissionsDidChange = true;
+            }
+
+            if ((currentPermissions & std::filesystem::perms::owner_write) == std::filesystem::perms::none) {
+                qCDebug(lcFileSystem()).nospace() << "adding owner write permissions path=" << path;
+                std::filesystem::permissions(stdStrPath, std::filesystem::perms::owner_write, std::filesystem::perm_options::add);
+                permissionsDidChange = true;
+            }
+
             break;
+        }
         }
     }
     catch (const std::filesystem::filesystem_error &e)
     {
-        qCWarning(lcFileSystem()) << "exception when modifying folder permissions" << e.what() << e.path1().c_str() << e.path2().c_str();
+        qCWarning(lcFileSystem()) << "exception when modifying folder permissions" << e.what() << "- path1:" << e.path1().c_str() << "- path2:" << e.path2().c_str();
         return false;
     }
+    catch (const std::system_error &e)
+    {
+        qCWarning(lcFileSystem()) << "exception when modifying folder permissions" << e.what() << "- path:" << stdStrPath;
+        return false;
+    }
+    catch (...)
+    {
+        qCWarning(lcFileSystem()) << "exception when modifying folder permissions -  path:" << stdStrPath;
+        return false;
+    }
+
+    if (permissionsDidChange) {
+        try {
+            const auto newPermissions = std::filesystem::status(stdStrPath).permissions();
+            qCDebug(lcFileSystem()).nospace() << "updated permissions path=" << path << " perms=" << Qt::showbase << Qt::oct << static_cast<int>(newPermissions);
+        }
+        catch (const std::filesystem::filesystem_error &e)
+        {
+            qCWarning(lcFileSystem()) << "exception when querying folder permissions" << e.what() << "- path1:" << e.path1().c_str() << "- path2:" << e.path2().c_str();
+            return false;
+        }
+        catch (const std::system_error &e)
+        {
+            qCWarning(lcFileSystem()) << "exception when querying folder permissions" << e.what() << "- path:" << stdStrPath;
+            return false;
+        }
+        catch (...)
+        {
+            qCWarning(lcFileSystem()) << "exception when querying folder permissions -  path:" << stdStrPath;
+            return false;
+        }
+    }
 #endif
+
+    if (permissionsChanged) {
+        *permissionsChanged = permissionsDidChange;
+    }
 
     return true;
 }
 
 bool FileSystem::isFolderReadOnly(const std::filesystem::path &path) noexcept
 {
-    try {
+#ifdef Q_OS_WIN
+    Utility::UniqueHandle fileHandle;
+    constexpr SECURITY_INFORMATION securityInfo = DACL_SECURITY_INFORMATION | READ_CONTROL;
+    PACL resultDacl = nullptr;
+    Utility::UniqueLocalFree<PSECURITY_DESCRIPTOR> securityDescriptor;
+
+    const auto longPath = longWinPath(QString::fromStdWString(path.wstring()));
+    const auto rawLongPath = reinterpret_cast<const wchar_t *>(longPath.utf16());
+    qCDebug(lcFileSystem()).nospace() << "Checking whether folder is read only, path=" << longPath;
+
+    // CreateFileW is known to work with long paths in the \\?\ variant
+    constexpr DWORD desiredAccess = READ_CONTROL;
+    constexpr DWORD shareMode = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+    constexpr DWORD creationDisposition = OPEN_EXISTING;
+    constexpr DWORD flagsAndAttributes = FILE_ATTRIBUTE_NORMAL | FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_OPEN_NO_RECALL;
+    fileHandle.reset(CreateFileW(rawLongPath, desiredAccess, shareMode, nullptr, creationDisposition, flagsAndAttributes, nullptr));
+
+    if (fileHandle.get() == INVALID_HANDLE_VALUE) {
+        const auto lastError = GetLastError();
+        qCWarning(lcFileSystem).nospace() << "CreateFileW failed, path=" << longPath << " errorMessage=" << Utility::formatWinError(lastError);
+        return false;
+    }
+
+    {
+        PSECURITY_DESCRIPTOR securityDescriptorUnmanaged = nullptr;
+        if (const auto lastError = GetSecurityInfo(fileHandle.get(), SE_FILE_OBJECT, securityInfo, nullptr, nullptr, &resultDacl, nullptr, &securityDescriptorUnmanaged); lastError != ERROR_SUCCESS) {
+            qCWarning(lcFileSystem).nospace() << "GetSecurityInfo failed, path=" << longPath << " errorMessage=" << Utility::formatWinError(lastError);
+            return false;
+        }
+        securityDescriptor.reset(securityDescriptorUnmanaged);
+    }
+
+    if (!resultDacl) {
+        qCWarning(lcFileSystem).nospace() << "failed to retrieve DACL needed to figure out whether a folder is read-only, path=" << longPath;
+        return false;
+    }
+
+    ACL_SIZE_INFORMATION aclSize;
+    if (!GetAclInformation(resultDacl, &aclSize, sizeof(aclSize), AclSizeInformation)) {
+        const auto lastError = GetLastError();
+        qCWarning(lcFileSystem).nospace() << "GetAclInformation failed, path=" << longPath << " errorMessage=" << Utility::formatWinError(lastError);
+        return false;
+    }
+
+    for (int i = 0; i < aclSize.AceCount; ++i) {
+        void *currentAce = nullptr;
+        if (!GetAce(resultDacl, i, &currentAce)) {
+            qCWarning(lcFileSystem).nospace() << "GetAce failed, path=" << longPath << " errorMessage=" << Utility::formatWinError(GetLastError());
+            return false;
+        }
+
+        const auto currentAceHeader = reinterpret_cast<PACE_HEADER>(currentAce);
+
+        if ((ACCESS_DENIED_ACE_TYPE == (currentAceHeader->AceType & ACCESS_DENIED_ACE_TYPE))) {
+            qCInfo(lcFileSystem()).nospace() << "Detected access denied ACL: assuming read-only, path=" << longPath;
+            return true;
+        }
+    }
+
+    return false;
+#else
+    try
+    {
         const auto folderStatus = std::filesystem::status(path);
         const auto folderPermissions = folderStatus.permissions();
         return (folderPermissions & std::filesystem::perms::owner_write) != std::filesystem::perms::owner_write;
     }
     catch (const std::filesystem::filesystem_error &e)
     {
-        qCWarning(lcFileSystem()) << "exception when checking folder permissions" << e.what() << e.path1().c_str() << e.path2().c_str();
+        qCWarning(lcFileSystem()) << "exception when checking folder permissions" << e.what() << "- path1:" << e.path1().c_str() << "- path2:" << e.path2().c_str();
         return false;
     }
-}
+    catch (const std::system_error &e)
+    {
+        qCWarning(lcFileSystem()) << "exception when checking folder permissions" << e.what() << "- path:" << path.string();
+        return false;
+    }
+    catch (...)
+    {
+        qCWarning(lcFileSystem()) << "exception when checking folder permissions -  path:" << path.string();
+        return false;
+    }
 #endif
+}
+
+FileSystem::FilePermissionsRestore::FilePermissionsRestore(const QString &path, FolderPermissions temporaryPermissions)
+    : _path(path)
+{
+    try
+    {
+        const auto &stdStrPath = _path.toStdWString();
+        const auto fsPath = std::filesystem::path{stdStrPath};
+        _initialPermissions = FileSystem::isFolderReadOnly(fsPath) ? OCC::FileSystem::FolderPermissions::ReadOnly : OCC::FileSystem::FolderPermissions::ReadWrite;
+        if (_initialPermissions != temporaryPermissions) {
+            FileSystem::setFolderPermissions(_path, temporaryPermissions);
+            _rollbackNeeded = true;
+        }
+    }
+    catch (const std::filesystem::filesystem_error &e)
+    {
+        qCWarning(lcFileSystem()) << "exception when modifying folder permissions" << e.what() << "- path1:" << e.path1().c_str() << "- path2:" << e.path2().c_str();
+    }
+    catch (const std::system_error &e)
+    {
+        qCWarning(lcFileSystem()) << "exception when modifying folder permissions" << e.what() << "- path:" << path;
+    }
+    catch (...)
+    {
+        qCWarning(lcFileSystem()) << "exception when modifying folder permissions -  path:" << path;
+    }
+}
+
+FileSystem::FilePermissionsRestore::~FilePermissionsRestore()
+{
+    if (_rollbackNeeded) {
+        FileSystem::setFolderPermissions(_path, _initialPermissions);
+    }
+}
+
+bool FileSystem::uncheckedRenameReplace(const QString &originFileName, const QString &destinationFileName, QString *errorString)
+{
+#ifndef Q_OS_WIN
+    bool success = false;
+    QFile orig(originFileName);
+    // We want a rename that also overwrites.  QFile::rename does not overwrite.
+    // Qt 5.1 has QSaveFile::renameOverwrite we could use.
+    // ### FIXME
+    success = true;
+    bool destExists = fileExists(destinationFileName);
+    if (destExists && !QFile::remove(destinationFileName)) {
+        *errorString = orig.errorString();
+        qCWarning(lcFileSystem) << "Target file could not be removed.";
+        success = false;
+    }
+    if (success) {
+        success = orig.rename(destinationFileName);
+    }
+    if (!success) {
+        *errorString = orig.errorString();
+        qCWarning(lcFileSystem) << "Renaming temp file to final failed: " << *errorString;
+        return false;
+    }
+#else //Q_OS_WIN
+    const auto originFileInfo = QFileInfo{originFileName};
+    const auto originParentFolderPath = originFileInfo.dir().absolutePath();
+    FilePermissionsRestore renameEnabler{originParentFolderPath, FileSystem::FolderPermissions::ReadWrite};
+    // You can not overwrite a read-only file on windows.
+    if (!isWritable(destinationFileName)) {
+        setFileReadOnly(destinationFileName, false);
+    }
+
+    BOOL ok = 0;
+    QString orig = longWinPath(originFileName);
+    QString dest = longWinPath(destinationFileName);
+
+    ok = MoveFileEx((wchar_t *)orig.utf16(),
+                    (wchar_t *)dest.utf16(),
+                    MOVEFILE_REPLACE_EXISTING + MOVEFILE_COPY_ALLOWED + MOVEFILE_WRITE_THROUGH);
+    if (!ok) {
+        *errorString = Utility::formatWinError(GetLastError());
+        qCWarning(lcFileSystem) << "Renaming temp file to final failed: " << *errorString;
+        return false;
+    }
+#endif
+    return true;
+}
+
+time_t FileSystem::fileTimeToTime_t(std::filesystem::file_time_type fileTime)
+{
+#ifdef HAS_CLOCK_CAST
+    return std::chrono::system_clock::to_time_t(std::chrono::clock_cast<std::chrono::system_clock>(fileTime));
+#else
+    const auto systemTime = std::chrono::time_point_cast<std::chrono::system_clock::duration>(std::chrono::file_clock::to_sys(fileTime));
+    return std::chrono::system_clock::to_time_t(systemTime);
+#endif
+}
+
+std::filesystem::file_time_type FileSystem::time_tToFileTime(time_t fileTime)
+{
+#ifdef HAS_CLOCK_CAST
+    return std::chrono::clock_cast<std::chrono::file_clock>(std::chrono::system_clock::from_time_t(fileTime));
+#else
+    return std::chrono::file_clock::from_sys(std::chrono::system_clock::from_time_t(fileTime));
+#endif
+}
+
+bool FileSystem::setModTime(const std::filesystem::path &filename, time_t modTime)
+{
+    if (const auto path = FileSystem::fromFilesystemPath(filename); FileSystem::isSymLink(path)) {
+        qCWarning(lcFileSystem) << "Do not set mtime through a symlink" << path;
+        return false;
+    }
+
+#ifdef Q_OS_WINDOWS
+    // the access denied ACEs also prevents us from changing the modtime -> make it writable if needed
+    FilePermissionsRestore restore(QString::fromStdWString(filename.wstring()), FileSystem::FolderPermissions::ReadWrite);
+#endif
+
+    std::error_code rc;
+    std::filesystem::last_write_time(filename, time_tToFileTime(modTime), rc);
+    if (rc) {
+        qCWarning(lcFileSystem) << u"Error setting mtime for" << filename.string() << u"failed: rc" << rc.value() << u", error message:" << rc.message();
+        Q_ASSERT(!rc);
+        return false;
+    }
+    return true;
+}
 
 } // namespace OCC

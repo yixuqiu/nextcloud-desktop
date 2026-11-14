@@ -1,26 +1,54 @@
 /*
- * Copyright (C) by Felix Weilbach <felix.weilbach@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2021 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
-import QtQuick 2.15
-import QtQuick.Controls 2.15
-import QtQuick.Layouts 1.15
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Layouts
 
-import Style 1.0
+import Style
 import com.nextcloud.desktopclient 1.0 as NC
 import "./tray"
+import "./common"
 
 ColumnLayout {
+    id: root
+
+    property bool showSearch: false
+    property int visibleRows: 8
+    property string searchText: ""
+    readonly property var filteredModel: {
+        if (searchText === "") {
+            return emojiModel.model
+        }
+
+        const needle = searchText.toLowerCase()
+        const emojiLists = [
+            emojiModel.people,
+            emojiModel.nature,
+            emojiModel.food,
+            emojiModel.activity,
+            emojiModel.travel,
+            emojiModel.objects,
+            emojiModel.symbols,
+            emojiModel.flags
+        ]
+        var results = []
+        for (var listIndex = 0; listIndex < emojiLists.length; ++listIndex) {
+            const emojis = emojiLists[listIndex]
+            for (var emojiIndex = 0; emojiIndex < emojis.length; ++emojiIndex) {
+                const emoji = emojis[emojiIndex]
+                const shortname = emoji.shortname === undefined ? "" : emoji.shortname.toLowerCase()
+                const unicode = emoji.unicode === undefined ? "" : emoji.unicode
+                if (shortname.indexOf(needle) !== -1 || unicode.indexOf(searchText) !== -1) {
+                    results.push(emoji)
+                }
+            }
+        }
+        return results
+    }
+
     NC.EmojiModel {
         id: emojiModel
     }
@@ -33,6 +61,31 @@ ColumnLayout {
         id: metrics
     }
 
+    NCContextMenuTextField {
+        id: searchField
+
+        visible: root.showSearch
+        Layout.fillWidth: true
+        Layout.preferredHeight: visible ? 32 : 0
+        Layout.margins: visible ? Style.smallSpacing : 0
+        placeholderText: qsTr("Search emoji")
+        text: root.searchText
+        topPadding: 0
+        bottomPadding: 0
+        leftPadding: Style.standardSpacing
+        rightPadding: Style.standardSpacing
+        font.pixelSize: Style.pixelSize + 2
+        verticalAlignment: TextInput.AlignVCenter
+        onTextChanged: root.searchText = text
+
+        background: Rectangle {
+            radius: Style.mediumRoundedButtonRadius
+            color: palette.base
+            border.width: Style.normalBorderWidth
+            border.color: searchField.activeFocus ? Style.ncBlue : palette.dark
+        }
+    }
+
     ListView {
         id: headerLayout
         Layout.fillWidth: true
@@ -40,6 +93,8 @@ ColumnLayout {
         implicitWidth: contentItem.childrenRect.width
         implicitHeight: metrics.height * 2
 
+        visible: root.searchText === ""
+        Layout.preferredHeight: visible ? implicitHeight : 0
         orientation: ListView.Horizontal
 
         model: emojiModel.emojiCategoriesModel
@@ -63,16 +118,14 @@ ColumnLayout {
                 horizontalAlignment: Text.AlignHCenter
                 verticalAlignment: Text.AlignVCenter
                 text: emoji
+                font.pointSize: Style.defaultFontPtSize + 2
             }
 
             Rectangle {
                 anchors.bottom: parent.bottom
-
                 width: parent.width
                 height: Style.thickBorderWidth
-
                 visible: ListView.isCurrentItem
-
                 color: palette.dark
             }
 
@@ -85,63 +138,70 @@ ColumnLayout {
     }
 
     Rectangle {
-        height: Style.normalBorderWidth
+        Layout.preferredHeight: root.searchText === "" ? Style.normalBorderWidth : 0
         Layout.fillWidth: true
         color: palette.dark
     }
 
-    GridView {
-        id: emojiView
+    ScrollView {
         Layout.fillWidth: true
         Layout.fillHeight: true
-        Layout.preferredHeight: metrics.height * 8
+        Layout.preferredHeight: metrics.height * root.visibleRows
         Layout.margins: Style.normalBorderWidth
-
-        cellWidth: metrics.height * 2
-        cellHeight: metrics.height * 2
-
-        boundsBehavior: Flickable.DragOverBounds
         clip: true
 
-        model: emojiModel.model
+        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
 
-        delegate: ItemDelegate {
-            id: emojiDelegate
+        GridView {
+            id: emojiView
+            width: parent.width
+            height: parent.height
+            cellWidth: metrics.height * 2
+            cellHeight: metrics.height * 2
+            boundsBehavior: Flickable.DragOverBounds
+            model: root.filteredModel
 
-            width: metrics.height * 2
-            height: metrics.height * 2
+            delegate: ItemDelegate {
+                id: emojiDelegate
+                width: metrics.height * 2
+                height: metrics.height * 2
 
-            background: Rectangle {
-                color: palette.highlight
-                visible: ListView.isCurrentItem || emojiDelegate.highlighted || emojiDelegate.checked || emojiDelegate.down || emojiDelegate.hovered
-                radius: Style.slightlyRoundedButtonRadius
+                background: Rectangle {
+                    color: palette.highlight
+                    visible: ListView.isCurrentItem || emojiDelegate.highlighted || emojiDelegate.checked || emojiDelegate.down || emojiDelegate.hovered
+                    radius: Style.slightlyRoundedButtonRadius
+                }
+
+                contentItem: EnforcedPlainTextLabel {
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                    text: modelData === undefined ? "" : modelData.unicode
+                    font.pointSize: Style.defaultFontPtSize + 4
+                }
+
+                ToolTip {
+                    popupType: Qt.platform.os === "windows" ? Popup.Item : Popup.Native
+                    text: modelData === undefined ? "" : modelData.shortname
+                    visible: emojiDelegate.hovered
+                    delay: Qt.styleHints.mousePressAndHoldInterval
+                }
+
+                onClicked: {
+                    chosen(modelData.unicode);
+                    emojiModel.emojiUsed(modelData);
+                }
+
             }
 
-            contentItem: EnforcedPlainTextLabel {
-                horizontalAlignment: Text.AlignHCenter
-                verticalAlignment: Text.AlignVCenter
-                text: modelData === undefined ? "" : modelData.unicode
-            }
-
-            onClicked: {
-                chosen(modelData.unicode);
-                emojiModel.emojiUsed(modelData);
+            EnforcedPlainTextLabel {
+                id: placeholderMessage
+                width: parent.width * 0.8
+                anchors.centerIn: parent
+                text: root.searchText === "" ? qsTr("No recent emojis") : qsTr("No emojis found")
+                wrapMode: Text.Wrap
+                font.bold: true
+                visible: emojiView.count === 0
             }
         }
-
-        EnforcedPlainTextLabel {
-            id: placeholderMessage
-            width: parent.width * 0.8
-            anchors.centerIn: parent
-            text: qsTr("No recent emojis")
-            color: palette.midlight
-            wrapMode: Text.Wrap
-            font.bold: true
-            visible: emojiView.count === 0
-        }
-
-        ScrollBar.vertical: ScrollBar {}
-        
     }
-
 }

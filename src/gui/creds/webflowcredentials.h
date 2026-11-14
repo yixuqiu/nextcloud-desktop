@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2017 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
 #ifndef WEBFLOWCREDENTIALS_H
 #define WEBFLOWCREDENTIALS_H
 
@@ -5,11 +10,10 @@
 #include <QSslKey>
 #include <QNetworkRequest>
 #include <QQueue>
+#include <QPointer>
 
 #include "creds/abstractcredentials.h"
 
-class QDialog;
-class QLabel;
 class QNetworkReply;
 class QAuthenticator;
 
@@ -24,7 +28,7 @@ namespace KeychainChunk {
     class WriteJob;
 }
 
-class WebFlowCredentialsDialog;
+class BrowserReAuthWindow;
 
 class WebFlowCredentials : public AbstractCredentials
 {
@@ -32,9 +36,6 @@ class WebFlowCredentials : public AbstractCredentials
     friend class WebFlowCredentialsAccessManager;
 
 public:
-    /// Don't add credentials if this is set on a QNetworkRequest
-    static constexpr QNetworkRequest::Attribute DontAddCredentialsAttribute = QNetworkRequest::User;
-
     explicit WebFlowCredentials();
     WebFlowCredentials(
             const QString &user,
@@ -50,7 +51,7 @@ public:
 
     [[nodiscard]] bool ready() const override;
 
-    void fetchFromKeychain() override;
+    void fetchFromKeychain(const QString &appName = {}) override;
     void askFromUser() override;
 
     bool stillValid(QNetworkReply *reply) override;
@@ -61,21 +62,21 @@ public:
     // To fetch the user name as early as possible
     void setAccount(Account *account) override;
 
-private slots:
+private Q_SLOTS:
     void slotAuthentication(QNetworkReply *reply, QAuthenticator *authenticator);
     void slotFinished(QNetworkReply *reply);
 
-    void slotAskFromUserCredentialsProvided(const QString &user, const QString &pass, const QString &host);
+    void slotAskFromUserCredentialsProvided(const QString &user, const QString &pass);
     void slotAskFromUserCancelled();
 
-    void slotReadClientCertPEMJobDone(KeychainChunk::ReadJob *readJob);
-    void slotReadClientKeyPEMJobDone(KeychainChunk::ReadJob *readJob);
-    void slotReadClientCaCertsPEMJobDone(KeychainChunk::ReadJob *readJob);
+    void slotReadClientCertPEMJobDone(OCC::KeychainChunk::ReadJob *readJob);
+    void slotReadClientKeyPEMJobDone(OCC::KeychainChunk::ReadJob *readJob);
+    void slotReadClientCaCertsPEMJobDone(OCC::KeychainChunk::ReadJob *readJob);
     void slotReadPasswordJobDone(QKeychain::Job *incomingJob);
 
-    void slotWriteClientCertPEMJobDone(KeychainChunk::WriteJob *writeJob);
-    void slotWriteClientKeyPEMJobDone(KeychainChunk::WriteJob *writeJob);
-    void slotWriteClientCaCertsPEMJobDone(KeychainChunk::WriteJob *writeJob);
+    void slotWriteClientCertPEMJobDone(OCC::KeychainChunk::WriteJob *writeJob);
+    void slotWriteClientKeyPEMJobDone(OCC::KeychainChunk::WriteJob *writeJob);
+    void slotWriteClientCaCertsPEMJobDone(OCC::KeychainChunk::WriteJob *writeJob);
     void slotWriteJobDone(QKeychain::Job *);
 
 private:
@@ -122,8 +123,9 @@ protected:
     bool _ready = false;
     bool _credentialsValid = false;
     bool _keychainMigration = false;
+    QString _appName;
 
-    WebFlowCredentialsDialog *_askDialog = nullptr;
+    QPointer<BrowserReAuthWindow> _reAuthWindow;
 };
 
 } // namespace OCC

@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2017 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
 #ifndef CLIENTSIDEENCRYPTION_H
 #define CLIENTSIDEENCRYPTION_H
 
@@ -5,6 +10,9 @@
 
 #include "clientsideencryptionprimitives.h"
 #include "accountfwd.h"
+#include "networkjobs.h"
+#include "clientsideencryptiontokenselector.h"
+#include "common/result.h"
 
 #include <QString>
 #include <QObject>
@@ -17,7 +25,14 @@
 #include <QMap>
 #include <QHash>
 
+#include <libp11.h>
+
 #include <openssl/evp.h>
+
+#include <functional>
+#include <optional>
+
+class QWidget;
 
 namespace QKeychain {
 class Job;
@@ -29,48 +44,119 @@ namespace OCC {
 
 QString e2eeBaseUrl(const OCC::AccountPtr &account);
 
+class ClientSideEncryption;
+
+class CertificateInformation {
+public:
+    enum class CertificateType {
+        SoftwareNextcloudCertificate,
+        HardwareCertificate,
+    };
+
+    CertificateInformation();
+
+    explicit CertificateInformation(PKCS11_CERT *hardwareCertificate,
+                                    QSslCertificate &&certificate);
+
+    explicit CertificateInformation(CertificateType certificateType,
+                                    const QByteArray& privateKey,
+                                    QSslCertificate &&certificate);
+
+    [[nodiscard]] bool operator==(const CertificateInformation &other) const;
+
+    void clear();
+
+    [[nodiscard]] const QByteArray& getPrivateKeyData() const;
+
+    void setPrivateKeyData(const QByteArray& privateKey);
+
+    [[nodiscard]] QList<QSslError> verify() const;
+
+    [[nodiscard]] bool isSelfSigned() const;
+
+    [[nodiscard]] QSslKey getSslPublicKey() const;
+
+    [[nodiscard]] PKey getEvpPublicKey() const;
+
+    [[nodiscard]] PKCS11_KEY* getPkcs11PrivateKey() const;
+
+    [[nodiscard]] PKey getEvpPrivateKey() const;
+
+    [[nodiscard]] const QSslCertificate& getCertificate() const;
+
+    [[nodiscard]] bool canEncrypt() const;
+
+    [[nodiscard]] bool canDecrypt() const;
+
+    [[nodiscard]] bool userCertificateNeedsMigration() const;
+
+    [[nodiscard]] bool sensitiveDataRemaining() const;
+
+    [[nodiscard]] QByteArray sha256Fingerprint() const;
+
+private:
+    void checkEncryptionCertificate();
+
+    void doNotCheckEncryptionCertificate();
+
+    PKCS11_CERT* _hardwareCertificate = nullptr;
+
+    QByteArray _privateKeyData;
+
+    QSslCertificate _certificate;
+
+    CertificateType _certificateType = CertificateType::SoftwareNextcloudCertificate;
+
+    bool _certificateExpired = true;
+
+    bool _certificateNotYetValid = true;
+
+    bool _certificateRevoked = true;
+
+    bool _certificateInvalid = true;
+};
+
 namespace EncryptionHelper {
-    OWNCLOUDSYNC_EXPORT QByteArray generateRandomFilename();
-    OWNCLOUDSYNC_EXPORT QByteArray generateRandom(int size);
-    QByteArray generatePassword(const QString &wordlist, const QByteArray& salt);
-    OWNCLOUDSYNC_EXPORT QByteArray encryptPrivateKey(
-            const QByteArray& key,
-            const QByteArray& privateKey,
-            const QByteArray &salt
-    );
-    OWNCLOUDSYNC_EXPORT QByteArray decryptPrivateKey(
-            const QByteArray& key,
-            const QByteArray& data
-    );
-    OWNCLOUDSYNC_EXPORT QByteArray extractPrivateKeySalt(const QByteArray &data);
-    OWNCLOUDSYNC_EXPORT QByteArray encryptStringSymmetric(
-            const QByteArray& key,
-            const QByteArray& data
-    );
-    OWNCLOUDSYNC_EXPORT QByteArray decryptStringSymmetric(
-            const QByteArray& key,
-            const QByteArray& data
-    );
-    OWNCLOUDSYNC_EXPORT QByteArray encryptStringAsymmetric(const QSslKey key, const QByteArray &data);
-    OWNCLOUDSYNC_EXPORT QByteArray decryptStringAsymmetric(const QByteArray &privateKeyPem, const QByteArray &data);
 
-    QByteArray privateKeyToPem(const QByteArray key);
+OWNCLOUDSYNC_EXPORT QByteArray generateRandomFilename();
+OWNCLOUDSYNC_EXPORT QByteArray generateRandom(int size);
+QByteArray generatePassword(const QString &wordlist, const QByteArray& salt);
+OWNCLOUDSYNC_EXPORT QByteArray encryptPrivateKey(
+        const QByteArray& key,
+        const QByteArray& privateKey,
+        const QByteArray &salt
+);
+OWNCLOUDSYNC_EXPORT QByteArray decryptPrivateKey(
+        const QByteArray& key,
+        const QByteArray& data
+);
+OWNCLOUDSYNC_EXPORT QByteArray extractPrivateKeySalt(const QByteArray &data);
+OWNCLOUDSYNC_EXPORT QByteArray encryptStringSymmetric(
+        const QByteArray& key,
+        const QByteArray& data
+);
+OWNCLOUDSYNC_EXPORT QByteArray decryptStringSymmetric(
+        const QByteArray& key,
+        const QByteArray& data
+);
 
-    //TODO: change those two EVP_PKEY into QSslKey.
-    QByteArray encryptStringAsymmetric(
-            EVP_PKEY *publicKey,
-            const QByteArray& data
-    );
-    QByteArray decryptStringAsymmetric(
-            EVP_PKEY *privateKey,
-            const QByteArray& data
-    );
+[[nodiscard]] OWNCLOUDSYNC_EXPORT std::optional<QByteArray> encryptStringAsymmetric(const CertificateInformation &selectedCertificate,
+                                                                                    int paddingMode,
+                                                                                    ClientSideEncryption &encryptionEngine,
+                                                                                    const QByteArray &binaryData);
 
-    OWNCLOUDSYNC_EXPORT bool fileEncryption(const QByteArray &key, const QByteArray &iv,
-                      QFile *input, QFile *output, QByteArray& returnTag);
+[[nodiscard]] OWNCLOUDSYNC_EXPORT std::optional<QByteArray> decryptStringAsymmetric(const CertificateInformation &selectedCertificate,
+                                                                                    int paddingMode,
+                                                                                    ClientSideEncryption &encryptionEngine,
+                                                                                    const QByteArray &base64Data);
 
-    OWNCLOUDSYNC_EXPORT bool fileDecryption(const QByteArray &key, const QByteArray &iv,
-                               QFile *input, QFile *output);
+QByteArray privateKeyToPem(const QByteArray key);
+
+OWNCLOUDSYNC_EXPORT bool fileEncryption(const QByteArray &key, const QByteArray &iv,
+                  QFile *input, QFile *output, QByteArray& returnTag);
+
+OWNCLOUDSYNC_EXPORT bool fileDecryption(const QByteArray &key, const QByteArray &iv,
+                           QFile *input, QFile *output);
 
     OWNCLOUDSYNC_EXPORT bool dataEncryption(const QByteArray &key, const QByteArray &iv, const QByteArray &input, QByteArray &output, QByteArray &returnTag);
     OWNCLOUDSYNC_EXPORT bool dataDecryption(const QByteArray &key, const QByteArray &iv, const QByteArray &input, QByteArray &output);
@@ -137,7 +223,7 @@ public:
     operator QSslCertificate() const;
 
     QSslCertificate& get();
-    const QSslCertificate &get() const;
+    [[nodiscard]] const QSslCertificate &get() const;
 
     NextcloudSslCertificate &operator=(const NextcloudSslCertificate &other);
     NextcloudSslCertificate &operator=(NextcloudSslCertificate &&other);
@@ -148,16 +234,66 @@ private:
 
 class OWNCLOUDSYNC_EXPORT ClientSideEncryption : public QObject {
     Q_OBJECT
+
+    Q_PROPERTY(bool canEncrypt READ canEncrypt NOTIFY canEncryptChanged FINAL)
+    Q_PROPERTY(bool canDecrypt READ canDecrypt NOTIFY canDecryptChanged FINAL)
+    Q_PROPERTY(bool userCertificateNeedsMigration READ userCertificateNeedsMigration NOTIFY userCertificateNeedsMigrationChanged FINAL)
 public:
-    ClientSideEncryption();
+    enum class EncryptionErrorType
+    {
+        RetryOnError,
+        FatalError,
+    };
 
-    QByteArray _privateKey;
-    QSslKey _publicKey;
-    QSslCertificate _certificate;
-    QString _mnemonic;
-    bool _newMnemonicGenerated = false;
+    Q_ENUM(EncryptionErrorType)
 
-signals:
+    explicit ClientSideEncryption();
+
+    [[nodiscard]] bool isInitialized() const;
+
+    [[nodiscard]] bool tokenIsSetup() const;
+
+    [[nodiscard]] QSslKey getPublicKey() const;
+
+    [[nodiscard]] const QByteArray& getPrivateKey() const;
+
+    void setPrivateKey(const QByteArray &privateKey);
+
+    [[nodiscard]] const CertificateInformation& getCertificateInformation() const;
+
+    [[nodiscard]] CertificateInformation getCertificateInformationByFingerprint(const QByteArray &certificateFingerprint) const;
+
+    [[nodiscard]] int paddingMode() const;
+
+    [[nodiscard]] CertificateInformation getTokenCertificateByFingerprint(const QByteArray &expectedFingerprint) const;
+
+    [[nodiscard]] bool useTokenBasedEncryption() const;
+
+    [[nodiscard]] const QString &getMnemonic() const;
+
+    void setCertificate(const QSslCertificate &certificate);
+
+    [[nodiscard]] const QSslCertificate& getCertificate() const;
+
+    [[nodiscard]] QByteArray generateSignatureCryptographicMessageSyntax(const QByteArray &data) const;
+
+    [[nodiscard]] bool verifySignatureCryptographicMessageSyntax(const QByteArray &cmsContent, const QByteArray &data, const QVector<QByteArray> &certificatePems) const;
+
+    [[nodiscard]] ClientSideEncryptionTokenSelector* usbTokenInformation();
+
+    [[nodiscard]] bool canEncrypt() const;
+
+    [[nodiscard]] bool canDecrypt() const;
+
+    [[nodiscard]] bool userCertificateNeedsMigration() const;
+
+    [[nodiscard]] QByteArray certificateSha256Fingerprint() const;
+
+    void setAccount(const AccountPtr &account);
+
+    [[nodiscard]] static bool checkEncryptionErrorForHardwareTokenResetState(const QByteArray &errorString);
+
+Q_SIGNALS:
     void initializationFinished(bool isNewMnemonicGenerated = false);
     void sensitiveDataForgotten();
     void privateKeyDeleted();
@@ -168,20 +304,27 @@ signals:
     void certificatesFetchedFromServer(const QHash<QString, OCC::NextcloudSslCertificate> &results);
     void certificateWriteComplete(const QSslCertificate &certificate);
 
-public:
-    [[nodiscard]] QByteArray generateSignatureCryptographicMessageSyntax(const QByteArray &data) const;
-    [[nodiscard]] bool verifySignatureCryptographicMessageSyntax(const QByteArray &cmsContent, const QByteArray &data, const QVector<QByteArray> &certificatePems) const;
+    void startingDiscoveryEncryptionUsbToken();
+    void finishedDiscoveryEncryptionUsbToken();
 
-public slots:
-    void initialize(const OCC::AccountPtr &account);
-    void forgetSensitiveData(const OCC::AccountPtr &account);
-    void getUsersPublicKeyFromServer(const OCC::AccountPtr &account, const QStringList &userIds);
-    void fetchCertificateFromKeyChain(const OCC::AccountPtr &account, const QString &userId);
-    void writeCertificate(const OCC::AccountPtr &account, const QString &userId, const QSslCertificate &certificate);
+    void canEncryptChanged();
+    void canDecryptChanged();
+    void userCertificateNeedsMigrationChanged();
 
-private slots:
-    void generateKeyPair(const OCC::AccountPtr &account);
-    void encryptPrivateKey(const OCC::AccountPtr &account);
+public Q_SLOTS:
+    void initialize(QWidget *settingsDialog);
+    void initializeHardwareTokenEncryption(QWidget* settingsDialog);
+    void addExtraRootCertificates();
+    void forgetSensitiveData();
+    void getUsersPublicKeyFromServer(const QStringList &userIds);
+    void fetchCertificateFromKeyChain(const QString &userId);
+    void writeCertificate(const QString &userId, const QSslCertificate &certificate);
+
+    void migrateCertificate();
+
+private Q_SLOTS:
+    void generateKeyPair();
+    void encryptPrivateKey();
 
     void publicCertificateFetched(QKeychain::Job *incoming);
     void publicKeyFetched(QKeychain::Job *incoming);
@@ -195,60 +338,80 @@ private slots:
     void handlePublicKeyDeleted(const QKeychain::Job* const incoming);
     void checkAllSensitiveDataDeleted();
 
-    void getPrivateKeyFromServer(const OCC::AccountPtr &account);
-    void getPublicKeyFromServer(const OCC::AccountPtr &account);
-    void fetchAndValidatePublicKeyFromServer(const OCC::AccountPtr &account);
-    void decryptPrivateKey(const OCC::AccountPtr &account, const QByteArray &key);
+    void getPrivateKeyFromServer();
+    void getPublicKeyFromServer();
+    void fetchAndValidatePublicKeyFromServer();
+    void decryptPrivateKey(const QByteArray &key);
 
-    void fetchCertificateFromKeyChain(const OCC::AccountPtr &account);
-    void fetchPublicKeyFromKeyChain(const OCC::AccountPtr &account);
-    void writePrivateKey(const OCC::AccountPtr &account);
-    void writeCertificate(const OCC::AccountPtr &account);
+    void fetchCertificateFromKeyChain();
+    void fetchPublicKeyFromKeyChain();
+    void writePrivateKey();
+    void writeCertificate();
+
+    void completeHardwareTokenInitialization(QWidget *settingsDialog);
+
+    void setMnemonic(const QString &mnemonic);
 
 private:
     void generateMnemonic();
 
-    [[nodiscard]] std::pair<QByteArray, PKey> generateCSR(const AccountPtr &account,
-                                                          PKey keyPair,
+    void setEncryptionCertificate(CertificateInformation certificateInfo);
+
+    [[nodiscard]] std::pair<QByteArray, PKey> generateCSR(PKey keyPair,
                                                           PKey privateKey);
 
-    void sendSignRequestCSR(const AccountPtr &account,
-                            PKey keyPair,
+    void sendSignRequestCSR(PKey keyPair,
                             const QByteArray &csrContent);
 
-    void writeKeyPair(const AccountPtr &account,
-                      PKey keyPair,
+    void sendPublicKey();
+
+    void writeKeyPair(PKey keyPair,
                       const QByteArray &csrContent);
 
     template <typename L>
-    void writeMnemonic(OCC::AccountPtr account,
-                       L nextCall);
+    void writeMnemonic(L nextCall);
 
-    void checkServerHasSavedKeys(const AccountPtr &account);
+    void checkServerHasSavedKeys();
 
     template <typename SUCCESS_CALLBACK, typename ERROR_CALLBACK>
-    void checkUserPublicKeyOnServer(const OCC::AccountPtr &account,
-                                    SUCCESS_CALLBACK nextCheck,
+    void checkUserPublicKeyOnServer(SUCCESS_CALLBACK nextCheck,
                                     ERROR_CALLBACK onError);
 
     template <typename SUCCESS_CALLBACK, typename ERROR_CALLBACK>
-    void checkUserPrivateKeyOnServer(const OCC::AccountPtr &account,
-                                     SUCCESS_CALLBACK nextCheck,
+    void checkUserPrivateKeyOnServer(SUCCESS_CALLBACK nextCheck,
                                      ERROR_CALLBACK onError);
 
     template <typename SUCCESS_CALLBACK, typename ERROR_CALLBACK>
     void checkUserKeyOnServer(const QString &keyType,
-                              const OCC::AccountPtr &account,
                               SUCCESS_CALLBACK nextCheck,
                               ERROR_CALLBACK onError);
 
-    [[nodiscard]] bool checkPublicKeyValidity(const AccountPtr &account) const;
     [[nodiscard]] bool checkServerPublicKeyValidity(const QByteArray &serverPublicKeyString) const;
     [[nodiscard]] bool sensitiveDataRemaining() const;
 
-    void failedToInitialize(const AccountPtr &account);
+    [[nodiscard]] bool checkEncryptionIsWorking(const CertificateInformation &currentCertificate);
 
-    bool isInitialized = false;
+    void failedToInitialize();
+
+    void saveCertificateIdentification() const;
+    void cacheTokenPin(const QString pin);
+
+    AccountPtr _account;
+
+    QString _mnemonic;
+    bool _newMnemonicGenerated = false;
+
+    QString _cachedPin;
+
+    ClientSideEncryptionTokenSelector _usbTokenInformation;
+
+    CertificateInformation _encryptionCertificate;
+    std::vector<CertificateInformation> _otherCertificates;
+
+    Pkcs11Context _context{Pkcs11Context::State::EmptyContext};
+    std::unique_ptr<PKCS11_SLOT[], std::function<void(PKCS11_SLOT*)>> _tokenSlots;
 };
+
 } // namespace OCC
+
 #endif

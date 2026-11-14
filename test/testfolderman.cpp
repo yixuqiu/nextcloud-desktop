@@ -1,13 +1,18 @@
 /*
- *    This software is in the public domain, furnished "as is", without technical
- *    support, and with no warranty, express or implied, as to its usefulness for
- *    any purpose.
+ * SPDX-FileCopyrightText: 2019 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2016 ownCloud GmbH
+ * SPDX-License-Identifier: CC0-1.0
  *
+ * This software is in the public domain, furnished "as is", without technical
+ * support, and with no warranty, express or implied, as to its usefulness for
+ * any purpose.
  */
 
-#include <qglobal.h>
+#include <QDesktopServices>
+#include <QScopeGuard>
 #include <QTemporaryDir>
 #include <QtTest>
+#include <qglobal.h>
 
 #include "QtTest/qtestcase.h"
 #include "common/utility.h"
@@ -16,9 +21,15 @@
 #include "accountstate.h"
 #include <accountmanager.h>
 #include "configfile.h"
+#include "socketapi/socketapi.h"
 #include "syncenginetestutils.h"
 #include "testhelper.h"
 
+#ifdef Q_OS_MACOS
+#include "common/utility_mac_sandbox.h"
+#endif
+
+using namespace Qt::StringLiterals;
 using namespace OCC;
 
 static QByteArray fake400Response = R"(
@@ -37,14 +48,101 @@ class TestFolderMan: public QObject
 {
     Q_OBJECT
 
-    FolderMan _fm;
+    QPointer<FolderMan> _fm;
+    QList<QUrl> _openedInternalLinks;
 
-signals:
+    Q_INVOKABLE void captureInternalLink(const QUrl &url)
+    {
+        _openedInternalLinks.append(url);
+    }
+
+Q_SIGNALS:
     void incomingShareDeleted();
 
-private slots:
+private Q_SLOTS:
+    void initTestCase()
+    {
+        OCC::Logger::instance()->setLogFlush(true);
+        OCC::Logger::instance()->setLogDebug(true);
+
+        QStandardPaths::setTestModeEnabled(true);
+    }
+
+    // Keeps tests off the device policy of the machine running them.
+    void init()
+    {
+        ConfigFile::setDeviceSourcesFactory([] {
+            return std::vector<std::unique_ptr<SettingSource>>{};
+        });
+    }
+
+    void cleanup()
+    {
+        ConfigFile::setDeviceSourcesFactory({});
+    }
+
+    void internalLinkSocketAction()
+    {
+        QTemporaryDir configDir;
+        QVERIFY(configDir.isValid());
+        ConfigFile::setConfDir(configDir.path());
+        FolderMan::resetInstance();
+        _fm = FolderMan::instance();
+        FakeFolder fakeFolder{FileInfo{}};
+        const auto cleanupFolders = qScopeGuard([this] {
+            _fm->unloadAndDeleteAllFolders();
+        });
+        const auto account = fakeFolder.account();
+        account->setUrl(QUrl{u"https://example.com/nextcloud"_s});
+        const auto folder = _fm->addFolder(&fakeFolder.accountState(), folderDefinition(fakeFolder.localPath()));
+        QVERIFY(folder);
+        folder->setSyncPaused(true);
+
+        SyncJournalFileRecord record;
+        record._path = "file.txt"_ba;
+        record._fileId = "42oc123xyz987e"_ba;
+        record._inode = 1;
+        record._modtime = QDateTime::currentSecsSinceEpoch();
+        record._type = ItemTypeFile;
+        record._etag = "etag"_ba;
+        QVERIFY(folder->journalDb()->setFileRecord(record));
+
+        _openedInternalLinks.clear();
+        QDesktopServices::setUrlHandler(u"https"_s, this, "captureInternalLink");
+        const auto cleanupHandler = qScopeGuard([] {
+            QDesktopServices::unsetUrlHandler(u"https"_s);
+        });
+        const auto openLink = [this](const QString &path) {
+            auto *listener = static_cast<OCC::SocketListener *>(nullptr);
+            return QMetaObject::invokeMethod(_fm->socketApi(),
+                                             "command_OPEN_PRIVATE_LINK",
+                                             Qt::DirectConnection,
+                                             QGenericArgument("QString", &path),
+                                             QGenericArgument("OCC::SocketListener*", &listener));
+        };
+        const auto localFile = fakeFolder.localPath() + u"file.txt"_s;
+        account->setCapabilities({});
+        QVERIFY(openLink(localFile));
+        QCOMPARE(_openedInternalLinks, QList<QUrl>{QUrl{u"https://example.com/nextcloud/index.php/f/42"_s}});
+
+        account->setCapabilities({{u"globalscale"_s, QVariantMap{{u"token"_s, u"abc123"_s}}}});
+        QVERIFY(openLink(localFile));
+        QCOMPARE(_openedInternalLinks.size(), 2);
+        QCOMPARE(_openedInternalLinks.last(), QUrl{u"https://example.com/nextcloud/index.php/gf/abc123/42"_s});
+
+        QVERIFY(openLink(configDir.path() + u"/outside.txt"_s));
+        QVERIFY(openLink(fakeFolder.localPath() + u"missing.txt"_s));
+        record._fileId.clear();
+        QVERIFY(folder->journalDb()->setFileRecord(record));
+        QVERIFY(openLink(localFile));
+        QCOMPARE(_openedInternalLinks.size(), 2);
+    }
+
     void testDeleteEncryptedFiles()
     {
+        FolderMan::resetInstance();
+        _fm = FolderMan::instance();
+
         FakeFolder fakeFolder{FileInfo::A12_B12_C12_S12()};
         QCOMPARE(fakeFolder.currentLocalState().children.count(), 4);
 
@@ -123,6 +221,7 @@ private slots:
         // the server, let's just manually set the encryption bool in the folder journal
         SyncJournalFileRecord rec;
         QVERIFY(folder->journalDb()->getFileRecord(QStringLiteral("encrypted"), &rec));
+        rec._modtime = QDateTime::currentSecsSinceEpoch();
         rec._e2eEncryptionStatus = SyncJournalFileRecord::EncryptionStatus::EncryptedMigratedV2_0;
         rec._path = QStringLiteral("encrypted").toUtf8();
         rec._type = CSyncEnums::ItemTypeDirectory;
@@ -146,6 +245,9 @@ private slots:
 
     void testLeaveShare()
     {
+        FolderMan::resetInstance();
+        _fm = FolderMan::instance();
+
         QTemporaryDir dir;
         ConfigFile::setConfDir(dir.path()); // we don't want to pollute the user's config file
 
@@ -164,6 +266,7 @@ private slots:
         fakeFolder.remoteModifier().insert(firstSharePath, 100);
         const auto firstShare = fakeFolder.remoteModifier().find(firstSharePath);
         QVERIFY(firstShare);
+        firstShare->permissions.setPermission(OCC::RemotePermissions::CanRead);
         firstShare->permissions.setPermission(OCC::RemotePermissions::IsShared);
 
         fakeFolder.remoteModifier().mkdir("A/B");
@@ -171,10 +274,11 @@ private slots:
         fakeFolder.remoteModifier().insert(secondSharePath, 100);
         const auto secondShare = fakeFolder.remoteModifier().find(secondSharePath);
         QVERIFY(secondShare);
+        secondShare->permissions.setPermission(OCC::RemotePermissions::CanRead);
         secondShare->permissions.setPermission(OCC::RemotePermissions::IsShared);
 
         FolderMan *folderman = FolderMan::instance();
-        QCOMPARE(folderman, &_fm);
+        QCOMPARE(folderman, _fm.get());
         OCC::AccountState *accountState = OCC::AccountManager::instance()->accounts().first().data();
         const auto folder = folderman->addFolder(accountState, folderDefinition(fakeFolder.localPath()));
         QVERIFY(folder);
@@ -211,7 +315,7 @@ private slots:
            fakeFolder.remoteModifier().remove(filePathRelative);
            reply = new FakePayloadReply(op, req, {}, nullptr);
 
-           emit incomingShareDeleted();
+           Q_EMIT incomingShareDeleted();
 
            return reply;
         });
@@ -244,6 +348,9 @@ private slots:
 
     void testCheckPathValidityForNewFolder()
     {
+        FolderMan::resetInstance();
+        _fm = FolderMan::instance();
+
 #ifdef Q_OS_WIN
         Utility::NtfsPermissionLookupRAII ntfs_perm;
 #endif
@@ -257,7 +364,11 @@ private slots:
         QVERIFY(dir2.mkpath("free2/sub"));
         {
             QFile f(dir.path() + "/sub/file.txt");
-            f.open(QFile::WriteOnly);
+            const auto openResult = f.open(QFile::WriteOnly);
+            if (!openResult) {
+                qWarning() << "Failed to create file:" << dir.path() + "/sub/file.txt";
+                return;
+            }
             f.write("hello");
         }
         QString dirPath = dir2.canonicalPath();
@@ -270,7 +381,7 @@ private slots:
 
         AccountStatePtr newAccountState(new AccountState(account));
         FolderMan *folderman = FolderMan::instance();
-        QCOMPARE(folderman, &_fm);
+        QCOMPARE(folderman, _fm.get());
         QVERIFY(folderman->addFolder(newAccountState.data(), folderDefinition(dirPath + "/sub/ownCloud1")));
         QVERIFY(folderman->addFolder(newAccountState.data(), folderDefinition(dirPath + "/ownCloud2")));
 
@@ -279,7 +390,6 @@ private slots:
         for (const auto &folder : folderList) {
             QVERIFY(!folder->isSyncRunning());
         }
-
 
         // those should be allowed
         // QString FolderMan::checkPathValidityForNewFolder(const QString& path, const QUrl &serverUrl, bool forNewDirectory).second
@@ -303,15 +413,15 @@ private slots:
         QVERIFY(!folderman->checkPathValidityForNewFolder(dirPath + "/sub/ownCloud1", url2).second.isNull());
         QVERIFY(!folderman->checkPathValidityForNewFolder(dirPath + "/ownCloud2/", url2).second.isNull());
 
-        // Now it will work because the account is different
+        // The following both fail because they are already sync folders even if for another account
         QUrl url3("http://anotherexample.org");
         url3.setUserName("dummy");
-        QCOMPARE(folderman->checkPathValidityForNewFolder(dirPath + "/sub/ownCloud1", url3).second, QString());
-        QCOMPARE(folderman->checkPathValidityForNewFolder(dirPath + "/ownCloud2/", url3).second, QString());
+        QCOMPARE(folderman->checkPathValidityForNewFolder(dirPath + "/sub/ownCloud1", url3).second, QString("Please choose a different location. %1 is already being used as a sync folder.").arg(QDir::toNativeSeparators(dirPath + "/sub/ownCloud1")));
+        QCOMPARE(folderman->checkPathValidityForNewFolder(dirPath + "/ownCloud2", url3).second, QString("Please choose a different location. %1 is already being used as a sync folder.").arg(QDir::toNativeSeparators(dirPath + "/ownCloud2")));
 
         QVERIFY(!folderman->checkPathValidityForNewFolder(dirPath).second.isNull());
         QVERIFY(!folderman->checkPathValidityForNewFolder(dirPath + "/sub/ownCloud1/folder").second.isNull());
-        QVERIFY(!folderman->checkPathValidityForNewFolder(dirPath + "/sub/ownCloud1/folder/f").second.isNull());
+        QVERIFY(!folderman->checkPathValidityForNewFolder(dirPath + "/sub/ownCloud1/f").second.isNull());
 
 #ifndef Q_OS_WIN // no links on windows, no permissions
         // make a bunch of links
@@ -330,7 +440,7 @@ private slots:
         // link 3 points to an existing sync folder. To make it fail, the account must be the same
         QVERIFY(!folderman->checkPathValidityForNewFolder(dirPath + "/link3", url2).second.isNull());
         // while with a different account, this is fine
-        QCOMPARE(folderman->checkPathValidityForNewFolder(dirPath + "/link3", url3).second, QString());
+        QCOMPARE(folderman->checkPathValidityForNewFolder(dirPath + "/link3", url3).second, QString("Please choose a different location. %1 is already being used as a sync folder.").arg(dirPath + "/link3"));
 
         QVERIFY(!folderman->checkPathValidityForNewFolder(dirPath + "/link4").second.isNull());
         QVERIFY(!folderman->checkPathValidityForNewFolder(dirPath + "/link3/folder").second.isNull());
@@ -375,6 +485,9 @@ private slots:
 
     void testFindGoodPathForNewSyncFolder()
     {
+        FolderMan::resetInstance();
+        _fm = FolderMan::instance();
+
         // SETUP
 
         QTemporaryDir dir;
@@ -398,7 +511,7 @@ private slots:
 
         AccountStatePtr newAccountState(new AccountState(account));
         FolderMan *folderman = FolderMan::instance();
-        QCOMPARE(folderman, &_fm);
+        QCOMPARE(folderman, _fm.get());
         QVERIFY(folderman->addFolder(newAccountState.data(), folderDefinition(dirPath + "/sub/ownCloud/")));
         QVERIFY(folderman->addFolder(newAccountState.data(), folderDefinition(dirPath + "/ownCloud2/")));
 
@@ -425,6 +538,264 @@ private slots:
         QCOMPARE(folderman->findGoodPathForNewSyncFolder(dirPath + "/ownCloud2", url, FolderMan::GoodPathStrategy::AllowOnlyNewPath),
             QString(dirPath + "/ownCloud22"));
     }
+
+    void testProcessingFileIdsPushNotification()
+    {
+        FolderMan::resetInstance();
+        _fm = FolderMan::instance();
+
+        QTemporaryDir tempDir;
+        ConfigFile::setConfDir(tempDir.path()); // we don't want to pollute the user's config file
+        QVERIFY(tempDir.isValid());
+        QDir dir(tempDir.path());
+        QVERIFY(dir.mkpath("user1_root"));
+        QVERIFY(dir.mkpath("user1_subfolder"));
+        QVERIFY(dir.mkpath("user2_root"));
+        const auto dirPath = dir.canonicalPath();
+
+        const auto createAccount = [](const QString &userName) -> AccountState * {
+            auto account = Account::create();
+            auto credentials = new FakeCredentials{new FakeQNAM({})};
+            credentials->setUserName(userName);
+            account->setCredentials(credentials);
+            account->setUrl(QUrl{"http://nextcloud.test"});
+            return new FakeAccountState(account);
+        };
+
+        auto user1 = createAccount("user1");
+        auto user2 = createAccount("user2");
+
+        const auto addFolderForTesting = [this, &dirPath](AccountState * const account, const QString &alias, const QString &localPath, const QString &targetPath, const int rootFileId, const QList<qint64> &fileIds) -> void {
+            FolderDefinition definition;
+            definition.alias = alias;
+            definition.localPath = dirPath + localPath;
+            definition.targetPath = targetPath;
+
+            auto folder = _fm->addFolder(account, definition);
+            QVERIFY(folder);
+
+            Q_EMIT folder->syncEngine().rootFileIdReceived(rootFileId);
+
+            auto journal = folder->journalDb();
+            for (const auto &fileId : fileIds) {
+                SyncJournalFileRecord record;
+                record._fileId = u"%1oc123xyz987e"_s.arg(fileId, 8, 10, '0'_L1).toLocal8Bit();
+                record._modtime = QDateTime::currentSecsSinceEpoch();
+                record._path = u"item%1"_s.arg(fileId).toLocal8Bit();
+                record._type = ItemTypeFile;
+                record._etag = "etag"_ba;
+                QVERIFY(journal->setFileRecord(record));
+            }
+        };
+
+        const auto verifyFolderSyncChangesOnReceivedFileIdNotification = [this](AccountState * const user, const QList<qint64> &fileIds, const QStringList &expectedFolderAliasesToSync) -> void {
+            QStringList folderAliasesToBeSynced = {};
+
+            _fm->_scheduledFolders.clear();
+            QSignalSpy spy(_fm.get(), &FolderMan::folderSyncStateChange);
+
+            // the account received a push notification about for specific file ids
+            _fm->slotProcessFileIdsPushNotification(user->account().get(), fileIds);
+
+            // expect the sync state for all folders of that account containing this file id to change
+            QCOMPARE(spy.size(), expectedFolderAliasesToSync.size());
+
+            for (const auto &signalParameters : std::as_const(spy)) {
+                QVERIFY(signalParameters.size() == 1);
+                const auto folderAlias = signalParameters.front().value<Folder *>()->alias();
+                QVERIFY2(
+                    expectedFolderAliasesToSync.contains(folderAlias),
+                    qPrintable("Unexpected folder alias '%1'; expected were [%2]"_L1.arg(folderAlias, expectedFolderAliasesToSync.join(", ")))
+                );
+                folderAliasesToBeSynced.append(folderAlias);
+            }
+
+            // all expected folders received a sync request!
+            folderAliasesToBeSynced.sort();
+            QCOMPARE(folderAliasesToBeSynced, expectedFolderAliasesToSync);
+        };
+
+        addFolderForTesting(user1, "0", "/user1_root",      "/",          10, {11, 12, 13, 50});
+        addFolderForTesting(user1, "1", "/user1_subfolder", "/subfolder", 15, {16, 17, 18, 50});
+        addFolderForTesting(user2, "2", "/user2_root",      "/",          20, {21, 22, 23, 50});
+
+        verifyFolderSyncChangesOnReceivedFileIdNotification(user1, {10},                  {"0"});
+        verifyFolderSyncChangesOnReceivedFileIdNotification(user1, {11},                  {"0"});
+        verifyFolderSyncChangesOnReceivedFileIdNotification(user1, {13, 11},              {"0"});
+        verifyFolderSyncChangesOnReceivedFileIdNotification(user1, {15},                  {"1"});
+        verifyFolderSyncChangesOnReceivedFileIdNotification(user1, {16},                  {"1"});
+        verifyFolderSyncChangesOnReceivedFileIdNotification(user1, {18, 16},              {"1"});
+        verifyFolderSyncChangesOnReceivedFileIdNotification(user1, {15, 11},              {"0", "1"});
+        verifyFolderSyncChangesOnReceivedFileIdNotification(user1, {11, 16, 21},          {"0", "1"});
+        verifyFolderSyncChangesOnReceivedFileIdNotification(user1, {50},                  {"0", "1"});
+        verifyFolderSyncChangesOnReceivedFileIdNotification(user1, {20, 21, 22, 23, 404}, {});
+
+        verifyFolderSyncChangesOnReceivedFileIdNotification(user2, {20},                  {"2"});
+        verifyFolderSyncChangesOnReceivedFileIdNotification(user2, {21},                  {"2"});
+        verifyFolderSyncChangesOnReceivedFileIdNotification(user2, {23, 21},              {"2"});
+        verifyFolderSyncChangesOnReceivedFileIdNotification(user2, {11, 16, 21},          {"2"});
+        verifyFolderSyncChangesOnReceivedFileIdNotification(user2, {50},                  {"2"});
+        verifyFolderSyncChangesOnReceivedFileIdNotification(user2, {10, 11, 17, 18, 404}, {});
+    }
+
+    void testUnloadAndDeleteAllFolders()
+    {
+        FolderMan::resetInstance();
+        _fm = FolderMan::instance();
+
+        QTemporaryDir dir;
+        ConfigFile::setConfDir(dir.path());
+        QVERIFY(dir.isValid());
+        QVERIFY(QDir(dir.path()).mkpath(QStringLiteral("folder1")));
+        QVERIFY(QDir(dir.path()).mkpath(QStringLiteral("folder2")));
+
+        auto account = Account::create();
+        account->setCredentials(new FakeCredentials{new FakeQNAM({})});
+        account->setUrl(QUrl(QStringLiteral("http://example.de")));
+        auto accountState = new FakeAccountState(account);
+
+        const auto folder1 = FolderMan::instance()->addFolder(accountState, folderDefinition(dir.path() + QStringLiteral("/folder1")));
+        const auto folder2 = FolderMan::instance()->addFolder(accountState, folderDefinition(dir.path() + QStringLiteral("/folder2")));
+        QVERIFY(folder1);
+        QVERIFY(folder2);
+        QCOMPARE(FolderMan::instance()->map().count(), 2);
+
+        auto socketApi = FolderMan::instance()->socketApi();
+
+        // verifies that calling slotUnregisterPath twice on the same alias doesn't crash
+        socketApi->slotUnregisterPath(folder1->alias());
+        socketApi->slotUnregisterPath(folder1->alias());
+
+        FolderMan::instance()->unloadAndDeleteAllFolders();
+
+        QCOMPARE(FolderMan::instance()->map().count(), 0);
+    }
+
+    void testMacFileProviderModeEnabledConfig()
+    {
+        QTemporaryDir dir;
+        ConfigFile::setConfDir(dir.path());
+        QVERIFY(dir.isValid());
+
+        ConfigFile cfg;
+        QVERIFY(!cfg.macFileProviderModeEnabledIsSet());
+        QVERIFY(!cfg.macFileProviderModeEnabled());
+
+        cfg.setMacFileProviderModeEnabled(true);
+        QVERIFY(cfg.macFileProviderModeEnabledIsSet());
+        QVERIFY(cfg.macFileProviderModeEnabled());
+
+        cfg.setMacFileProviderModeEnabled(false);
+        QVERIFY(cfg.macFileProviderModeEnabledIsSet());
+        QVERIFY(!cfg.macFileProviderModeEnabled());
+    }
+
+#ifdef BUILD_FILE_PROVIDER_MODULE
+    void testFileProviderEtagPollingRequiresConnectedAccount()
+    {
+        const auto accountState = std::make_unique<FakeAccountState>(Account::create());
+        QVERIFY(FolderMan::canPollFileProviderEtag(*accountState));
+
+        const auto disconnectedStates = {
+            AccountState::SignedOut,
+            AccountState::Disconnected,
+            AccountState::ServiceUnavailable,
+            AccountState::RedirectDetected,
+            AccountState::MaintenanceMode,
+            AccountState::NetworkError,
+            AccountState::ConfigurationError,
+            AccountState::AskingCredentials,
+            AccountState::NeedToSignTermsOfService,
+        };
+
+        for (const auto state : disconnectedStates) {
+            accountState->setStateForTesting(state);
+            QVERIFY2(!FolderMan::canPollFileProviderEtag(*accountState),
+                qPrintable(AccountState::stateString(state)));
+        }
+    }
+
+    void testAddFolderRefusedWhenFileProviderModeEnabled()
+    {
+        FolderMan::resetInstance();
+        _fm = FolderMan::instance();
+
+        QTemporaryDir dir;
+        ConfigFile::setConfDir(dir.path());
+        QVERIFY(dir.isValid());
+        QVERIFY(QDir(dir.path()).mkpath(QStringLiteral("folder1")));
+
+        auto account = Account::create();
+        account->setCredentials(new FakeCredentials{new FakeQNAM({})});
+        account->setUrl(QUrl(QStringLiteral("http://example.de")));
+        auto accountState = new FakeAccountState(account);
+
+        // Classic sync folders and File Provider mode are mutually exclusive.
+        ConfigFile().setMacFileProviderModeEnabled(true);
+        QVERIFY(!FolderMan::instance()->addFolder(accountState, folderDefinition(dir.path() + QStringLiteral("/folder1"))));
+        QCOMPARE(FolderMan::instance()->map().count(), 0);
+
+        ConfigFile().setMacFileProviderModeEnabled(false);
+        QVERIFY(FolderMan::instance()->addFolder(accountState, folderDefinition(dir.path() + QStringLiteral("/folder1"))));
+        QCOMPARE(FolderMan::instance()->map().count(), 1);
+
+        FolderMan::instance()->unloadAndDeleteAllFolders();
+        QCOMPARE(FolderMan::instance()->map().count(), 0);
+    }
+#endif
+
+#ifdef Q_OS_MACOS
+    void testAddFolderStartsAccessFromBookmark()
+    {
+        FolderMan::resetInstance();
+        QTemporaryDir dir;
+        ConfigFile::setConfDir(dir.path());
+        QVERIFY(dir.isValid());
+        QVERIFY(QDir(dir.path()).mkpath(u"folder1"_s));
+        const auto localPath = dir.path() + u"/folder1"_s;
+
+        auto account = Account::create();
+        account->setCredentials(new FakeCredentials{new FakeQNAM({})});
+        account->setUrl(QUrl(u"http://example.de"_s));
+        auto accountState = new FakeAccountState(account);
+
+        auto definition = folderDefinition(localPath);
+        definition.securityScopedBookmarkData = Utility::createSecurityScopedBookmarkData(localPath);
+        QVERIFY(!definition.securityScopedBookmarkData.isEmpty());
+
+        const auto folder = FolderMan::instance()->addFolder(accountState, definition);
+        QVERIFY(folder);
+        QVERIFY(folder->hasSecurityScopedAccess());
+        QVERIFY(!folder->needsSandboxBookmark());
+
+        FolderMan::instance()->unloadAndDeleteAllFolders();
+    }
+
+    void testAddFolderWithUnusableBookmarkNeedsSandboxBookmark()
+    {
+        FolderMan::resetInstance();
+        QTemporaryDir dir;
+        ConfigFile::setConfDir(dir.path());
+        QVERIFY(dir.isValid());
+        QVERIFY(QDir(dir.path()).mkpath(u"folder1"_s));
+
+        auto account = Account::create();
+        account->setCredentials(new FakeCredentials{new FakeQNAM({})});
+        account->setUrl(QUrl(u"http://example.de"_s));
+        auto accountState = new FakeAccountState(account);
+
+        auto definition = folderDefinition(dir.path() + u"/folder1"_s);
+        definition.securityScopedBookmarkData = "not a bookmark"_ba;
+
+        const auto folder = FolderMan::instance()->addFolder(accountState, definition);
+        QVERIFY(folder);
+        QVERIFY(!folder->hasSecurityScopedAccess());
+        QVERIFY(folder->needsSandboxBookmark());
+        QVERIFY(!folder->canSync());
+
+        FolderMan::instance()->unloadAndDeleteAllFolders();
+    }
+#endif
 };
 
 QTEST_GUILESS_MAIN(TestFolderMan)

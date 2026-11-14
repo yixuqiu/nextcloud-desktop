@@ -1,12 +1,17 @@
 /*
- *    This software is in the public domain, furnished "as is", without technical
- *       support, and with no warranty, express or implied, as to its usefulness for
- *          any purpose.
- *          */
+ * SPDX-FileCopyrightText: 2018 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2015 ownCloud, Inc.
+ * SPDX-License-Identifier: CC0-1.0
+ * 
+ * This software is in the public domain, furnished "as is", without technical
+ * support, and with no warranty, express or implied, as to its usefulness for
+ * any purpose.
+ */
 
 #include <QtTest>
 
 #include "networkjobs.h"
+#include "logger.h"
 
 using namespace OCC;
 
@@ -19,7 +24,7 @@ private:
   QStringList _subdirs;
   QStringList _items;
 
-public slots:
+public Q_SLOTS:
   void slotDirectoryListingSubFolders(const QStringList& list)
   {
      qDebug() << "subfolders: " << list;
@@ -37,7 +42,15 @@ public slots:
       _success = true;
   }
 
-private slots:
+private Q_SLOTS:
+    void initTestCase()
+    {
+        OCC::Logger::instance()->setLogFlush(true);
+        OCC::Logger::instance()->setLogDebug(true);
+
+        QStandardPaths::setTestModeEnabled(true);
+    }
+
     void init() {
         qDebug() << Q_FUNC_INFO;
       _success = false;

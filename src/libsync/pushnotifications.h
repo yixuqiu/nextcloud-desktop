@@ -1,15 +1,6 @@
 /*
- * Copyright (C) by Felix Weilbach <felix.weilbach@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2021 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #pragma once
@@ -63,7 +54,7 @@ public:
      */
     void setPingInterval(int interval);
 
-signals:
+Q_SIGNALS:
     /**
      * Will be emitted after a successful connection and authentication
      */
@@ -73,6 +64,11 @@ signals:
      * Will be emitted if files on the server changed
      */
     void filesChanged(OCC::Account *account);
+
+    /**
+     * Will be emitted if specific files on the server changed
+     */
+    void fileIdsChanged(OCC::Account *account, const QList<qint64> &fileIds);
 
     /**
      * Will be emitted if activities have been changed on the server
@@ -98,7 +94,7 @@ signals:
      */
     void connectionLost();
 
-private slots:
+private Q_SLOTS:
     void onWebSocketConnected();
     void onWebSocketDisconnected();
     void onWebSocketTextMessageReceived(const QString &message);
@@ -120,6 +116,7 @@ private:
 
     void handleAuthenticated();
     void handleNotifyFile();
+    void handleNotifyFileId(const QString &message);
     void handleInvalidCredentials();
     void handleNotifyNotification();
     void handleNotifyActivity();

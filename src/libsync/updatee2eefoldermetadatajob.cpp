@@ -1,15 +1,6 @@
 /*
- * Copyright (C) 2023 by Oleksandr Zolotov <alex@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2023 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "updatee2eefoldermetadatajob.h"
@@ -77,10 +68,10 @@ PropagatorJob::JobParallelism UpdateE2eeFolderMetadataJob::parallelism() const
 void UpdateE2eeFolderMetadataJob::slotFetchMetadataJobFinished(int httpReturnCode, const QString &message)
 {
     if (httpReturnCode != 200) {
-        qCDebug(lcUpdateFileDropMetadataJob()) << "Error Getting the encrypted metadata.";
+        qCWarning(lcUpdateFileDropMetadataJob()) << "Error Getting the encrypted metadata.";
         _item->_status = SyncFileItem::FatalError;
         _item->_errorString = message;
-        finished(SyncFileItem::FatalError);
+        Q_EMIT finished(SyncFileItem::FatalError);
         return;
     }
 
@@ -97,7 +88,7 @@ void UpdateE2eeFolderMetadataJob::slotFetchMetadataJobFinished(int httpReturnCod
         return;
     }
 
-    emit fileDropMetadataParsedAndAdjusted(folderMetadata.data());
+    Q_EMIT fileDropMetadataParsedAndAdjusted(folderMetadata.data());
     _encryptedFolderMetadataHandler->uploadMetadata();
     connect(_encryptedFolderMetadataHandler.data(), &EncryptedFolderMetadataHandler::uploadFinished,
             this, &UpdateE2eeFolderMetadataJob::slotUpdateMetadataFinished);
@@ -108,14 +99,14 @@ void UpdateE2eeFolderMetadataJob::slotUpdateMetadataFinished(int httpReturnCode,
     const auto itemStatus = httpReturnCode != 200 ? SyncFileItem::FatalError : SyncFileItem::Success;
     if (httpReturnCode != 200) {
         _item->_errorString = message;
-        qCDebug(lcUpdateFileDropMetadataJob) << "Update metadata error for folder" << _encryptedFolderMetadataHandler->folderId() << "with error" << httpReturnCode << message;
+        qCWarning(lcUpdateFileDropMetadataJob) << "Update metadata error for folder" << _encryptedFolderMetadataHandler->folderId() << "with error" << httpReturnCode << message;
     } else {
         qCDebug(lcUpdateFileDropMetadataJob) << "Uploading of the metadata success, Encrypting the file";
     }
     propagator()->_journal->schedulePathForRemoteDiscovery(_item->_file);
     propagator()->_anotherSyncNeeded = true;
     _item->_status = itemStatus;
-    finished(itemStatus);
+    Q_EMIT finished(itemStatus);
 }
 
 void UpdateE2eeFolderMetadataJob::unlockFolder(const EncryptedFolderMetadataHandler::UnlockFolderWithResult result)
@@ -143,17 +134,17 @@ void UpdateE2eeFolderMetadataJob::unlockFolder(const EncryptedFolderMetadataHand
                 _item->_e2eEncryptionServerCapability = EncryptionStatusEnums::fromEndToEndEncryptionApiVersion(propagator()->account()->capabilities().clientSideEncryptionVersion());
             }
         }
-        finished(itemStatus);
+        Q_EMIT finished(itemStatus);
         return;
     }
 
     qCDebug(lcUpdateFileDropMetadataJob) << "Calling Unlock";
-    connect(_encryptedFolderMetadataHandler.data(), &EncryptedFolderMetadataHandler::folderUnlocked, [this](const QByteArray &folderId, int httpStatus) {
+    connect(_encryptedFolderMetadataHandler.data(), &EncryptedFolderMetadataHandler::folderUnlocked, _encryptedFolderMetadataHandler.data(), [this](const QByteArray &folderId, int httpStatus) {
         if (httpStatus != 200) {
             qCWarning(lcUpdateFileDropMetadataJob) << "Unlock Error" << folderId << httpStatus;
             propagator()->account()->reportClientStatus(OCC::ClientStatusReportingStatus::E2EeError_GeneralError);
             _item->_errorString = tr("Failed to unlock encrypted folder.");
-            finished(SyncFileItem::FatalError);
+            Q_EMIT finished(SyncFileItem::FatalError);
             return;
         }
 
@@ -163,16 +154,18 @@ void UpdateE2eeFolderMetadataJob::unlockFolder(const EncryptedFolderMetadataHand
             || !_encryptedFolderMetadataHandler->folderMetadata()->isValid()) {
             qCWarning(lcUpdateFileDropMetadataJob) << "Failed to finalize item. Invalid metadata.";
             _item->_errorString = tr("Failed to finalize item.");
-            finished(SyncFileItem::FatalError);
+            Q_EMIT finished(SyncFileItem::FatalError);
             return;
         }
 
         _item->_e2eEncryptionStatus = _encryptedFolderMetadataHandler->folderMetadata()->encryptedMetadataEncryptionStatus();
         _item->_e2eEncryptionStatusRemote = _encryptedFolderMetadataHandler->folderMetadata()->encryptedMetadataEncryptionStatus();
 
-        finished(SyncFileItem::Success);
+        Q_EMIT finished(SyncFileItem::Success);
     });
     _encryptedFolderMetadataHandler->unlockFolder(result);
 }
 
 }
+
+#include "moc_updatee2eefoldermetadatajob.cpp"

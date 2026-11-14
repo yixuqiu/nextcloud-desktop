@@ -1,15 +1,6 @@
 /*
- * Copyright (C) by Oleksandr Zolotov <alex@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2022 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "accountsetupcommandlinemanager.h"
@@ -92,7 +83,7 @@ bool AccountSetupCommandLineManager::parseCommandlineOption(const QString &optio
 
 bool AccountSetupCommandLineManager::isCommandLineParsed() const
 {
-    return !_appPassword.isEmpty() && !_userId.isEmpty() && _serverUrl.isValid();
+    return !_userId.isEmpty() && _serverUrl.isValid();
 }
 
 bool AccountSetupCommandLineManager::isVfsEnabled() const
@@ -100,20 +91,29 @@ bool AccountSetupCommandLineManager::isVfsEnabled() const
     return _isVfsEnabled;
 }
 
-void AccountSetupCommandLineManager::setupAccountFromCommandLine()
+bool AccountSetupCommandLineManager::setupAccountFromCommandLine()
 {
+    const auto cleanUpState = [this] () -> void
+    {
+        _appPassword.clear();
+        _userId.clear();
+        _serverUrl.clear();
+        _remoteDirPath.clear();
+        _localDirPath.clear();
+        _isVfsEnabled = true;
+    };
+
     if (isCommandLineParsed()) {
         qCInfo(lcAccountSetupCommandLineManager) << QStringLiteral("Command line has been parsed and account setup parameters have been found. Attempting setup a new account %1...").arg(_userId);
         const auto accountSetupJob = new AccountSetupFromCommandLineJob(_appPassword, _userId, _serverUrl, _localDirPath, _isVfsEnabled, _remoteDirPath, parent());
-        accountSetupJob->handleAccountSetupFromCommandLine();
+        const auto result = accountSetupJob->handleAccountSetupFromCommandLine();
+        cleanUpState();
+        return result;
     } else {
         qCInfo(lcAccountSetupCommandLineManager) << QStringLiteral("No account setup parameters have been found, or they are invalid. Proceed with normal startup...");
+        cleanUpState();
+        return false;
     }
-    _appPassword.clear();
-    _userId.clear();
-    _serverUrl.clear();
-    _remoteDirPath.clear();
-    _localDirPath.clear();
-    _isVfsEnabled = true;
 }
+
 }

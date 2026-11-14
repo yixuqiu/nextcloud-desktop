@@ -1,24 +1,23 @@
 /*
- * Copyright (C) by Daniel Molkentin <danimo@owncloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2022 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2014 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "cocoainitializer.h"
 
-#import <Foundation/NSAutoreleasePool.h>
+#import <Foundation/NSException.h>
+#import <Foundation/NSProcessInfo.h>
+#import <Foundation/NSThread.h>
 #import <AppKit/NSApplication.h>
 
 #include "application.h"
-#include "editlocallymanager.h"
+
+#include <QTimer>
+
+#include <exception>
+
+static_assert(__has_feature(objc_arc), "CocoaInitializer requires ARC.");
 
 /* In theory, we should be able to just capture QFileOpenEvents
  * when we open our custom URLs in our Application class and be
@@ -32,9 +31,12 @@
  * client was closed when these events were sent. */
 
 @interface URLEventHandler : NSObject
+- (void)invalidate;
 @end
 
-@implementation URLEventHandler
+@implementation URLEventHandler {
+    BOOL _registered;
+}
 - (id)init {
     self = [super init];
 
@@ -53,13 +55,37 @@
                                                        andSelector:@selector(handleURLEvent:withReplyEvent:)
                                                      forEventClass:kInternetEventClass
                                                         andEventID:kAEGetURL];
+    _registered = YES;
+}
+
+- (void)invalidate
+{
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+    if (_registered) {
+        [[NSAppleEventManager sharedAppleEventManager] removeEventHandlerForEventClass:kInternetEventClass andEventID:kAEGetURL];
+        _registered = NO;
+    }
 }
 
 - (void)handleURLEvent:(NSAppleEventDescriptor *)event withReplyEvent:(NSAppleEventDescriptor *)replyEvent
 {
     NSURL* url = [NSURL URLWithString:[[event paramDescriptorForKeyword:keyDirectObject] stringValue]];
     const auto qtUrl = QUrl::fromNSURL(url);
-    OCC::EditLocallyManager::instance()->editLocally(qtUrl);
+    if (qApp) {
+        QTimer::singleShot(0, qApp, [qtUrl] {
+            qCInfo(OCC::lcApplication) << "macOS AppleEvent custom URI scheme request:"
+                                       << "scheme=" << qtUrl.scheme()
+                                       << "host=" << qtUrl.host()
+                                       << "path=" << qtUrl.path();
+            if (auto application = qobject_cast<OCC::Application *>(qApp)) {
+                application->handleUriSchemeRequest(qtUrl);
+            } else {
+                qCWarning(OCC::lcApplication) << "Could not dispatch macOS AppleEvent custom URI scheme request because qApp is not an Application.";
+            }
+        });
+    } else {
+        qCWarning(OCC::lcApplication) << "Could not dispatch macOS AppleEvent custom URI scheme request because qApp is not available yet.";
+    }
 }
 
 @end
@@ -69,19 +95,58 @@ namespace Mac {
 
 class CocoaInitializer::Private {
 public:
-    NSAutoreleasePool* autoReleasePool;
-    URLEventHandler* handler;
+    URLEventHandler* handler = nil;
+    id<NSObject> appNapActivity = nil;
 };
+
+int CocoaInitializer::run(const std::function<int()> &mainFunction)
+{
+    Q_ASSERT([NSThread isMainThread]);
+    auto result = 0;
+    std::exception_ptr exception;
+    NSException *nativeException = nil;
+    // Leave the pool normally so it drains before either exception is rethrown.
+    @autoreleasepool {
+        try {
+            @try {
+                CocoaInitializer initializer;
+                result = mainFunction();
+            } @catch (NSException *caughtException) {
+                nativeException = caughtException;
+            }
+        } catch (...) {
+            exception = std::current_exception();
+        }
+    }
+    if (nativeException != nil) {
+        @throw nativeException;
+    }
+    if (exception) {
+        std::rethrow_exception(exception);
+    }
+    return result;
+}
 
 CocoaInitializer::CocoaInitializer() {
     d = new CocoaInitializer::Private();
     d->handler = [[URLEventHandler alloc] init];
     NSApplicationLoad();
-    d->autoReleasePool = [[NSAutoreleasePool alloc] init];
+
+    // As an LSUIElement agent we usually have no visible window, which makes macOS
+    // throttle us via App Nap and lets RunningBoard suspend (and later jetsam-reap)
+    // the process while it is idle in the background. Holding an NSActivityBackground
+    // assertion for our whole lifetime keeps the process out of App Nap so syncing
+    // continues; it still allows normal idle system/display sleep.
+    NSProcessInfo *const processInfo = [NSProcessInfo processInfo];
+    d->appNapActivity = [processInfo beginActivityWithOptions:NSActivityBackground
+                                                        reason:@"Keep syncing while running in the background"];
 }
 
 CocoaInitializer::~CocoaInitializer() {
-    [d->autoReleasePool release];
+    [d->handler invalidate];
+    if (d->appNapActivity) {
+        [[NSProcessInfo processInfo] endActivity:d->appNapActivity];
+    }
     delete d;
 }
 

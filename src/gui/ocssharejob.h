@@ -1,15 +1,7 @@
 /*
- * Copyright (C) by Roeland Jago Douma <roeland@famdouma.nl>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2019 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2015 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #ifndef OCSSHAREJOB_H
@@ -78,18 +70,6 @@ public:
     void setPassword(const QString &shareId, const QString &password);
 
     /**
-     * Set the share to be public upload
-     *
-     * @param publicUpload Set or remove public upload
-     */
-    void setPublicUpload(const QString &shareId, bool publicUpload);
-
-    /**
-     * Change the name of a share
-     */
-    void setName(const QString &shareId, const QString &name);
-
-    /**
      * Set the permissions
      *
      * @param permissions
@@ -135,12 +115,13 @@ public:
 
     /**
      * Returns information on the items shared with the current user.
+     * @param path Path to request shares for (default all shares)
      */
-    void getSharedWithMe();
+    void getSharedWithMe(const QString &path = "");
 
     static const QString _pathForSharesRequest;
 
-signals:
+Q_SIGNALS:
     /**
      * Result of the OCS request
      * The value parameter is only set if this was a put request.
@@ -152,7 +133,7 @@ signals:
      */
     void shareJobFinished(QJsonDocument reply, QVariant value);
 
-private slots:
+private Q_SLOTS:
     void jobDone(QJsonDocument reply);
 
 private:

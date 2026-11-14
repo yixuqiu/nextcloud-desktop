@@ -1,15 +1,7 @@
 /*
- * Copyright (C) by Daniel Molkentin <danimo@owncloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2018 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2014 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "cookiejar.h"
@@ -35,8 +27,9 @@ QDataStream &operator<<(QDataStream &stream, const QList<QNetworkCookie> &list)
 {
     stream << JAR_VERSION;
     stream << quint32(list.size());
-    for (const auto &cookie : list)
+    for (const auto &cookie : list) {
         stream << cookie.toRawForm();
+    }
     return stream;
 }
 
@@ -47,8 +40,9 @@ QDataStream &operator>>(QDataStream &stream, QList<QNetworkCookie> &list)
     quint32 version = 0;
     stream >> version;
 
-    if (version != JAR_VERSION)
+    if (version != JAR_VERSION) {
         return stream;
+    }
 
     quint32 count = 0;
     stream >> count;
@@ -59,10 +53,12 @@ QDataStream &operator>>(QDataStream &stream, QList<QNetworkCookie> &list)
         if (newCookies.count() == 0 && value.length() != 0) {
             qCWarning(lcCookieJar) << "CookieJar: Unable to parse saved cookie:" << value;
         }
-        for (int j = 0; j < newCookies.count(); ++j)
+        for (int j = 0; j < newCookies.count(); ++j) {
             list.append(newCookies.at(j));
-        if (stream.atEnd())
+        }
+        if (stream.atEnd()) {
             break;
+        }
     }
     return stream;
 }
@@ -87,7 +83,6 @@ bool CookieJar::setCookiesFromUrl(const QList<QNetworkCookie> &cookieList, const
 QList<QNetworkCookie> CookieJar::cookiesForUrl(const QUrl &url) const
 {
     QList<QNetworkCookie> cookies = QNetworkCookieJar::cookiesForUrl(url);
-    qCDebug(lcCookieJar) << url << "requests:" << cookies;
     return cookies;
 }
 
@@ -140,7 +135,7 @@ bool CookieJar::restore(const QString &fileName)
 QList<QNetworkCookie> CookieJar::removeExpired(const QList<QNetworkCookie> &cookies)
 {
     QList<QNetworkCookie> updatedList;
-    foreach (const QNetworkCookie &cookie, cookies) {
+    for (const auto &cookie : cookies) {
         if (cookie.expirationDate() > QDateTime::currentDateTimeUtc() && !cookie.isSessionCookie()) {
             updatedList << cookie;
         }

@@ -1,15 +1,7 @@
 /*
- * Copyright (C) by Klaas Freitag <freitag@kde.org>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2018 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2012 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #ifndef OWNCLOUDSETUPWIZARD_H
@@ -17,21 +9,14 @@
 
 #include <QObject>
 #include <QWidget>
-#include <QProcess>
-#include <QNetworkReply>
 #include <QPointer>
+#include <QUrl>
 
-#include "accountfwd.h"
-#include "theme.h"
-#include "networkjobs.h"
-
-#include "wizard/owncloudwizardcommon.h"
+class QQuickWindow;
 
 namespace OCC {
 
-class AccountState;
-
-class OwncloudWizard;
+class AccountWizardController;
 
 /**
  * @brief The OwncloudSetupWizard class
@@ -42,47 +27,25 @@ class OwncloudSetupWizard : public QObject
     Q_OBJECT
 public:
     /** Run the wizard */
-    static void runWizard(QObject *obj, const char *amember, QWidget *parent = nullptr);
+    static void runWizard(QObject *obj, const char *amember, QWidget *parent = nullptr, bool forceRestart = false);
+    static void runWizardForLoginFlow(QObject *obj, const char *amember, const QUrl &serverUrl, QWidget *parent = nullptr);
     static bool bringWizardToFrontIfVisible();
-signals:
+
+Q_SIGNALS:
     // overall dialog close signal.
     void ownCloudWizardDone(int);
-
-private slots:
-    void slotCheckServer(const QString &);
-    void slotSystemProxyLookupDone(const QNetworkProxy &proxy);
-
-    void slotFindServer();
-    void slotFindServerBehindRedirect();
-    void slotFoundServer(const QUrl &, const QJsonObject &);
-    void slotNoServerFound(QNetworkReply *reply);
-    void slotNoServerFoundTimeout(const QUrl &url);
-
-    void slotDetermineAuthType();
-
-    void slotConnectToOCUrl(const QString &);
-    void slotAuthError();
-
-    void slotCreateLocalAndRemoteFolders(const QString &, const QString &);
-    void slotRemoteFolderExists(QNetworkReply *);
-    void slotCreateRemoteFolderFinished(QNetworkReply *reply);
-    void slotAssistantFinished(int);
-    void slotSkipFolderConfiguration();
 
 private:
     explicit OwncloudSetupWizard(QObject *parent = nullptr);
     ~OwncloudSetupWizard() override;
-    void startWizard();
-    void testOwnCloudConnect();
-    void createRemoteFolder();
-    void finalizeSetup(bool);
-    bool ensureStartFromScratch(const QString &localFolder);
-    AccountState *applyAccountChanges();
-    bool checkDowngradeAdvised(QNetworkReply *reply);
+    bool startQmlWizard();
+    bool startQmlWizardForLoginFlow(const QUrl &serverUrl);
+    void finish(int result);
+    void finishForClosedWindow();
 
-    OwncloudWizard *_ocWizard;
-    QString _initLocalFolder;
-    QString _remoteFolder;
+    AccountWizardController *_qmlController = nullptr;
+    QPointer<QQuickWindow> _qmlWizardWindow;
+    bool _finished = false;
 };
 }
 

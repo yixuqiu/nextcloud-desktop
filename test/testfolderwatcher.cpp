@@ -1,14 +1,18 @@
 /*
- *    This software is in the public domain, furnished "as is", without technical
- *    support, and with no warranty, express or implied, as to its usefulness for
- *    any purpose.
+ * SPDX-FileCopyrightText: 2021 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2011 ownCloud GmbH
+ * SPDX-License-Identifier: CC0-1.0
  *
+ * This software is in the public domain, furnished "as is", without technical
+ * support, and with no warranty, express or implied, as to its usefulness for
+ * any purpose.
  */
 
 #include <QtTest>
 
 #include "folderwatcher.h"
 #include "common/utility.h"
+#include "logger.h"
 
 void touch(const QString &file)
 {
@@ -16,7 +20,7 @@ void touch(const QString &file)
     OCC::Utility::writeRandomFile(file);
 #else
     QString cmd;
-    cmd = QString("touch %1").arg(file);
+    cmd = QStringLiteral("touch %1").arg(file);
     qDebug() << "Command: " << cmd;
     system(cmd.toLocal8Bit());
 #endif
@@ -28,7 +32,7 @@ void mkdir(const QString &file)
     QDir dir;
     dir.mkdir(file);
 #else
-    QString cmd = QString("mkdir %1").arg(file);
+    QString cmd = QStringLiteral("mkdir %1").arg(file);
     qDebug() << "Command: " << cmd;
     system(cmd.toLocal8Bit());
 #endif
@@ -40,7 +44,7 @@ void rmdir(const QString &file)
     QDir dir;
     dir.rmdir(file);
 #else
-    QString cmd = QString("rmdir %1").arg(file);
+    QString cmd = QStringLiteral("rmdir %1").arg(file);
     qDebug() << "Command: " << cmd;
     system(cmd.toLocal8Bit());
 #endif
@@ -51,7 +55,7 @@ void rm(const QString &file)
 #ifdef Q_OS_WIN
     QFile::remove(file);
 #else
-    QString cmd = QString("rm %1").arg(file);
+    QString cmd = QStringLiteral("rm %1").arg(file);
     qDebug() << "Command: " << cmd;
     system(cmd.toLocal8Bit());
 #endif
@@ -62,7 +66,7 @@ void mv(const QString &file1, const QString &file2)
 #ifdef Q_OS_WIN
     QFile::rename(file1, file2);
 #else
-    QString cmd = QString("mv %1 %2").arg(file1, file2);
+    QString cmd = QStringLiteral("mv %1 %2").arg(file1, file2);
     qDebug() << "Command: " << cmd;
     system(cmd.toLocal8Bit());
 #endif
@@ -85,10 +89,10 @@ class TestFolderWatcher : public QObject
         t.start();
         while (t.elapsed() < 5000) {
             // Check if it was already reported as changed by the watcher
-            for (int i = 0; i < _pathChangedSpy->size(); ++i) {
-                const auto &args = _pathChangedSpy->at(i);
-                if (args.first().toString() == path)
+            for (const auto &args : *_pathChangedSpy) {
+                if (args.first().toString() == path) {
                     return true;
+                }
             }
             // Wait a bit and test again (don't bother checking if we timed out or not)
             _pathChangedSpy->wait(200);
@@ -127,14 +131,22 @@ public:
     int countFolders(const QString &path)
     {
         int n = 0;
-        const auto entryList = QDir(path).entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+        const auto entryList = QDir(path).entryList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks);
         for (const auto &sub : entryList) {
             n += 1 + countFolders(path + '/' + sub);
         }
         return n;
     }
 
-private slots:
+private Q_SLOTS:
+    void initTestCase()
+    {
+        OCC::Logger::instance()->setLogFlush(true);
+        OCC::Logger::instance()->setLogDebug(true);
+
+        QStandardPaths::setTestModeEnabled(true);
+    }
+
     void init()
     {
         _pathChangedSpy->clear();
@@ -149,7 +161,7 @@ private slots:
     void testACreate() { // create a new file
         QString file(_rootPath + "/foo.txt");
         QString cmd;
-        cmd = QString("echo \"xyz\" > \"%1\"").arg(file);
+        cmd = QStringLiteral("echo \"xyz\" > \"%1\"").arg(file);
         qDebug() << "Command: " << cmd;
         system(cmd.toLocal8Bit());
 
@@ -263,6 +275,54 @@ private slots:
         QVERIFY(waitForPathChanged(dir));
     }
 
+    void testChangeDetected_movedInDirectoryWithSymlinkLoop_symlinkNotTraversed()
+    {
+#ifndef Q_OS_LINUX
+        QSKIP("Only the Linux watcher enumerates moved-in directories via changeDetected(QString)");
+#endif
+        // Build the tree outside of the watched folder and move it in, so the watcher
+        // receives a single event for the directory and enumerates its content.
+        const auto outside = QTemporaryDir{};
+        const auto source = outside.path() + "/withloop";
+        QVERIFY(QDir().mkpath(source + "/sub"));
+        Utility::writeRandomFile(source + "/sub/file.bin");
+        QVERIFY(QFile::link(QStringLiteral(".."), source + "/sub/loop"));
+
+        const auto moved = _rootPath + "/withloop";
+        mv(source, moved);
+        QVERIFY(QFileInfo(moved + "/sub/loop").isDir());
+
+        QVERIFY(waitForPathChanged(moved + "/sub/file.bin"));
+        QVERIFY(waitForPathChanged(moved + "/sub/loop"));
+        for (const auto &args : std::as_const(*_pathChangedSpy)) {
+            const auto path = args.first().toString();
+            QVERIFY2(!path.startsWith(moved + "/sub/loop/"), qPrintable(QStringLiteral("descended into symlink: %1").arg(path)));
+        }
+
+        _pathChangedSpy->clear();
+        QVERIFY(QDir(moved).removeRecursively());
+        QVERIFY(waitForPathChanged(moved));
+    }
+
+    void testChangeDetected_createdDirectorySymlink_notTraversedNorWatched()
+    {
+#ifndef Q_OS_LINUX
+        QSKIP("Directory symlinks are only created and watched this way on Linux");
+#endif
+        const auto target = QString{_rootPath + "/a2"};
+        const auto link = QString{_rootPath + "/a2link"};
+        QVERIFY(QFile::link(target, link));
+
+        QVERIFY(waitForPathChanged(link));
+        for (const auto &args : std::as_const(*_pathChangedSpy)) {
+            const auto path = args.first().toString();
+            QVERIFY2(!path.startsWith(link + "/"), qPrintable(QStringLiteral("descended into symlink: %1").arg(path)));
+        }
+        CHECK_WATCH_COUNT(countFolders(_rootPath) + 1);
+
+        QVERIFY(QFile::remove(link));
+    }
+
     void testDetectLockFiles()
     {
         QStringList listOfOfficeFiles = {QString(_rootPath + "/document.docx"), QString(_rootPath + "/document.odt")};
@@ -275,7 +335,7 @@ private slots:
         // verify that office files for locking got detected by the watcher
         QScopedPointer<QSignalSpy> locksImposedSpy(new QSignalSpy(_watcher.data(), &FolderWatcher::filesLockImposed));
 
-        for (const auto &officeFile : listOfOfficeFiles) {
+        for (const auto &officeFile : std::as_const(listOfOfficeFiles)) {
             touch(officeFile);
             QVERIFY(waitForPathChanged(officeFile));
         }
@@ -316,18 +376,22 @@ private slots:
         for (const auto &officeLockFile : listOfOfficeLockFiles) {
             rm(officeLockFile);
         }
-        for (const auto &officeFile : listOfOfficeFiles) {
+        for (const auto &officeFile : std::as_const(listOfOfficeFiles)) {
             rm(officeFile);
         }
     }
     void testDetectLockFilesExternally()
     {
+#if defined Q_OS_MACOS
+        QSKIP("not reliable on macOS");
+#endif
+
         QStringList listOfOfficeFiles = {QString(_rootPath + "/document.docx"), QString(_rootPath + "/document.odt")};
         std::sort(std::begin(listOfOfficeFiles), std::end(listOfOfficeFiles));
 
         const QStringList listOfOfficeLockFiles = {QString(_rootPath + "/.~lock.document.docx#"), QString(_rootPath + "/.~lock.document.odt#")};
 
-        for (const auto &officeFile : listOfOfficeFiles) {
+        for (const auto &officeFile : std::as_const(listOfOfficeFiles)) {
             touch(officeFile);
         }
         for (const auto &officeLockFile : listOfOfficeLockFiles) {
@@ -370,7 +434,7 @@ private slots:
         }
 
         // cleanup
-        for (const auto &officeFile : listOfOfficeFiles) {
+        for (const auto &officeFile : std::as_const(listOfOfficeFiles)) {
             rm(officeFile);
         }
         for (const auto &officeLockFile : listOfOfficeLockFiles) {
@@ -379,7 +443,7 @@ private slots:
     }
 };
 
-#ifdef Q_OS_MAC
+#ifdef Q_OS_MACOS
     QTEST_MAIN(TestFolderWatcher)
 #else
     QTEST_GUILESS_MAIN(TestFolderWatcher)

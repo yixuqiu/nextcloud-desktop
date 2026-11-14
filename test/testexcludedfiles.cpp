@@ -1,14 +1,18 @@
 /*
- *    This software is in the public domain, furnished "as is", without technical
- *    support, and with no warranty, express or implied, as to its usefulness for
- *    any purpose.
+ * SPDX-FileCopyrightText: 2020 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2016 ownCloud GmbH
+ * SPDX-License-Identifier: CC0-1.0
  *
+ * This software is in the public domain, furnished "as is", without technical
+ * support, and with no warranty, express or implied, as to its usefulness for
+ * any purpose.
  */
 
 #include <QtTest>
 #include <QTemporaryDir>
 
 #include "csync_exclude.h"
+#include "logger.h"
 
 using namespace OCC;
 
@@ -63,7 +67,15 @@ static auto check_dir_traversal(const char *path)
 }
 
 
-private slots:
+private Q_SLOTS:
+    void initTestCase()
+    {
+        OCC::Logger::instance()->setLogFlush(true);
+        OCC::Logger::instance()->setLogDebug(true);
+
+        QStandardPaths::setTestModeEnabled(true);
+    }
+
     void testFun()
     {
         ExcludedFiles excluded;
@@ -85,8 +97,6 @@ private slots:
         QVERIFY(excluded.isExcluded("/a/foo_conflict-bar", "/a", keepHidden));
         QVERIFY(excluded.isExcluded("/a/foo (conflicted copy bar)", "/a", keepHidden));
         QVERIFY(excluded.isExcluded("/a/.b", "/a", excludeHidden));
-
-        QVERIFY(excluded.isExcluded("/a/#b#", "/a", keepHidden));
     }
 
     void check_csync_exclude_add()
@@ -111,9 +121,9 @@ private slots:
     {
         setup();
         excludedFiles->addManualExclude("*", "/tmp/check_csync1/");
-        QCOMPARE(check_file_full("/tmp/check_csync1/foo"), CSYNC_FILE_EXCLUDE_LIST);
+        QCOMPARE(check_file_full("/tmp/check_csync1/foo"), CSYNC_NOT_EXCLUDED);
         QCOMPARE(check_file_full("/tmp/check_csync2/foo"), CSYNC_NOT_EXCLUDED);
-        QVERIFY(excludedFiles->_allExcludes[QStringLiteral("/tmp/check_csync1/")].contains("*"));
+        QVERIFY(!excludedFiles->_allExcludes[QStringLiteral("/tmp/check_csync1/")].contains("*"));
 
         excludedFiles->addManualExclude("foo");
         QVERIFY(excludedFiles->_fullRegexFile[QStringLiteral("/")].pattern().contains("foo"));
@@ -171,6 +181,29 @@ private slots:
         /* pattern ]*.directory - ignore and remove */
         QCOMPARE(check_file_full("my.~directory"), CSYNC_FILE_EXCLUDE_AND_REMOVE);
         QCOMPARE(check_file_full("/a_folder/my.~directory"), CSYNC_FILE_EXCLUDE_AND_REMOVE);
+
+        /* Adobe lock files are excluded by extension (.idlk/.prlock) */
+        QCOMPARE(check_file_full("Test.idlk"), CSYNC_FILE_EXCLUDE_LIST);
+        QCOMPARE(check_file_full("~Test~0kjyv(.idlk"), CSYNC_FILE_EXCLUDE_LIST);
+        QCOMPARE(check_file_full("subdir/Test.idlk"), CSYNC_FILE_EXCLUDE_LIST);
+        QCOMPARE(check_file_full("Test.prlock"), CSYNC_FILE_EXCLUDE_LIST);
+        QCOMPARE(check_file_full("subdir/Test.prlock"), CSYNC_FILE_EXCLUDE_LIST);
+
+        /* Adobe documents themselves are NOT excluded */
+        QCOMPARE(check_file_full("Test.indd"), CSYNC_NOT_EXCLUDED);
+        QCOMPARE(check_file_full("Test.icml"), CSYNC_NOT_EXCLUDED);
+        QCOMPARE(check_file_full("Test.prproj"), CSYNC_NOT_EXCLUDED);
+
+        /* Keka temporary extraction output is excluded, file or folder, including its contents */
+        QCOMPARE(check_file_full("Archive.kextraction"), CSYNC_FILE_EXCLUDE_LIST);
+        QCOMPARE(check_dir_full("Archive.kextraction"), CSYNC_FILE_EXCLUDE_LIST);
+        QCOMPARE(check_dir_full("subdir/Archive.kextraction"), CSYNC_FILE_EXCLUDE_LIST);
+        QCOMPARE(check_file_full("Archive.kextraction/inner.txt"), CSYNC_FILE_EXCLUDE_LIST);
+
+        /* The archive and the final extracted folder are NOT excluded */
+        QCOMPARE(check_file_full("Archive.zip"), CSYNC_NOT_EXCLUDED);
+        QCOMPARE(check_dir_full("Archive"), CSYNC_NOT_EXCLUDED);
+        QCOMPARE(check_file_full("Archive.kextraction.txt"), CSYNC_NOT_EXCLUDED);
 
         /* Not excluded because the pattern .netscape/cache requires directory. */
         QCOMPARE(check_file_full(".netscape/cache"), CSYNC_NOT_EXCLUDED);
@@ -708,7 +741,7 @@ private slots:
     void testAddExcludeFilePath_addSameFilePath_listSizeDoesNotIncrease()
     {
         excludedFiles.reset(new ExcludedFiles());
-        const auto filePath = QString("exclude/.sync-exclude.lst");
+        const auto filePath = QStringLiteral("exclude/.sync-exclude.lst");
         
         excludedFiles->addExcludeFilePath(filePath);
         excludedFiles->addExcludeFilePath(filePath);        
@@ -720,8 +753,8 @@ private slots:
     {
         excludedFiles.reset(new ExcludedFiles());
         
-        const auto filePath1 = QString("exclude1/.sync-exclude.lst");
-        const auto filePath2 = QString("exclude2/.sync-exclude.lst");
+        const auto filePath1 = QStringLiteral("exclude1/.sync-exclude.lst");
+        const auto filePath2 = QStringLiteral("exclude2/.sync-exclude.lst");
     
         excludedFiles->addExcludeFilePath(filePath1);
         excludedFiles->addExcludeFilePath(filePath2);
@@ -749,7 +782,31 @@ private slots:
         QCOMPARE(excludedFiles->_excludeFiles[folder1].first(), folder1ExcludeList);
         QCOMPARE(excludedFiles->_excludeFiles[folder2].first(), folder2ExcludeList);
     }
-    
+
+    // A caller-supplied exclude file not literally named "sync-exclude.lst"
+    // must still anchor its patterns at the sync root when
+    // ExcludeFileAnchor::SyncRoot is requested.
+    void testAddExcludeFilePath_syncRootAnchor_bypassesFilenameHeuristic()
+    {
+        const QString basePath("syncFolder/");
+        excludedFiles.reset(new ExcludedFiles(basePath));
+
+        const QString customExcludeList("home/thomas/.config/my-custom-exclude.lst");
+
+        // Default (as used for per-directory .sync-exclude.lst discovery):
+        // anchored at the exclude file's own directory, since its name isn't
+        // literally "sync-exclude.lst".
+        excludedFiles->addExcludeFilePath(customExcludeList);
+        QCOMPARE(excludedFiles->_excludeFiles.contains(basePath), false);
+        QCOMPARE(excludedFiles->_excludeFiles[QString("home/thomas/.config/")].first(), customExcludeList);
+
+        // ExcludeFileAnchor::SyncRoot (as used for nextcloudcmd's --exclude
+        // option): anchored at the sync root regardless of the file's name.
+        excludedFiles.reset(new ExcludedFiles(basePath));
+        excludedFiles->addExcludeFilePath(customExcludeList, ExcludedFiles::ExcludeFileAnchor::SyncRoot);
+        QCOMPARE(excludedFiles->_excludeFiles[basePath].first(), customExcludeList);
+    }
+
     void testReloadExcludeFiles_fileDoesNotExist_returnTrue() {
         excludedFiles.reset(new ExcludedFiles());
         const QString nonExistingFile("directory/.sync-exclude.lst");

@@ -1,21 +1,15 @@
 /*
  * Copyright (C) by Krzesimir Nowak <krzesimir@endocode.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2017 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2013 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #ifndef MIRALL_CREDS_ABSTRACT_CREDENTIALS_H
 #define MIRALL_CREDS_ABSTRACT_CREDENTIALS_H
 
 #include <QObject>
+#include <QNetworkRequest>
 
 #include <csync.h>
 #include "owncloudlib.h"
@@ -32,6 +26,9 @@ class OWNCLOUDSYNC_EXPORT AbstractCredentials : public QObject
     Q_OBJECT
 
 public:
+    /// Don't add credentials if this is set on a QNetworkRequest
+    static constexpr QNetworkRequest::Attribute DontAddCredentialsAttribute = QNetworkRequest::User;
+
     AbstractCredentials();
     // No need for virtual destructor - QObject already has one.
 
@@ -54,11 +51,11 @@ public:
     /** Whether fetchFromKeychain() was called before. */
     [[nodiscard]] bool wasFetched() const { return _wasFetched; }
 
-    /** Trigger (async) fetching of credential information
+    /** Trigger (async) fetching of credential information using the appplication name
      *
      * Should set _wasFetched = true, and later emit fetched() when done.
      */
-    virtual void fetchFromKeychain() = 0;
+    virtual void fetchFromKeychain(const QString &appName = {}) = 0;
 
     /** Ask credentials from the user (typically async)
      *
@@ -88,7 +85,7 @@ public:
      */
     virtual void forgetSensitiveData() = 0;
 
-    static QString keychainKey(const QString &url, const QString &user, const QString &accountId);
+    static QString keychainKey(const QString &url, const QString &user, const QString &accountId, const QString &appName = {});
 
     /** If the job need to be restarted or queue, this does it and returns true. */
     virtual bool retryIfNeeded(AbstractNetworkJob *) { return false; }
@@ -107,6 +104,9 @@ Q_SIGNALS:
      * data or not.
      */
     void asked();
+
+    /** Emitted when persist() has finished writing credentials to the keychain. */
+    void credentialsPersisted();
 
 protected:
     Account *_account = nullptr;

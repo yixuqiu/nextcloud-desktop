@@ -1,15 +1,7 @@
 /*
- * Copyright (C) by Olivier Goffart <ogoffart@owncloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2017 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2014 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 #pragma once
 
@@ -58,7 +50,7 @@ public:
     bool isChoked() { return _choked; }
     void giveBandwidthQuota(qint64 bwq);
 
-signals:
+Q_SIGNALS:
 
 private:
     /// The local file to read data from
@@ -78,7 +70,7 @@ private:
     bool _bandwidthLimited = false; // if _bandwidthQuota will be used
     bool _choked = false; // if upload is paused (readData() will return 0)
     friend class BandwidthManager;
-public slots:
+public Q_SLOTS:
     void slotJobUploadProgress(qint64 sent, qint64 t);
 };
 
@@ -141,7 +133,7 @@ public:
         return std::chrono::milliseconds(_requestTimer.elapsed());
     }
 
-signals:
+Q_SIGNALS:
     void finishedSignal();
     void uploadProgress(qint64, qint64);
 
@@ -175,7 +167,7 @@ public:
     void start() override;
     bool finished() override;
 
-signals:
+Q_SIGNALS:
     void finishedSignal();
 };
 
@@ -256,7 +248,7 @@ public:
     void callUnlockFolder();
     bool isLikelyFinishedQuickly() override { return _item->_size < propagator()->smallFileSize(); }
 
-private slots:
+private Q_SLOTS:
     void slotComputeContentChecksum();
     // Content checksum computed, compute the transmission checksum
     void slotComputeTransmissionChecksum(const QByteArray &contentChecksumType, const QByteArray &contentChecksum);
@@ -265,7 +257,7 @@ private slots:
     // invoked when encrypted folder lock has been released
     void slotFolderUnlocked(const QByteArray &folderId, int httpReturnCode);
     // invoked on internal error to unlock a folder and failed
-    void slotOnErrorStartFolderUnlock(SyncFileItem::Status status, const QString &errorString);
+    void slotOnErrorStartFolderUnlock(OCC::SyncFileItem::Status status, const QString &errorString);
 
 public:
     virtual void doStartUpload() = 0;
@@ -274,10 +266,10 @@ public:
     void finalize();
     void abortWithError(SyncFileItem::Status status, const QString &error);
 
-public slots:
+public Q_SLOTS:
     void slotJobDestroyed(QObject *job);
 
-private slots:
+private Q_SLOTS:
     void slotPollFinished();
 
 protected:
@@ -361,9 +353,9 @@ public:
     }
 
     void doStartUpload() override;
-public slots:
+public Q_SLOTS:
     void abort(OCC::PropagatorJob::AbortType abortType) override;
-private slots:
+private Q_SLOTS:
     void startNextChunk();
     void slotPutFinished();
     void slotUploadProgress(qint64, qint64);
@@ -387,10 +379,10 @@ public:
 
     void doStartUpload() override;
 
-public slots:
-    void abort(OCC::PropagateUploadFileNG::AbortType abortType) override;
+public Q_SLOTS:
+    void abort(OCC::PropagatorJob::AbortType abortType) override;
 
-private slots:
+private Q_SLOTS:
     void slotPropfindFinished();
     void slotPropfindFinishedWithError();
     void slotPropfindIterate(const QString &name, const QMap<QString, QString> &properties);

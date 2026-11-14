@@ -1,15 +1,7 @@
 /*
- * Copyright (C) by Klaas Freitag <freitag@owncloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2017 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2013 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "owncloudgui.h"
@@ -17,37 +9,57 @@
 #include "account.h"
 #include "accountmanager.h"
 #include "accountstate.h"
+#include "activity/sortedactivitylistmodel.h"
+#include "activity/syncstatussummary.h"
 #include "application.h"
+#include "assistant/assistantcontroller.h"
+#include "assistant/assistantmodule.h"
 #include "callstatechecker.h"
+#include "conflictdialog.h"
+#include "conflictsolver.h"
 #include "emojimodel.h"
 #include "fileactivitylistmodel.h"
-#include "folderman.h"
-#include "guiutility.h"
-#include "logbrowser.h"
-#include "logger.h"
-#include "openfilemanager.h"
-#include "owncloudsetupwizard.h"
-#include "progressdispatcher.h"
-#include "settingsdialog.h"
-#include "theme.h"
-#include "wheelhandler.h"
-#include "syncconflictsmodel.h"
 #include "filedetails/datefieldbackend.h"
 #include "filedetails/filedetails.h"
 #include "filedetails/shareemodel.h"
 #include "filedetails/sharemodel.h"
 #include "filedetails/sortedsharemodel.h"
-#include "tray/sortedactivitylistmodel.h"
-#include "tray/syncstatussummary.h"
-#include "tray/unifiedsearchresultslistmodel.h"
+#include "folderman.h"
+#include "tray/usermodel.h"
+#include "governance/applygovernancelabel.h"
+#include "governance/deletegovernancelabel.h"
+#include "governance/getavailablegovernancelabels.h"
+#include "governance/getgovernancelabels.h"
+#include "governance/governancelabelslistmodel.h"
+#include "guiutility.h"
+#include "integration/fileactionsmodel.h"
+#include "logbrowser.h"
+#include "logger.h"
+#include "notificationsoundplayer.h"
+#include "openfilemanager.h"
+#include "owncloudsetupwizard.h"
+#include "progressdispatcher.h"
+#include "settingsdialog.h"
+#include "syncconflictsmodel.h"
+#include "syncengine.h"
+#include "theme.h"
+#include "tray/trayaccountappsmodel.h"
+#include "tray/trayactivationpolicy.h"
+#include "wheelhandler.h"
+#include "wizard/accountwizardcontroller.h"
+
+#include "filesystem.h"
+#include "common/utility_mac_sandbox.h"
 
 #ifdef WITH_LIBCLOUDPROVIDERS
 #include "cloudproviders/cloudprovidermanager.h"
 #endif
 
-#include <QQmlApplicationEngine>
+#include <QClipboard>
 #include <QDesktopServices>
 #include <QDir>
+#include <QFileDialog>
+#include <QGuiApplication>
 #include <QMessageBox>
 #include <QSignalMapper>
 #ifdef WITH_LIBCLOUDPROVIDERS
@@ -56,13 +68,20 @@
 #endif
 
 #include <QAbstractItemModel>
-#include <QQmlEngine>
 #include <QQmlComponent>
-#include <QQmlApplicationEngine>
-#include <QQuickItem>
 #include <QQmlContext>
+#include <QQmlEngine>
+#include <QQuickItem>
+
+#ifdef Q_OS_MACOS
+#include "foregroundbackground_interface.h"
+#endif
 
 #ifdef BUILD_FILE_PROVIDER_MODULE
+#include "libsync/networkjobs.h"
+#include "macOS/fileprovider.h"
+#include "macOS/fileproviderdomainmanager.h"
+#include "macOS/fileproviderservice.h"
 #include "macOS/fileprovidersettingscontroller.h"
 #endif
 
@@ -83,7 +102,7 @@ ownCloudGui::ownCloudGui(Application *parent)
     , _app(parent)
 {
     _tray = Systray::instance();
-    _tray->setTrayEngine(new QQmlApplicationEngine(this));
+    _tray->createTrayEngine();
     // for the beginning, set the offline icon until the account was verified
     _tray->setIcon(Theme::instance()->folderOfflineIcon(/*systray?*/ true));
 
@@ -101,6 +120,11 @@ ownCloudGui::ownCloudGui(Application *parent)
     connect(_tray.data(), &Systray::openSettings,
         this, &ownCloudGui::slotShowSettings);
 
+#ifdef Q_OS_MACOS
+    connect(_tray.data(), &Systray::openSettingsForSandboxReapproval,
+        this, &ownCloudGui::slotShowSettingsForSandboxReapproval);
+#endif
+
     connect(_tray.data(), &Systray::shutdown,
         this, &QCoreApplication::quit);
 
@@ -109,8 +133,17 @@ ownCloudGui::ownCloudGui(Application *parent)
         &ownCloudGui::slotUpdateProgress);
 
     FolderMan *folderMan = FolderMan::instance();
-    connect(folderMan, &FolderMan::folderSyncStateChange,
-        this, &ownCloudGui::slotSyncStateChange);
+    connect(folderMan, &FolderMan::folderSyncStateChange, this, &ownCloudGui::slotSyncStateChange);
+    connect(folderMan, &FolderMan::folderSyncStateChange, this, &ownCloudGui::slotComputeOverallSyncStatus);
+
+
+#ifdef BUILD_FILE_PROVIDER_MODULE
+    connect(Mac::FileProvider::instance()->service(), &Mac::FileProviderService::syncStateChanged, this, &ownCloudGui::slotComputeOverallSyncStatus);
+    connect(Mac::FileProvider::instance()->service(), &Mac::FileProviderService::showFileActionsDialog, _tray.data(), &Systray::slotShowFileProviderFileActionsDialog);
+    connect(Mac::FileProvider::instance()->service(), &Mac::FileProviderService::showUnifiedSharingDialog, _tray.data(), &Systray::slotShowFileProviderUnifiedSharingDialog);
+    connect(Mac::FileProvider::instance()->service(), &Mac::FileProviderService::openItemInBrowserRequested, this, &ownCloudGui::slotOpenItemInBrowserFromFileProvider);
+    connect(Mac::FileProvider::instance()->service(), &Mac::FileProviderService::copyInternalLinkRequested, this, &ownCloudGui::slotCopyInternalLinkFromFileProvider);
+#endif
 
     connect(Logger::instance(), &Logger::guiLog, this, &ownCloudGui::slotShowTrayMessage);
     connect(Logger::instance(), &Logger::guiMessage, this, &ownCloudGui::slotShowGuiMessage);
@@ -123,22 +156,35 @@ ownCloudGui::ownCloudGui(Application *parent)
     qmlRegisterType<SortedActivityListModel>("com.nextcloud.desktopclient", 1, 0, "SortedActivityListModel");
     qmlRegisterType<WheelHandler>("com.nextcloud.desktopclient", 1, 0, "WheelHandler");
     qmlRegisterType<CallStateChecker>("com.nextcloud.desktopclient", 1, 0, "CallStateChecker");
+    qmlRegisterType<NotificationSoundPlayer>("com.nextcloud.desktopclient", 1, 0, "NotificationSoundPlayer");
     qmlRegisterType<Quick::DateFieldBackend>("com.nextcloud.desktopclient", 1, 0, "DateFieldBackend");
     qmlRegisterType<FileDetails>("com.nextcloud.desktopclient", 1, 0, "FileDetails");
     qmlRegisterType<ShareModel>("com.nextcloud.desktopclient", 1, 0, "ShareModel");
     qmlRegisterType<ShareeModel>("com.nextcloud.desktopclient", 1, 0, "ShareeModel");
     qmlRegisterType<SortedShareModel>("com.nextcloud.desktopclient", 1, 0, "SortedShareModel");
     qmlRegisterType<SyncConflictsModel>("com.nextcloud.desktopclient", 1, 0, "SyncConflictsModel");
+    qmlRegisterType<FileActionsModel>("com.nextcloud.desktopclient", 1, 0, "FileActionsModel");
+    qmlRegisterType<AccountWizardController>("com.nextcloud.desktopclient", 1, 0, "AccountWizardController");
+    qmlRegisterType<ApplyGovernanceLabel>("com.nextcloud.desktopclient", 1, 0, "ApplyGovernanceLabel");
+    qmlRegisterType<DeleteGovernanceLabel>("com.nextcloud.desktopclient", 1, 0, "DeleteGovernanceLabel");
+    qmlRegisterType<GetAvailableGovernanceLabels>("com.nextcloud.desktopclient", 1, 0, "GetAvailableGovernanceLabels");
+    qmlRegisterType<GetGovernanceLabels>("com.nextcloud.desktopclient", 1, 0, "GetGovernanceLabels");
+    qmlRegisterType<GovernanceLabelsListModel>("com.nextcloud.desktopclient", 1, 0, "GovernanceLabelsListModel");
 
     qmlRegisterUncreatableType<QAbstractItemModel>("com.nextcloud.desktopclient", 1, 0, "QAbstractItemModel", "QAbstractItemModel");
-    qmlRegisterUncreatableType<Activity>("com.nextcloud.desktopclient", 1, 0, "Activity", "Activity");
-    qmlRegisterUncreatableType<TalkNotificationData>("com.nextcloud.desktopclient", 1, 0, "TalkNotificationData", "TalkNotificationData");
-    qmlRegisterUncreatableType<UnifiedSearchResultsListModel>("com.nextcloud.desktopclient", 1, 0, "UnifiedSearchResultsListModel", "UnifiedSearchResultsListModel");
-    qmlRegisterUncreatableType<UserStatus>("com.nextcloud.desktopclient", 1, 0, "UserStatus", "Access to Status enum");
-    qmlRegisterUncreatableType<Sharee>("com.nextcloud.desktopclient", 1, 0, "Sharee", "Access to Type enum");
+    qmlRegisterUncreatableType<AssistantController>(
+        "com.nextcloud.desktopclient", 1, 0, "AssistantController", "Owned by the Assistant window");
+    qmlRegisterUncreatableType<Activity>("com.nextcloud.desktopclient", 1, 0, "activity", "Activity");
+    qmlRegisterUncreatableType<TalkNotificationData>("com.nextcloud.desktopclient", 1, 0, "talkNotificationData", "TalkNotificationData");
+    qmlRegisterUncreatableType<UserStatus>("com.nextcloud.desktopclient", 1, 0, "userStatus", "Access to Status enum");
+    qmlRegisterUncreatableType<Sharee>("com.nextcloud.desktopclient", 1, 0, "sharee", "Access to Type enum");
+    qmlRegisterUncreatableType<ClientSideEncryptionTokenSelector>("com.nextcloud.desktopclient", 1, 0, "ClientSideEncryptionTokenSelector", "Access to the certificate selector");
+    qmlRegisterUncreatableType<GovernanceNetworkJob>("com.nextcloud.desktopclient", 1, 0, "GovernanceNetworkJob", "base abstract type for governance labels");
+    qmlRegisterUncreatableType<TypedGovernanceNetworkJob>("com.nextcloud.desktopclient", 1, 0, "TypedGovernanceNetworkJob", "base abstract type for governance labels");
+    qmlRegisterUncreatableType<TypedWithLabelIdGovernanceNetworkJob>("com.nextcloud.desktopclient", 1, 0, "TypedWithLabelIdGovernanceNetworkJob", "base abstract type for governance labels");
 
     qRegisterMetaType<ActivityListModel *>("ActivityListModel*");
-    qRegisterMetaType<UnifiedSearchResultsListModel *>("UnifiedSearchResultsListModel*");
+    qRegisterMetaType<SyncStatusSummary *>("SyncStatusSummary*");
     qRegisterMetaType<UserStatus>("UserStatus");
     qRegisterMetaType<SharePtr>("SharePtr");
     qRegisterMetaType<ShareePtr>("ShareePtr");
@@ -146,13 +192,9 @@ ownCloudGui::ownCloudGui(Application *parent)
     qRegisterMetaType<OCC::ActivityList>("ActivityList");
 
     qmlRegisterSingletonInstance("com.nextcloud.desktopclient", 1, 0, "UserModel", UserModel::instance());
-    qmlRegisterSingletonInstance("com.nextcloud.desktopclient", 1, 0, "UserAppsModel", UserAppsModel::instance());
+    qmlRegisterSingletonInstance("com.nextcloud.desktopclient", 1, 0, "TrayAccountAppsModel", TrayAccountAppsModel::instance());
     qmlRegisterSingletonInstance("com.nextcloud.desktopclient", 1, 0, "Theme", Theme::instance());
     qmlRegisterSingletonInstance("com.nextcloud.desktopclient", 1, 0, "Systray", Systray::instance());
-
-#ifdef BUILD_FILE_PROVIDER_MODULE
-    qmlRegisterSingletonInstance("com.nextcloud.desktopclient", 1, 0, "FileProviderSettingsController", Mac::FileProviderSettingsController::instance());
-#endif
 }
 
 void ownCloudGui::createTray()
@@ -205,22 +247,30 @@ void ownCloudGui::slotOpenMainDialog()
 
 void ownCloudGui::slotTrayClicked(QSystemTrayIcon::ActivationReason reason)
 {
-    if (reason == QSystemTrayIcon::DoubleClick && UserModel::instance()->currentUser()->hasLocalFolder()) {
-        UserModel::instance()->openCurrentAccountLocalFolder();
-    } else if (reason == QSystemTrayIcon::Trigger) {
-        if (OwncloudSetupWizard::bringWizardToFrontIfVisible()) {
-            // brought wizard to front
+    const auto currentUser = UserModel::instance()->currentUser();
+    if (reason == QSystemTrayIcon::DoubleClick && currentUser && currentUser->hasLocalFolder()) {
+        currentUser->openLocalFolder();
+    } else if (TrayActivationPolicy::opensPrimaryPopup(reason)) {
+#ifdef Q_OS_MACOS
+        // Focus loss can hide the popup before Qt emits the icon activation.
+        if (macOSTrayPopupWasVisibleAtCurrentMouseDown()) {
+            _tray->hideWindow();
+            return;
+        }
+#endif
+        if (AccountManager::instance()->accounts().isEmpty()) {
+            // Without a configured account the tray icon drives the setup wizard
+            // directly: open it, or bring the existing one back to front instead
+            // of opening a second wizard.
+            if (!OwncloudSetupWizard::bringWizardToFrontIfVisible()) {
+                slotNewAccountWizard();
+            }
         } else if (_tray->raiseDialogs()) {
             // Brings dialogs hidden by other apps to front, returns true if any raised
         } else if (_tray->isOpen()) {
             _tray->hideWindow();
         } else {
-            if (AccountManager::instance()->accounts().isEmpty()) {
-                this->slotOpenSettingsDialog();
-            } else {
-                _tray->showWindow();
-            }
-
+            _tray->showTrayPopup();
         }
     }
     // FIXME: Also make sure that any auto updater dialogue https://github.com/owncloud/client/issues/5613
@@ -229,8 +279,6 @@ void ownCloudGui::slotTrayClicked(QSystemTrayIcon::ActivationReason reason)
 
 void ownCloudGui::slotSyncStateChange(Folder *folder)
 {
-    slotComputeOverallSyncStatus();
-
     if (!folder) {
         return; // Valid, just a general GUI redraw was needed.
     }
@@ -243,13 +291,8 @@ void ownCloudGui::slotSyncStateChange(Folder *folder)
         || result.status() == SyncResult::Problem
         || result.status() == SyncResult::SyncAbortRequested
         || result.status() == SyncResult::Error) {
-        Logger::instance()->enterNextLogFile();
+        Logger::instance()->enterNextLogFile(QStringLiteral("nextcloud.log"), OCC::Logger::LogType::Log);
     }
-}
-
-void ownCloudGui::slotFoldersChanged()
-{
-    slotComputeOverallSyncStatus();
 }
 
 void ownCloudGui::slotOpenPath(const QString &path)
@@ -257,12 +300,7 @@ void ownCloudGui::slotOpenPath(const QString &path)
     showInFileManager(path);
 }
 
-void ownCloudGui::slotAccountStateChanged()
-{
-    slotComputeOverallSyncStatus();
-}
-
-void ownCloudGui::slotTrayMessageIfServerUnsupported(Account *account)
+void ownCloudGui::slotTrayMessageIfServerUnsupported(const AccountPtr &account)
 {
     if (account->serverVersionUnsupported()) {
         slotShowTrayMessage(
@@ -274,59 +312,122 @@ void ownCloudGui::slotTrayMessageIfServerUnsupported(Account *account)
     }
 }
 
+void ownCloudGui::slotNeedToAcceptTermsOfService(const OCC::AccountPtr &account,
+                                                 const OCC::AccountState::State state)
+{
+    if (state == AccountState::NeedToSignTermsOfService) {
+        slotShowTrayMessage(
+            tr("Terms of service"),
+            tr("Your account %1 requires you to accept the terms of service of your server. "
+               "You will be redirected to %2 to acknowledge that you have read it and agrees with it.")
+                .arg(account->displayName(), account->url().toString()));
+        QDesktopServices::openUrl(account->url());
+    }
+}
+
 void ownCloudGui::slotComputeOverallSyncStatus()
 {
     bool allSignedOut = true;
     bool allPaused = true;
-    bool allDisconnected = true;
     QVector<AccountStatePtr> problemAccounts;
-    auto setStatusText = [&](const QString &text) {
-        // FIXME: So this doesn't do anything? Needs to be revisited
-        Q_UNUSED(text)
-        // Don't overwrite the status if we're currently syncing
-        if (FolderMan::instance()->isAnySyncRunning())
-            return;
-        //_actionStatus->setText(text);
-    };
 
-    foreach (auto a, AccountManager::instance()->accounts()) {
-        if (!a->isSignedOut()) {
+    const auto &allAccounts = AccountManager::instance()->accounts();
+
+    for (const auto &account : allAccounts) {
+        if (!account->isSignedOut()) {
             allSignedOut = false;
         }
-        if (!a->isConnected()) {
-            problemAccounts.append(a);
-        } else {
-            allDisconnected = false;
+
+        if (!account->isConnected()) {
+            problemAccounts.append(account);
         }
     }
-    foreach (Folder *f, FolderMan::instance()->map()) {
-        if (!f->syncPaused()) {
+    for (const auto folder : FolderMan::instance()->map()) {
+        if (!folder->syncPaused()) {
             allPaused = false;
         }
     }
 
+#ifdef BUILD_FILE_PROVIDER_MODULE
+    QList<QString> problemFileProviderAccounts;
+    QList<QString> errorFileProviderAccounts;
+    QList<QString> syncingFileProviderAccounts;
+    QList<QString> successFileProviderAccounts;
+    QList<QString> idleFileProviderAccounts;
+
+    for (const auto &accountState : allAccounts) {
+        const auto account = accountState->account();
+        const auto userIdAtHostWithPort = account->userIdAtHostWithPort();
+
+        if (!Mac::FileProviderSettingsController::instance()->vfsEnabledForAccount(userIdAtHostWithPort)) {
+            continue;
+        }
+
+        allPaused = false;
+        const auto fileProvider = Mac::FileProvider::instance();
+        const auto accountFpId = account->fileProviderDomainIdentifier();
+        const auto displayName = account->displayName();
+        const auto accountTooltipLabel = displayName.isEmpty() ? userIdAtHostWithPort : displayName;
+
+        if (!fileProvider->xpc()->fileProviderDomainReachable(accountFpId)) {
+            // Unreachable XPC stays in the yellow "Problem" bucket (legacy behavior); the
+            // domain might just be coming up. Only proper failure states (`Error`/`SetupError`)
+            // earn the red icon.
+            problemFileProviderAccounts.append(accountTooltipLabel);
+        } else {
+            switch (fileProvider->service()->latestReceivedSyncStatusForAccount(accountState->account())) {
+            case SyncResult::Undefined:
+            case SyncResult::NotYetStarted:
+                idleFileProviderAccounts.append(accountTooltipLabel);
+                break;
+            case SyncResult::SyncPrepare:
+            case SyncResult::SyncRunning:
+            case SyncResult::SyncAbortRequested:
+                syncingFileProviderAccounts.append(accountTooltipLabel);
+                break;
+            case SyncResult::Success:
+                successFileProviderAccounts.append(accountTooltipLabel);
+                break;
+            case SyncResult::Problem:
+                // Yellow tray icon — soft warning. Reserve for cases like unresolved
+                // conflicts coexisting with an otherwise successful sync.
+                problemFileProviderAccounts.append(accountTooltipLabel);
+                break;
+            case SyncResult::Error:
+            case SyncResult::SetupError:
+                // Red tray icon — an actual operation failed (e.g. quota refusal). Tracked
+                // separately from Problem so the icon below can correctly map to
+                // `SyncResult::Error` rather than `Problem`. Without this split, every
+                // `SYNC_FAILED` from the FPE — including insufficient-quota refusals —
+                // landed in the same bucket as soft warnings and showed the yellow icon.
+                // See https://github.com/nextcloud/desktop/issues/9598.
+                errorFileProviderAccounts.append(accountTooltipLabel);
+                break;
+            case SyncResult::Paused: // This is not technically possible with VFS
+                break;
+            }
+        }
+    }
+#endif
+
     if (!problemAccounts.empty()) {
         _tray->setIcon(Theme::instance()->folderOfflineIcon(true));
-        if (allDisconnected) {
-            setStatusText(tr("Disconnected"));
-        } else {
-            setStatusText(tr("Disconnected from some accounts"));
-        }
 #ifdef Q_OS_WIN
         // Windows has a 128-char tray tooltip length limit.
         QStringList accountNames;
-        foreach (AccountStatePtr a, problemAccounts) {
+        for (const AccountStatePtr &a : problemAccounts) {
             accountNames.append(a->account()->displayName());
         }
         _tray->setToolTip(tr("Disconnected from %1").arg(accountNames.join(QLatin1String(", "))));
 #else
         QStringList messages;
         messages.append(tr("Disconnected from accounts:"));
-        foreach (AccountStatePtr a, problemAccounts) {
-            QString message = tr("Account %1: %2").arg(a->account()->displayName(), a->stateString(a->state()));
-            if (!a->connectionErrors().empty()) {
+        for (const auto &accountState : std::as_const(problemAccounts)) {
+            //: %1 is the account display name. %2 is the account connection status.
+            QString message = tr("Account %1: %2").arg(accountState->account()->displayName(), accountState->stateString(accountState->state()));
+            if (!accountState->connectionErrors().empty()) {
                 message += QLatin1String("\n");
-                message += a->connectionErrors().join(QLatin1String("\n"));
+                message += accountState->connectionErrors().join(QLatin1String("\n"));
             }
             messages.append(message);
         }
@@ -338,12 +439,10 @@ void ownCloudGui::slotComputeOverallSyncStatus()
     if (allSignedOut) {
         _tray->setIcon(Theme::instance()->folderOfflineIcon(true));
         _tray->setToolTip(tr("Please sign in"));
-        setStatusText(tr("Signed out"));
         return;
     } else if (allPaused) {
         _tray->setIcon(Theme::instance()->syncStateIcon(SyncResult::Paused, true));
         _tray->setToolTip(tr("Account synchronization is disabled"));
-        setStatusText(tr("Synchronization is paused"));
         return;
     }
 
@@ -354,7 +453,28 @@ void ownCloudGui::slotComputeOverallSyncStatus()
 
     SyncResult::Status overallStatus = SyncResult::Undefined;
     bool hasUnresolvedConflicts = false;
-    FolderMan::trayOverallStatus(map.values(), &overallStatus, &hasUnresolvedConflicts);
+    ProgressInfo *overallProgressInfo = nullptr;
+    FolderMan::trayOverallStatus(map.values(), &overallStatus, &hasUnresolvedConflicts, &overallProgressInfo);
+
+#ifdef BUILD_FILE_PROVIDER_MODULE
+    if (!errorFileProviderAccounts.isEmpty()) {
+        overallStatus = SyncResult::Error;
+    } else if (!problemFileProviderAccounts.isEmpty()) {
+        overallStatus = SyncResult::Problem;
+    } else if (!syncingFileProviderAccounts.isEmpty() &&
+               overallStatus != SyncResult::SyncRunning &&
+               overallStatus != SyncResult::Problem &&
+               overallStatus != SyncResult::Error &&
+               overallStatus != SyncResult::SetupError) {
+        overallStatus = SyncResult::SyncRunning;
+    } else if ((!successFileProviderAccounts.isEmpty() || (problemFileProviderAccounts.isEmpty() && errorFileProviderAccounts.isEmpty() && syncingFileProviderAccounts.isEmpty() && !idleFileProviderAccounts.isEmpty())) &&
+               overallStatus != SyncResult::SyncRunning &&
+               overallStatus != SyncResult::Problem &&
+               overallStatus != SyncResult::Error &&
+               overallStatus != SyncResult::SetupError) {
+        overallStatus = SyncResult::Success;
+    }
+#endif
 
     // If the sync succeeded but there are unresolved conflicts,
     // show the problem icon!
@@ -372,37 +492,44 @@ void ownCloudGui::slotComputeOverallSyncStatus()
     _tray->setIcon(statusIcon);
 
     // create the tray blob message, check if we have an defined state
+#ifdef BUILD_FILE_PROVIDER_MODULE
+    if (!map.isEmpty() || !syncingFileProviderAccounts.isEmpty() || !successFileProviderAccounts.isEmpty() || !problemFileProviderAccounts.isEmpty() || !errorFileProviderAccounts.isEmpty()) {
+#else
     if (map.count() > 0) {
+#endif
 #ifdef Q_OS_WIN
         // Windows has a 128-char tray tooltip length limit.
-        trayMessage = folderMan->trayTooltipStatusString(overallStatus, hasUnresolvedConflicts, false);
+        trayMessage = folderMan->trayTooltipStatusString(overallStatus, hasUnresolvedConflicts, false, overallProgressInfo);
 #else
         QStringList allStatusStrings;
-        foreach (Folder *folder, map.values()) {
-            QString folderMessage = FolderMan::trayTooltipStatusString(
-                folder->syncResult().status(),
-                folder->syncResult().hasUnresolvedConflicts(),
-                folder->syncPaused());
-            allStatusStrings += tr("Folder %1: %2").arg(folder->shortGuiLocalPath(), folderMessage);
+        const auto folders = map.values();
+        for (const auto folder : folders) {
+            QString folderMessage = FolderMan::trayTooltipStatusString(folder->syncResult().status(),
+                                                                       folder->syncResult().hasUnresolvedConflicts(),
+                                                                       folder->syncPaused(),
+                                                                       folder->syncEngine().progressInfo());
+            //: Example text: "Nextcloud: Syncing 25MB (3 minutes left)"   (%1 is the folder name to be synced, %2 a status message for that folder)
+            allStatusStrings += tr("%1: %2").arg(folder->shortGuiLocalPath(), folderMessage);
         }
+#ifdef BUILD_FILE_PROVIDER_MODULE
+        for (const auto &accountId : syncingFileProviderAccounts) {
+            allStatusStrings += tr("macOS VFS for %1: Sync is running.").arg(accountId);
+        }
+        for (const auto &accountId : successFileProviderAccounts) {
+            allStatusStrings += tr("macOS VFS for %1: Last sync was successful.").arg(accountId);
+        }
+        for (const auto &accountId : problemFileProviderAccounts) {
+            allStatusStrings += tr("macOS VFS for %1: A problem was encountered.").arg(accountId);
+        }
+        for (const auto &accountId : errorFileProviderAccounts) {
+            allStatusStrings += tr("macOS VFS for %1: An error was encountered.").arg(accountId);
+        }
+#endif
         trayMessage = allStatusStrings.join(QLatin1String("\n"));
 #endif
         _tray->setToolTip(trayMessage);
-
-        if (overallStatus == SyncResult::Success || overallStatus == SyncResult::Problem) {
-            if (hasUnresolvedConflicts) {
-                setStatusText(tr("Unresolved conflicts"));
-            } else {
-                setStatusText(tr("Up to date"));
-            }
-        } else if (overallStatus == SyncResult::Paused) {
-            setStatusText(tr("Synchronization is paused"));
-        } else {
-            setStatusText(tr("Error during synchronization"));
-        }
     } else {
         _tray->setToolTip(tr("There are no sync folders configured."));
-        setStatusText(tr("No sync folders configured"));
     }
 }
 
@@ -458,7 +585,6 @@ void ownCloudGui::slotUpdateProgress(const QString &folder, const ProgressInfo &
 {
     Q_UNUSED(folder);
 
-    // FIXME: Lots of messages computed for nothing in this method, needs revisiting
     if (progress.status() == ProgressInfo::Discovery) {
 #if 0
         if (!progress._currentDiscoveredRemoteFolder.isEmpty()) {
@@ -476,44 +602,19 @@ void ownCloudGui::slotUpdateProgress(const QString &folder, const ProgressInfo &
         return;
     }
 
-    if (progress.totalSize() == 0) {
-        qint64 currentFile = progress.currentFile();
-        qint64 totalFileCount = qMax(progress.totalFiles(), currentFile);
-        QString msg;
-        if (progress.trustEta()) {
-            msg = tr("Syncing %1 of %2 (%3 left)")
-                      .arg(currentFile)
-                      .arg(totalFileCount)
-                      .arg(Utility::durationToDescriptiveString2(progress.totalProgress().estimatedEta));
-        } else {
-            msg = tr("Syncing %1 of %2")
-                      .arg(currentFile)
-                      .arg(totalFileCount);
-        }
-        //_actionStatus->setText(msg);
-    } else {
-        QString totalSizeStr = Utility::octetsToString(progress.totalSize());
-        QString msg;
-        if (progress.trustEta()) {
-            msg = tr("Syncing %1 (%2 left)")
-                      .arg(totalSizeStr, Utility::durationToDescriptiveString2(progress.totalProgress().estimatedEta));
-        } else {
-            msg = tr("Syncing %1")
-                      .arg(totalSizeStr);
-        }
-        //_actionStatus->setText(msg);
-    }
+    slotComputeOverallSyncStatus();
 
     if (!progress._lastCompletedItem.isEmpty()) {
 
         QString kindStr = Progress::asResultString(progress._lastCompletedItem);
         QString timeStr = QTime::currentTime().toString("hh:mm");
+        //: %1 is the file name. %2 is the sync result. %3 is the current time.
         QString actionText = tr("%1 (%2, %3)").arg(progress._lastCompletedItem._file, kindStr, timeStr);
         auto *action = new QAction(actionText, this);
         Folder *f = FolderMan::instance()->folder(folder);
         if (f) {
             QString fullPath = f->path() + '/' + progress._lastCompletedItem._file;
-            if (QFile(fullPath).exists()) {
+            if (FileSystem::fileExists(fullPath)) {
                 connect(action, &QAction::triggered, this, [this, fullPath] { this->slotOpenPath(fullPath); });
             } else {
                 action->setEnabled(false);
@@ -532,8 +633,8 @@ void ownCloudGui::slotLogin()
         account->account()->resetRejectedCertificates();
         account->signIn();
     } else {
-        auto list = AccountManager::instance()->accounts();
-        foreach (const auto &a, list) {
+        const auto list = AccountManager::instance()->accounts();
+        for (const auto &a : list) {
             a->signIn();
         }
     }
@@ -547,7 +648,7 @@ void ownCloudGui::slotLogout()
         list.append(account);
     }
 
-    foreach (const auto &ai, list) {
+    for (const auto &ai : std::as_const(list)) {
         ai->signOutByUi();
     }
 }
@@ -559,7 +660,7 @@ void ownCloudGui::slotNewAccountWizard()
         return;
     }
 #endif
-    OwncloudSetupWizard::runWizard(qApp, SLOT(slotownCloudWizardDone(int)));
+    OwncloudSetupWizard::runWizard(qApp, SLOT(slotownCloudWizardDone(int)), nullptr, true);
 }
 
 void ownCloudGui::slotShowGuiMessage(const QString &title, const QString &message)
@@ -578,6 +679,15 @@ void ownCloudGui::slotShowSettings()
     if (_settingsDialog.isNull()) {
         _settingsDialog = new SettingsDialog(this);
         _settingsDialog->setAttribute(Qt::WA_DeleteOnClose, true);
+
+#ifdef Q_OS_MACOS
+        auto *fgbg = new ForegroundBackground();
+        _settingsDialog->installEventFilter(fgbg);
+#endif
+
+        connect(_tray.data(), &Systray::hideSettingsDialog,
+                _settingsDialog.data(), &SettingsDialog::close);
+
         _settingsDialog->show();
     }
     raiseDialog(_settingsDialog.data());
@@ -585,8 +695,36 @@ void ownCloudGui::slotShowSettings()
 
 void ownCloudGui::slotSettingsDialogActivated()
 {
-    emit isShowingSettingsDialog();
+    Q_EMIT isShowingSettingsDialog();
 }
+
+#ifdef Q_OS_MACOS
+void ownCloudGui::slotShowSettingsForSandboxReapproval()
+{
+    AccountState *targetAccount = nullptr;
+    for (const auto &folder : FolderMan::instance()->map()) {
+        if (folder->needsSandboxBookmark()) {
+            targetAccount = folder->accountState();
+            break;
+        }
+    }
+
+    const auto dialogAlreadyExisted = !_settingsDialog.isNull();
+    slotShowSettings();
+
+    if (targetAccount && !_settingsDialog.isNull()) {
+        if (dialogAlreadyExisted) {
+            // Dialog was already open — no timer race, switch page directly.
+            _settingsDialog->showAccount(targetAccount);
+        } else {
+            // Dialog was just created — its constructor queued a 1 ms
+            // QTimer::singleShot for showFirstPage(). Store the account so
+            // showFirstPage() navigates there instead of the General tab.
+            _settingsDialog->setInitialAccount(targetAccount);
+        }
+    }
+}
+#endif
 
 void ownCloudGui::slotShowSyncProtocol()
 {
@@ -600,10 +738,12 @@ void ownCloudGui::slotShutdown()
     // explicitly close windows. This is somewhat of a hack to ensure
     // that saving the geometries happens ASAP during a OS shutdown
     // those do delete on close
-    if (!_settingsDialog.isNull())
+    if (!_settingsDialog.isNull()) {
         _settingsDialog->close();
-    if (!_logBrowser.isNull())
+    }
+    if (!_logBrowser.isNull()) {
         _logBrowser->deleteLater();
+    }
 }
 
 void ownCloudGui::slotToggleLogBrowser()
@@ -660,14 +800,123 @@ void ownCloudGui::raiseDialog(QWidget *raiseWidget)
 }
 
 
-void ownCloudGui::slotShowShareDialog(const QString &localPath) const
+void ownCloudGui::slotShowShareDialog(const QString &localPath, const QString &fileId) const
 {
-    _tray->createShareDialog(localPath);
+    _tray->createShareDialog(localPath, fileId);
+}
+
+void ownCloudGui::slotShowGovernanceLabelsDialog(AccountPtr account,
+                                                 const QString &localPath,
+                                                 const QString &fileId) const
+{
+    _tray->createGovernanceLabelsDialog(account, localPath, fileId);
 }
 
 void ownCloudGui::slotShowFileActivityDialog(const QString &localPath) const
 {
     _tray->createFileActivityDialog(localPath);
 }
+
+void ownCloudGui::slotShowFileActionsDialog(const QString &localPath) const
+{
+    _tray->showFileActionsDialog(localPath);
+}
+
+void ownCloudGui::slotResolveConflict(const QString &conflictedPath, const QString &basePath, const QString &baseName, const QString &folderAlias) const
+{
+    // Show with open(), never exec(): this runs inside SocketApi::slotReadSocket and a modal loop would crash on a nullptr socket.
+    auto dialog = new ConflictDialog;
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setBaseFilename(baseName);
+    dialog->setLocalVersionFilename(conflictedPath);
+    dialog->setRemoteVersionFilename(basePath);
+    connect(dialog, &ConflictDialog::accepted, dialog, [folderAlias] {
+        if (const auto folder = FolderMan::instance()->folder(folderAlias)) {
+            folder->scheduleThisFolderSoon();
+        }
+    });
+    dialog->open();
+    raiseDialog(dialog);
+}
+
+void ownCloudGui::slotMoveItem(const QString &localPath, const QString &defaultTarget) const
+{
+    // Show with open(), never exec(): this runs inside SocketApi::slotReadSocket and a modal loop would crash on a freed socket.
+    auto dialog = new QFileDialog(nullptr, tr("Select new location …"), QFileInfo(defaultTarget).absolutePath());
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setAcceptMode(QFileDialog::AcceptSave);
+    dialog->setOptions(QFileDialog::HideNameFilterDetails);
+    dialog->selectUrl(QUrl::fromLocalFile(defaultTarget));
+    connect(dialog, &QFileDialog::urlSelected, dialog, [localPath](const QUrl &targetUrl) {
+        if (targetUrl.isEmpty()) {
+            return;
+        }
+
+#ifdef Q_OS_MACOS
+        const auto scopedAccess = Utility::MacSandboxSecurityScopedAccess::create(targetUrl);
+        if (!scopedAccess->isValid()) {
+            qCWarning(lcOwnCloudGui) << "Could not access resource for conflict resolution:" << targetUrl;
+            return;
+        }
+#endif
+
+        ConflictSolver solver;
+        solver.setLocalVersionFilename(localPath);
+        solver.setRemoteVersionFilename(targetUrl.toLocalFile());
+    });
+    dialog->open();
+    raiseDialog(dialog);
+}
+
+#ifdef BUILD_FILE_PROVIDER_MODULE
+void ownCloudGui::slotOpenItemInBrowserFromFileProvider(const QString &fileId, const QString &, const QString &fileProviderDomainIdentifier)
+{
+    const auto accountState = AccountManager::instance()->accountFromFileProviderDomainIdentifier(fileProviderDomainIdentifier);
+    if (!accountState) {
+        qCWarning(lcOwnCloudGui) << "Cannot open item in browser: no account state for domain identifier" << fileProviderDomainIdentifier;
+        return;
+    }
+
+    const auto account = accountState->account();
+    if (!account) {
+        qCWarning(lcOwnCloudGui) << "Cannot open item in browser: no account for domain identifier" << fileProviderDomainIdentifier;
+        return;
+    }
+
+    const auto url = account->internalLinkUrl(fileId.toUtf8());
+    if (url.isEmpty()) {
+        qCWarning(lcOwnCloudGui) << "Cannot open item in browser: no file ID.";
+        return;
+    }
+    Utility::openBrowser(url);
+}
+
+void ownCloudGui::slotCopyInternalLinkFromFileProvider(const QString &fileId, const QString &, const QString &fileProviderDomainIdentifier)
+{
+    const auto accountState = AccountManager::instance()->accountFromFileProviderDomainIdentifier(fileProviderDomainIdentifier);
+
+    if (!accountState) {
+        qCWarning(lcOwnCloudGui) << "Cannot copy internal link: no account state for domain identifier" << fileProviderDomainIdentifier;
+        return;
+    }
+
+    const auto account = accountState->account();
+
+    if (!account) {
+        qCWarning(lcOwnCloudGui) << "Cannot copy internal link: no account for domain identifier" << fileProviderDomainIdentifier;
+        return;
+    }
+
+    const auto url = account->internalLinkUrl(fileId.toUtf8());
+    if (url.isEmpty()) {
+        qCWarning(lcOwnCloudGui) << "Cannot copy internal link: no file ID.";
+        return;
+    }
+    QGuiApplication::clipboard()->setText(url.toString(QUrl::FullyEncoded));
+    if (_tray) {
+        _tray->showMessage(tr("Internal link copied"), tr("The internal link has been copied to the clipboard."), QSystemTrayIcon::Information);
+    }
+}
+#endif
 
 } // end namespace

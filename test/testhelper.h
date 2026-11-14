@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2019 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
 #ifndef TESTHELPER_H
 #define TESTHELPER_H
 
@@ -31,10 +36,25 @@ public:
         _state = Connected;
     }
 
-public slots:
+    static OCC::RemoteWipe *remoteWipe(OCC::AccountState *accountState)
+    {
+        return accountState->_remoteWipe;
+    }
+
+public Q_SLOTS:
     void checkConnectivity() override {};
 
-private slots:
+    void setStateForTesting(OCC::AccountState::State state)
+    {
+        if (_state == state) {
+            return;
+        }
+
+        _state = state;
+        Q_EMIT stateChanged(state);
+    }
+
+private Q_SLOTS:
     void setState(OCC::AccountState::State state) override { Q_UNUSED(state) };
 };
 

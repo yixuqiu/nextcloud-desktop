@@ -1,26 +1,21 @@
 /*
- * Copyright (C) 2022 by Claudio Cambra <claudio.cambra@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2022 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
-
 
 #include "fileprovider.h"
 
 #include <QLoggingCategory>
+#include <QMetaObject>
+#include <QOperatingSystemVersion>
+#include <QThread>
 
 #include "libsync/configfile.h"
 #include "gui/macOS/fileproviderxpc.h"
 
 #import <Foundation/Foundation.h>
+
+static_assert(__has_feature(objc_arc), "fileprovider_mac requires ARC.");
 
 namespace OCC {
 
@@ -34,41 +29,35 @@ FileProvider::FileProvider(QObject * const parent)
     : QObject(parent)
 {
     Q_ASSERT(!_instance);
+    qCDebug(lcMacFileProvider) << "Initializing...";
 
-    if (!fileProviderAvailable()) {
-        qCInfo(lcMacFileProvider) << "File provider system is not available on this version of macOS.";
-        deleteLater();
-        return;
-    }
-
-    qCInfo(lcMacFileProvider) << "Initialising file provider domain manager.";
+    // Keep the XPC interface available while domain discovery or migration is pending.
+    _xpc = std::make_unique<FileProviderXPC>();
     _domainManager = std::make_unique<FileProviderDomainManager>(this);
 
     if (_domainManager) {
-        connect(_domainManager.get(), &FileProviderDomainManager::domainSetupComplete, this, &FileProvider::configureXPC);
         _domainManager->start();
-        qCDebug(lcMacFileProvider()) << "Initialized file provider domain manager";
     }
 
-    qCDebug(lcMacFileProvider) << "Initialising file provider socket server.";
-    _socketServer = std::make_unique<FileProviderSocketServer>(this);
+    _service = std::make_unique<FileProviderService>(this);
 
-    if (_socketServer) {
-        qCDebug(lcMacFileProvider) << "Initialised file provider socket server.";
+    if (_service) {
+        qCDebug(lcMacFileProvider) << "Initialised file provider service.";
     }
 }
 
 FileProvider *FileProvider::instance()
 {
-    if (!fileProviderAvailable()) {
-        qCInfo(lcMacFileProvider) << "File provider system is not available on this version of macOS.";
-        return nullptr;
-    }
-
     if (!_instance) {
         _instance = new FileProvider();
     }
+
     return _instance;
+}
+
+bool FileProvider::available()
+{
+    return QOperatingSystemVersion::current() >= QOperatingSystemVersion::MacOSSonoma;
 }
 
 FileProvider::~FileProvider()
@@ -76,30 +65,77 @@ FileProvider::~FileProvider()
     _instance = nullptr;
 }
 
-bool FileProvider::fileProviderAvailable()
-{
-    if (@available(macOS 11.0, *)) {
-        return true;
-    }
-
-    return false;
-}
-
 void FileProvider::configureXPC()
 {
-    _xpc = std::make_unique<FileProviderXPC>(new FileProviderXPC(this));
+    if (QThread::currentThread() != thread()) {
+        QMetaObject::invokeMethod(
+            this,
+            [this] {
+                configureXPC();
+            },
+            Qt::BlockingQueuedConnection);
+        return;
+    }
+
+    if (!available()) {
+        qCInfo(lcMacFileProvider) << "Skipping file provider XPC configuration on unsupported macOS version.";
+        return;
+    }
+
+    _xpc = std::make_unique<FileProviderXPC>();
+
     if (_xpc) {
         qCInfo(lcMacFileProvider) << "Initialised file provider XPC.";
-        _xpc->connectToExtensions();
-        _xpc->configureExtensions();
+        _xpc->connectToFileProviderDomains();
+        _xpc->authenticateFileProviderDomains();
+        // Push the ignore list immediately after authenticating — the extension
+        // treats a missing ignore list the same way it treats missing
+        // credentials (rejecting callbacks with `.notAuthenticated`) so the
+        // two must be injected together, not only when the user happens to
+        // open the ignore-list settings UI.
+        _xpc->setIgnoreList();
     } else {
         qCWarning(lcMacFileProvider) << "Could not initialise file provider XPC.";
     }
 }
 
+std::optional<bool> FileProvider::fileProviderDomainHasDirtyUserData(const QString &fileProviderDomainIdentifier)
+{
+    if (QThread::currentThread() == thread()) {
+        const auto xpc = _xpc.get();
+        return xpc ? xpc->fileProviderDomainHasDirtyUserData(fileProviderDomainIdentifier) : std::nullopt;
+    }
+
+    std::optional<bool> hasDirtyUserData;
+    const auto invoked = QMetaObject::invokeMethod(
+        this,
+        [this, &hasDirtyUserData, fileProviderDomainIdentifier] {
+            const auto xpc = _xpc.get();
+            hasDirtyUserData = xpc ? xpc->fileProviderDomainHasDirtyUserData(fileProviderDomainIdentifier) : std::nullopt;
+        },
+        Qt::BlockingQueuedConnection);
+
+    if (!invoked) {
+        qCWarning(lcMacFileProvider) << "Could not check file provider domain for dirty user data." << fileProviderDomainIdentifier;
+        return std::nullopt;
+    }
+
+    return hasDirtyUserData;
+}
+
 FileProviderXPC *FileProvider::xpc() const
 {
     return _xpc.get();
+}
+
+FileProviderDomainManager *FileProvider::domainManager() const
+{
+    return _domainManager.get();
+}
+
+FileProviderService *FileProvider::service() const
+{
+    return _service.get();
 }
 
 } // namespace Mac

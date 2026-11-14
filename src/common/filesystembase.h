@@ -1,19 +1,7 @@
 /*
- * Copyright (C) by Olivier Goffart <ogoffart@owncloud.com>
- *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * SPDX-FileCopyrightText: 2018 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2017 ownCloud GmbH
+ * SPDX-License-Identifier: LGPL-2.1-or-later
  */
 
 #pragma once
@@ -27,6 +15,10 @@
 #include <QLoggingCategory>
 
 #include <ctime>
+
+#if !defined(Q_OS_MACOS) || __MAC_OS_X_VERSION_MIN_REQUIRED >= MAC_OS_X_VERSION_10_15
+#include <filesystem>
+#endif
 
 class QFile;
 
@@ -43,6 +35,11 @@ OCSYNC_EXPORT Q_DECLARE_LOGGING_CATEGORY(lcFileSystem)
  * @brief This file contains file system helper
  */
 namespace FileSystem {
+    OCSYNC_EXPORT Q_NAMESPACE;
+
+    OCSYNC_EXPORT std::filesystem::path toFilesystemPath(const QString &path);
+    OCSYNC_EXPORT QString fromFilesystemPath(const std::filesystem::path &path);
+
     enum class FolderPermissions {
         ReadOnly,
         ReadWrite,
@@ -52,6 +49,8 @@ namespace FileSystem {
      * @brief Mark the file as hidden  (only has effects on windows)
      */
     void OCSYNC_EXPORT setFileHidden(const QString &filename, bool hidden);
+
+    bool OCSYNC_EXPORT isFileHidden(const QString &filename);
 
     /**
      * @brief Marks the file as read-only.
@@ -90,6 +89,32 @@ namespace FileSystem {
     bool OCSYNC_EXPORT fileExists(const QString &filename, const QFileInfo & = QFileInfo());
 
     /**
+     * @brief Checks whether it is a dir.
+     *
+     * Use this over QFileInfo::isDir() and QFile::isDir() to avoid bugs with lnk
+     * files, see above.
+     */
+    bool OCSYNC_EXPORT isDir(const QString &filename, const QFileInfo& = QFileInfo());
+
+    /**
+     * @brief Checks whether it is a file.
+     *
+     * Use this over QFileInfo::isDir() and QFile::isDir() to avoid bugs with lnk
+     * files, see above.
+     */
+    bool OCSYNC_EXPORT isFile(const QString &filename, const QFileInfo& fileInfo = QFileInfo());
+
+    /**
+     * @brief Checks whether the file is writable.
+     *
+     * Use this over QFileInfo::isDir() and QFile::isDir() to avoid bugs with lnk
+     * files, see above.
+     */
+    bool OCSYNC_EXPORT isWritable(const QString &filename, const QFileInfo &fileInfo = QFileInfo());
+
+    bool OCSYNC_EXPORT isReadable(const QString &filename, const QFileInfo &fileInfo = QFileInfo());
+
+    /**
      * @brief Rename the file \a originFileName to \a destinationFileName.
      *
      * It behaves as QFile::rename() but handles .lnk files correctly on Windows.
@@ -99,18 +124,11 @@ namespace FileSystem {
         QString *errorString = nullptr);
 
     /**
-     * Rename the file \a originFileName to \a destinationFileName, and
-     * overwrite the destination if it already exists - without extra checks.
-     */
-    bool OCSYNC_EXPORT uncheckedRenameReplace(const QString &originFileName,
-        const QString &destinationFileName,
-        QString *errorString);
-
-    /**
      * Removes a file.
      *
      * Equivalent to QFile::remove(), except on Windows, where it will also
      * successfully remove read-only files.
+     * A symlink or junction is removed, not its target.
      */
     bool OCSYNC_EXPORT remove(const QString &fileName, QString *errorString = nullptr);
 
@@ -127,6 +145,16 @@ namespace FileSystem {
      * with QFileInfo! Calling seek() on the QFile with >32bit signed values will fail!
      */
     bool OCSYNC_EXPORT openAndSeekFileSharedRead(QFile *file, QString *error, qint64 seek);
+
+    /**
+     * Returns `path + "/" + file` with native directory separators.
+     * 
+     * If `path` ends in a directory separator this method will not insert another one in-between.
+     *
+     * In the case one of the parameters is empty, the other parameter will be returned with native
+     * directory separators and a warning is logged.
+     */
+    QString OCSYNC_EXPORT joinPath(const QString &path, const QString &file);
 
 #ifdef Q_OS_WIN
     /**
@@ -146,12 +174,25 @@ namespace FileSystem {
      *    the windows API functions work with the normal "unixoid" representation too.
      */
     QString OCSYNC_EXPORT pathtoUNC(const QString &str);
+
+    std::filesystem::perms OCSYNC_EXPORT filePermissionsWinSymlinkSafe(const QString &filename);
+    std::filesystem::perms OCSYNC_EXPORT filePermissionsWin(const QString &filename);
+    void OCSYNC_EXPORT setFilePermissionsWin(const QString &filename, const std::filesystem::perms &perms);
+
+    bool OCSYNC_EXPORT setAclPermission(const QString &path, FileSystem::FolderPermissions permissions);
 #endif
+
+    enum class LockMode {
+        Shared,
+        Exclusive,
+        SharedRead,
+    };
+    Q_ENUM_NS(LockMode);
 
     /**
      * Returns true when a file is locked. (Windows only)
      */
-    bool OCSYNC_EXPORT isFileLocked(const QString &fileName);
+    bool OCSYNC_EXPORT isFileLocked(const QString &fileName, LockMode mode);
 
     /**
      * Returns whether the file is a shortcut file (ends with .lnk)
@@ -164,9 +205,31 @@ namespace FileSystem {
     bool OCSYNC_EXPORT isExcludeFile(const QString &filename);
 
     /**
-     * Returns whether the file is a junction (windows only)
+     * Returns whether the path itself is a symlink or a junction.
+     *
+     * On Windows, only the symlink and mount point reparse tags match.
+     * Other reparse points, such as Windows VFS placeholders are not reported.
      */
-    bool OCSYNC_EXPORT isJunction(const QString &filename);
+    bool OCSYNC_EXPORT isSymLink(const QString &absolutePath);
+
+    /**
+     * Returns whether relativePath or any of its parents below syncRootPath is a symlink or a junction.
+     */
+    bool OCSYNC_EXPORT pathContainsSymlink(const QString &syncRootPath, const QString &relativePath);
+
+    /**
+     * Returns whether a Path is a child of another
+     */
+    enum class ChildResult : uint8_t { IsNoChild = 0, IsChild = 0x1 << 0, IsEqual = 0x1 << 1, IsParentEmpty = 0x1 << 2 };
+    Q_FLAG_NS(ChildResult);
+    Q_DECLARE_FLAGS(ChildResults, ChildResult)
+    Q_DECLARE_OPERATORS_FOR_FLAGS(ChildResults)
+
+    ChildResults OCSYNC_EXPORT isChildPathOf2(QStringView child, QStringView parent);
+    inline bool isChildPathOf(QStringView child, QStringView parent)
+    {
+        return isChildPathOf2(child, parent) & ChildResult::IsChild;
+    }
 }
 
 /** @} */

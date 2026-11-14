@@ -1,25 +1,20 @@
 /*
- * Copyright (C) by Klaas Freitag <freitag@owncloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2016 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2012 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #ifndef _THEME_H
 #define _THEME_H
 
+#include "config.h"
+
+#include "syncresult.h"
+
 #include <QIcon>
 #include <QObject>
 #include <QPalette>
 #include <QGuiApplication>
-#include "syncresult.h"
 
 class QString;
 class QObject;
@@ -46,9 +41,9 @@ class OWNCLOUDSYNC_EXPORT Theme : public QObject
     Q_PROPERTY(QUrl statusOnlineImageSource READ statusOnlineImageSource CONSTANT)
     Q_PROPERTY(QUrl statusDoNotDisturbImageSource READ statusDoNotDisturbImageSource CONSTANT)
     Q_PROPERTY(QUrl statusAwayImageSource READ statusAwayImageSource CONSTANT)
+    Q_PROPERTY(QUrl statusBusyImageSource READ statusBusyImageSource CONSTANT)
     Q_PROPERTY(QUrl statusInvisibleImageSource READ statusInvisibleImageSource CONSTANT)
 #ifndef TOKEN_AUTH_ONLY
-    Q_PROPERTY(QIcon folderDisabledIcon READ folderDisabledIcon CONSTANT)
     Q_PROPERTY(QIcon folderOfflineIcon READ folderOfflineIcon CONSTANT)
     Q_PROPERTY(QIcon applicationIcon READ applicationIcon CONSTANT)
 #endif
@@ -62,6 +57,8 @@ class OWNCLOUDSYNC_EXPORT Theme : public QObject
 #ifndef TOKEN_AUTH_ONLY
     Q_PROPERTY(QColor wizardHeaderTitleColor READ wizardHeaderTitleColor CONSTANT)
     Q_PROPERTY(QColor wizardHeaderBackgroundColor READ wizardHeaderBackgroundColor CONSTANT)
+    Q_PROPERTY(bool wizardHideSelfHostButton READ wizardHideSelfHostButton CONSTANT)
+    Q_PROPERTY(bool wizardHideSignupButton READ wizardHideSignupButton CONSTANT)
 #endif
     Q_PROPERTY(QString updateCheckUrl READ updateCheckUrl CONSTANT)
 
@@ -154,6 +151,12 @@ public:
     [[nodiscard]] QUrl statusAwayImageSource() const;
     
     /**
+     * @brief Returns full path to a busy user status icon
+     * @return QUrl full path to an icon
+     */
+    [[nodiscard]] QUrl statusBusyImageSource() const;
+    
+    /**
      * @brief Returns full path to an invisible user status icon
      * @return QUrl full path to an icon
      */
@@ -172,6 +175,22 @@ public:
     [[nodiscard]] QUrl folderOffline() const;
 
     /**
+     * @brief nneutral icons for in-app status
+     * @return QUrl full path to an icon
+     */
+    [[nodiscard]] QUrl offline() const;
+
+    [[nodiscard]] QUrl ok() const;
+
+    [[nodiscard]] QUrl error() const;
+
+    [[nodiscard]] QUrl sync() const;
+
+    [[nodiscard]] QUrl pause() const;
+
+    [[nodiscard]] QUrl warning() const;
+
+    /**
      * @brief configFileName
      * @return the name of the config file.
      */
@@ -188,14 +207,14 @@ public:
       * get an sync state icon
       */
     [[nodiscard]] QIcon syncStateIcon(SyncResult::Status, bool sysTray = false) const;
-
-    [[nodiscard]] QIcon folderDisabledIcon() const;
+    [[nodiscard]] QIcon folderStateIcon(SyncResult::Status) const;
     [[nodiscard]] QIcon folderOfflineIcon(bool sysTray = false) const;
     [[nodiscard]] QIcon applicationIcon() const;
 #endif
 
     [[nodiscard]] QString statusHeaderText(SyncResult::Status) const;
     [[nodiscard]] QString version() const;
+    [[nodiscard]] QString versionSuffix() const;
 
     /**
      * Characteristics: bool if more than one sync folder is allowed
@@ -232,10 +251,17 @@ public:
 
     /**
      * Setting a value here will pre-define the server url.
+     * Can be a url OR a JSON array of servers description objects: {"name": "x", "url": "y"}
      *
      * The respective UI controls will be disabled only if forceOverrideServerUrl() is true
      */
     [[nodiscard]] QString overrideServerUrl() const;
+
+    /**
+     * Indicates whether the override server URL is in fact a JSON array of server description
+     * objects.
+     */
+    [[nodiscard]] bool multipleOverrideServers() const;
 
     /**
      * Enforce a pre-defined server url.
@@ -275,7 +301,10 @@ public:
      *
      * When true, the app always connects to the server directly
      */
-    [[nodiscard]] bool doNotUseProxy() const;
+    [[nodiscard]] constexpr static bool doNotUseProxy()
+    {
+        return DO_NOT_USE_PROXY;
+    }
 
     /**
      * This is only useful when previous version had a different overrideServerUrl
@@ -372,8 +401,9 @@ public:
     [[nodiscard]] QString updateCheckUrl() const;
 
     /**
-     * When true, the setup wizard will show the selective sync dialog by default and default
-     * to nothing selected
+     * @brief Whether the setup wizard shows the selective sync dialog with no folders selected.
+     *
+     * The value is read from the wizardSelectiveSyncDefaultNothing configuration parameter.
      */
     [[nodiscard]] bool wizardSelectiveSyncDefaultNothing() const;
 
@@ -394,6 +424,11 @@ public:
      * in the account wizard
      */
     [[nodiscard]] bool wizardHideExternalStorageConfirmationCheckbox() const;
+
+    [[nodiscard]] bool wizardHideSelfHostButton() const;
+    [[nodiscard]] bool wizardHideSignupButton() const;
+    [[nodiscard]] QUrl wizardSignupUrl() const;
+    [[nodiscard]] static QUrl signupUrlForBranding(const QString &configuredUrl);
 
     /**
      * @brief Sharing options
@@ -446,14 +481,6 @@ public:
     [[nodiscard]] QString userIDHint() const;
 
     /**
-     * @brief Postfix that will be enforced in a URL. e.g.
-     *        ".myhosting.com".
-     *
-     * @return An empty string, unless reimplemented
-     */
-    [[nodiscard]] QString wizardUrlPostfix() const;
-
-    /**
      * @brief String that will be shown as long as no text has been entered by the user.
      *
      * @return An empty string, unless reimplemented
@@ -497,7 +524,15 @@ public:
      * 2019/12/08: Moved here from SettingsDialog.
      */
     Q_INVOKABLE static bool isDarkColor(const QColor &color);
-    
+
+    /**
+     * @brief Returns the background colour for settings panels in the supplied application palette.
+     *
+     * Uses the platform-appropriate palette role when it contrasts sufficiently with the window,
+     * otherwise derives a subtle contrasting colour from the window foreground.
+     */
+    [[nodiscard]] static QColor settingsPanelColor(const QPalette &palette);
+
     /**
      * @brief Return the colour to be used for HTML links (e.g. used in QLabel), based on the current app palette or given colour (Dark-/Light-Mode switching).
      *
@@ -588,23 +623,34 @@ public:
     [[nodiscard]] bool showVirtualFilesOption() const;
 
     [[nodiscard]] bool enforceVirtualFilesSyncFolder() const;
+    [[nodiscard]] bool disableVirtualFilesSyncFolder() const;
 
     static QColor defaultColor();
 
+    [[nodiscard]] QColor destructiveActionTextColor() const;
+
     static constexpr const char *themePrefix = ":/client/theme/";
 
-    QVariantMap systemPalette();
-    bool darkMode();
+    [[nodiscard]] QVariantMap systemPalette() const;
+    [[nodiscard]] bool darkMode() const;
 
-public slots:
+    /**
+     * Display legacy import dialog
+     *
+     * The user will interact with the dialog to import legacy account when set to true
+     */
+    [[nodiscard]] bool displayLegacyImportDialog() const;
+
+public Q_SLOTS:
     void setOverrideServerUrl(const QString &overrideServerUrl);
     void setForceOverrideServerUrl(bool forceOverride);
     void setVfsEnabled(bool enabled);
     void setStartLoginFlowAutomatically(bool startLoginFlowAuto);
+    void systemPaletteHasChanged();
 
 protected:
 #ifndef TOKEN_AUTH_ONLY
-    QIcon themeIcon(const QString &name, bool sysTray = false) const;
+    [[nodiscard]] QIcon themeIcon(const QString &name, bool sysTray = false) const;
 #endif
     /**
      * @brief Generates image path in the resources
@@ -613,10 +659,10 @@ protected:
      * @param sysTray Whether the image requested is for Systray or not
      * @return QString image path in the resources
      **/
-    QString themeImagePath(const QString &name, int size = -1, bool sysTray = false) const;
+    [[nodiscard]] QString themeImagePath(const QString &name, int size = -1, bool sysTray = false) const;
     Theme();
 
-signals:
+Q_SIGNALS:
     void systrayUseMonoIconsChanged(bool);
     void systemPaletteChanged(const QPalette &palette);
     void darkModeChanged();
@@ -629,17 +675,20 @@ private:
     Theme(Theme const &);
     Theme &operator=(Theme const &);
 
-    void connectToPaletteSignal();
+    [[nodiscard]] QString developerStringInfo() const;
+
+    void updateMultipleOverrideServers();
+    void connectToPaletteSignal() const;
 #if defined(Q_OS_WIN)
     QPalette reserveDarkPalette; // Windows 11 button and window dark colours
 #endif
 
     static Theme *_instance;
     bool _mono = false;
-    bool _paletteSignalsConnected = false;
 
     QString _overrideServerUrl;
     bool _forceOverrideServerUrl = false;
+    bool _multipleOverrideServers = false;
     bool _isVfsEnabled = false;
     bool _startLoginFlowAutomatically = false;
 

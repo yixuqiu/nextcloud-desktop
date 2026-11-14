@@ -1,21 +1,15 @@
 /*
- * Copyright (C) by Oleksandr Zolotov <alex@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2021 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include <QTest>
 
 #include "theme.h"
 #include "iconutils.h"
+#include "logger.h"
+
+#include <QStandardPaths>
 
 class TestIconUtils : public QObject
 {
@@ -28,7 +22,15 @@ public:
         Q_INIT_RESOURCE(theme);
     }
 
-private slots:
+private Q_SLOTS:
+    void initTestCase()
+    {
+        OCC::Logger::instance()->setLogFlush(true);
+        OCC::Logger::instance()->setLogDebug(true);
+
+        QStandardPaths::setTestModeEnabled(true);
+    }
+
     void testDrawSvgWithCustomFillColor()
     {
         const QString blackSvgDirPath{QString{OCC::Theme::themePrefix} + QStringLiteral("black")};
@@ -40,6 +42,13 @@ private slots:
         QVERIFY(!OCC::Ui::IconUtils::drawSvgWithCustomFillColor(blackSvgDirPath + QStringLiteral("/") + blackImages.at(0), QColorConstants::Svg::red).isNull());
 
         QVERIFY(!OCC::Ui::IconUtils::drawSvgWithCustomFillColor(blackSvgDirPath + QStringLiteral("/") + blackImages.at(0), QColorConstants::Svg::green).isNull());
+
+        const auto imageFromZeroWidthRequest = OCC::Ui::IconUtils::drawSvgWithCustomFillColor(
+            blackSvgDirPath + QStringLiteral("/") + blackImages.at(0),
+            QColorConstants::Svg::green,
+            nullptr,
+            QSize(0, 24));
+        QVERIFY(!imageFromZeroWidthRequest.isNull());
 
         const QString whiteSvgDirPath{QString{OCC::Theme::themePrefix} + QStringLiteral("white")};
         const QDir whiteSvgDir(whiteSvgDirPath);
@@ -67,6 +76,13 @@ private slots:
         QVERIFY(!whiteImages.isEmpty());
 
         QVERIFY(!OCC::Ui::IconUtils::createSvgImageWithCustomColor(whiteImages.at(0), QColorConstants::Svg::blue).isNull());
+    }
+
+    void testCreateSvgPixmapWithWizardSyncOptionIcons()
+    {
+        QVERIFY(!OCC::Ui::IconUtils::createSvgImageWithCustomColor(QStringLiteral("folder.svg"), QColor(QStringLiteral("#111111"))).isNull());
+        QVERIFY(!OCC::Ui::IconUtils::createSvgImageWithCustomColor(QStringLiteral("sync.svg"), QColor(QStringLiteral("#111111"))).isNull());
+        QVERIFY(!OCC::Ui::IconUtils::createSvgImageWithCustomColor(QStringLiteral("wizard-files.svg"), QColor(QStringLiteral("#111111"))).isNull());
     }
 
     void testPixmapForBackground()

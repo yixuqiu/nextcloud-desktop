@@ -1,15 +1,7 @@
 /*
- * Copyright (C) by Duncan Mac-Vicar P. <duncan@kde.org>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2018 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2014 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #ifndef MIRALL_FOLDERWIZARD_H
@@ -19,6 +11,8 @@
 #include <QNetworkReply>
 #include <QTimer>
 
+#include <memory>
+
 #include "folder.h"
 #include "accountfwd.h"
 
@@ -26,10 +20,16 @@
 #include "ui_folderwizardtargetpage.h"
 
 class QCheckBox;
+class QLabel;
 
 namespace OCC {
 
 class SelectiveSyncWidget;
+
+namespace Utility
+{
+class MacSandboxPersistentAccess;
+}
 
 class ownCloudInfo;
 
@@ -61,18 +61,33 @@ public:
 
     void setFolderMap(const Folder::Map &fm) { _folderMap = fm; }
 
+    /** @brief Bookmark of the folder chosen in the picker, empty if the entered path differs from it. */
+    [[nodiscard]] QByteArray securityScopedBookmarkData() const;
+
+Q_SIGNALS:
+    void initialFolderSelectionCanceled();
+
 protected:
     void changeEvent(QEvent *) override;
 
-protected slots:
+protected Q_SLOTS:
     void slotChooseLocalFolder();
 
 private:
+    friend class FolderWizardLocalPathTestAccess;
+
     void changeStyle();
+    void applyChosenLocalFolder(const QString &localFolder, const QByteArray &bookmarkData, bool initialSelection);
 
     Ui_FolderWizardSourcePage _ui{};
     Folder::Map _folderMap;
     AccountPtr _account;
+    bool _initialFolderSelection = true;
+    QString _chosenLocalFolder;
+    QByteArray _chosenLocalFolderBookmarkData;
+#ifdef Q_OS_MACOS
+    std::unique_ptr<Utility::MacSandboxPersistentAccess> _chosenLocalFolderAccess;
+#endif
 };
 
 
@@ -93,7 +108,7 @@ public:
     void initializePage() override;
     void cleanupPage() override;
 
-protected slots:
+protected Q_SLOTS:
     void showWarn(const QString & = QString()) const;
     void slotAddRemoteFolder();
     void slotCreateRemoteFolder(const QString &);
@@ -112,7 +127,7 @@ protected slots:
 protected:
     void changeEvent(QEvent *) override;
 
-private slots:
+private Q_SLOTS:
     void changeStyle();
 
 private:
@@ -142,12 +157,13 @@ public:
     void initializePage() override;
     void cleanupPage() override;
 
-private slots:
+private Q_SLOTS:
     void virtualFilesCheckboxClicked();
 
 private:
     SelectiveSyncWidget *_selectiveSync;
     QCheckBox *_virtualFilesCheckBox = nullptr;
+    QLabel *_virtualFilesManagedLabel = nullptr;
 };
 
 /**
@@ -169,6 +185,9 @@ public:
 
     bool eventFilter(QObject *watched, QEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
+
+    /** @brief Bookmark of the source folder chosen in the picker, see FolderWizardLocalPath. */
+    [[nodiscard]] QByteArray securityScopedBookmarkData() const;
 
 private:
     FolderWizardLocalPath *_folderWizardSourcePage;

@@ -1,25 +1,16 @@
 /*
- * Copyright (C) 2022 by Claudio Cambra <claudio.cambra@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2022 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
-import QtQuick 2.15
-import QtQuick.Window 2.15
-import QtQuick.Layouts 1.15
-import QtQuick.Controls 2.15
+import QtQuick
+import QtQuick.Window
+import QtQuick.Layouts
+import QtQuick.Controls
 import Qt5Compat.GraphicalEffects
 
-import com.nextcloud.desktopclient 1.0
-import Style 1.0
+import com.nextcloud.desktopclient
+import Style
 import "../tray"
 import "../"
 
@@ -38,7 +29,6 @@ GridLayout {
     signal toggleAllowResharing(bool enable)
     signal togglePasswordProtect(bool enable)
     signal toggleExpirationDate(bool enable)
-    signal toggleNoteToRecipient(bool enable)
     signal permissionModeChanged(int permissionMode)
 
     signal setLinkShareLabel(string label)
@@ -140,7 +130,6 @@ GridLayout {
         Layout.column: 1
 
         text: root.detailText
-        color: palette.midlight
         elide: Text.ElideRight
         visible: text !== ""
     }
@@ -153,21 +142,17 @@ GridLayout {
 
         spacing: 0
 
-        CustomButton {
+        Button {
             id: createLinkButton
 
             Layout.alignment: Qt.AlignCenter
-            Layout.preferredWidth: Style.iconButtonWidth
-            Layout.preferredHeight: width
-
-            toolTipText: qsTr("Create a new share link")
-
-            bgColor: palette.highlight
-            bgNormalOpacity: 0
+            Layout.preferredWidth: Style.activityListButtonWidth
+            Layout.preferredHeight: Style.activityListButtonHeight
 
             icon.source: "image://svgimage-custom-color/add.svg/" + palette.buttonText
-            icon.width: Style.smallIconSize
-            icon.height: Style.smallIconSize
+            icon.width: Style.activityListButtonIconSize
+            icon.height: Style.activityListButtonIconSize
+            display: AbstractButton.IconOnly
 
             visible: (root.isPlaceholderLinkShare || root.isSecureFileDropPlaceholderLinkShare) && root.canCreateLinkShares
             enabled: visible
@@ -175,7 +160,7 @@ GridLayout {
             onClicked: root.createNewLinkShare()
         }
 
-        CustomButton {
+        Button {
             id: copyLinkButton
 
             function copyShareLink() {
@@ -190,35 +175,19 @@ GridLayout {
 
             property bool shareLinkCopied: false
 
-            Layout.alignment: Qt.AlignCenter
-            Layout.preferredWidth: shareLinkCopied ? implicitWidth : Style.iconButtonWidth
-            Layout.preferredHeight: Style.iconButtonWidth
-
-            toolTipText: qsTr("Copy share link location")
+            Layout.alignment: Qt.AlignVCenter | Qt.AlignHCenter
+            Layout.preferredWidth: shareLinkCopied ? implicitWidth : Style.activityListButtonWidth
+            Layout.preferredHeight: Style.activityListButtonHeight
 
             text: shareLinkCopied ? qsTr("Copied!") : ""
-            textColor: palette.brightText
-            contentsFont.bold: true
-            bgColor: shareLinkCopied ? Style.positiveColor : palette.highlight
-            bgNormalOpacity: shareLinkCopied ? 1 : 0
 
-            icon.source: shareLinkCopied ? "image://svgimage-custom-color/copy.svg/" + palette.brightText :
-                                           "image://svgimage-custom-color/copy.svg/" + palette.buttonText
-            icon.width: Style.smallIconSize
-            icon.height: Style.smallIconSize
-
+            icon.source: "image://svgimage-custom-color/copy.svg/" + palette.buttonText
+            icon.width: Style.activityListButtonIconSize
+            icon.height: Style.activityListButtonIconSize
+            display: shareLinkCopied ? AbstractButton.TextOnly : AbstractButton.IconOnly
             visible: root.isLinkShare || root.isInternalLinkShare
             enabled: visible
-
             onClicked: copyShareLink()
-
-            Behavior on bgColor {
-                ColorAnimation { duration: Style.shortAnimationDuration }
-            }
-
-            Behavior on bgNormalOpacity {
-                NumberAnimation { duration: Style.shortAnimationDuration }
-            }
 
             Behavior on Layout.preferredWidth {
                 SmoothedAnimation { duration: Style.shortAnimationDuration }
@@ -236,25 +205,19 @@ GridLayout {
             }
         }
 
-        CustomButton {
+        Button {
             id: moreButton
 
-            Layout.alignment: Qt.AlignCenter
-            Layout.preferredWidth: Style.iconButtonWidth
-            Layout.preferredHeight: width
-
-            toolTipText: qsTr("Share options")
-
-            bgColor: palette.highlight
-            bgNormalOpacity: 0
+            Layout.alignment: Qt.AlignVCenter | Qt.AlignHCenter
+            Layout.preferredWidth: Style.activityListButtonWidth
+            Layout.preferredHeight: Style.activityListButtonHeight
 
             icon.source: "image://svgimage-custom-color/more.svg/" + palette.buttonText
-            icon.width: Style.smallIconSize
-            icon.height: Style.smallIconSize
-
+            icon.width: Style.activityListButtonIconSize
+            icon.height: Style.activityListButtonIconSize
+            display: AbstractButton.IconOnly
             visible: !root.isPlaceholderLinkShare && !root.isSecureFileDropPlaceholderLinkShare && !root.isInternalLinkShare
             enabled: visible
-
             onClicked: root.rootStackView.push(shareDetailsPageComponent, {}, StackView.PushTransition)
 
             Component {
@@ -278,7 +241,6 @@ GridLayout {
                     onToggleHideDownload: root.toggleHideDownload(enable)
                     onTogglePasswordProtect: root.togglePasswordProtect(enable)
                     onToggleExpirationDate: root.toggleExpirationDate(enable)
-                    onToggleNoteToRecipient: root.toggleNoteToRecipient(enable)
                     onPermissionModeChanged: root.permissionModeChanged(permissionMode)
 
                     onSetLinkShareLabel: root.setLinkShareLabel(label)

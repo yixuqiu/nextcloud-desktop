@@ -1,15 +1,7 @@
 /*
- * Copyright (C) by Olivier Goffart <ogoffart@owncloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2018 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2014 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "propagateremotedelete.h"
@@ -29,9 +21,11 @@ Q_LOGGING_CATEGORY(lcPropagateRemoteDelete, "nextcloud.sync.propagator.remotedel
 void PropagateRemoteDelete::start()
 {
     qCInfo(lcPropagateRemoteDelete) << "Start propagate remote delete job for" << _item->_file;
+    qCInfo(lcPermanentLog) << "delete" << _item->_file << _item->_discoveryResult;
 
-    if (propagator()->_abortRequested)
+    if (propagator()->_abortRequested) {
         return;
+    }
 
     if (!_item->_encryptedFileName.isEmpty() || _item->isEncrypted()) {
         if (!_item->_encryptedFileName.isEmpty()) {
@@ -58,12 +52,24 @@ void PropagateRemoteDelete::start()
 
 void PropagateRemoteDelete::createDeleteJob(const QString &filename)
 {
-    qCInfo(lcPropagateRemoteDelete) << "Deleting file, local" << _item->_file << "remote" << filename;
+    Q_ASSERT(propagator());
+    auto remoteFilename = filename;
+    if (_item->_type == ItemType::ItemTypeVirtualFile) {
+        if (const auto vfs = propagator()->syncOptions()._vfs; vfs->mode() == Vfs::Mode::WithSuffix) {
+            // These are compile-time constants so no need to recreate each time
+            static constexpr auto suffixSize = std::string_view(APPLICATION_DOTVIRTUALFILE_SUFFIX).size();
+            remoteFilename.chop(suffixSize);
+        }
+    }
 
-    _job = new DeleteJob(propagator()->account(),
-        propagator()->fullRemotePath(filename),
-        this);
+    qCInfo(lcPropagateRemoteDelete) << "Deleting file, local" << _item->_file << "remote" << remoteFilename << "wantsPermanentDeletion" << (_item->_wantsSpecificActions == SyncFileItem::SynchronizationOptions::WantsPermanentDeletion ? "true" : "false");
 
+    auto headers = QMap<QByteArray, QByteArray>{};
+    if (_item->_locked == SyncFileItem::LockStatus::LockedItem) {
+        headers[QByteArrayLiteral("If")] = (QLatin1String("<") + propagator()->account()->davUrl().toString() + _item->_file + "> (<opaquelocktoken:" + _item->_lockToken.toUtf8() + ">)").toUtf8();
+    }
+    _job = new DeleteJob(propagator()->account(), propagator()->fullRemotePath(remoteFilename), headers, this);
+    _job->setSkipTrashbin(_item->_wantsSpecificActions == SyncFileItem::SynchronizationOptions::WantsPermanentDeletion);
     connect(_job.data(), &DeleteJob::finishedSignal, this, &PropagateRemoteDelete::slotDeleteJobFinished);
     propagator()->_activeJobList.append(this);
     _job->start();
@@ -71,11 +77,12 @@ void PropagateRemoteDelete::createDeleteJob(const QString &filename)
 
 void PropagateRemoteDelete::abort(PropagatorJob::AbortType abortType)
 {
-    if (_job && _job->reply())
+    if (_job && _job->reply()) {
         _job->reply()->abort();
+    }
 
     if (abortType == AbortType::Asynchronous) {
-        emit abortFinished();
+        Q_EMIT abortFinished();
     }
 }
 
@@ -125,3 +132,5 @@ void PropagateRemoteDelete::slotDeleteJobFinished()
     done(SyncFileItem::Success, {}, ErrorCategory::NoError);
 }
 }
+
+#include "moc_propagateremotedelete.cpp"

@@ -1,15 +1,25 @@
-import QtQuick 2.15
-import QtQuick.Window 2.15
-import Style 1.0
-import com.nextcloud.desktopclient 1.0
-import QtQuick.Layouts 1.15
-import QtQuick.Controls 2.15
+/*
+ * SPDX-FileCopyrightText: 2022 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+import QtQuick
+import QtQuick.Window
+import Style
+import com.nextcloud.desktopclient
+import QtQuick.Layouts
+import QtQuick.Controls
 
 ApplicationWindow {
     id: root
+
+    // QML_WINDOW_CLOSE_EXCEPTION: This transient dialog represents an active local-edit operation.
     flags: Qt.Dialog | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
 
-    color: "transparent"
+    color: palette.base
+
+    LayoutMirroring.enabled: Application.layoutDirection === Qt.RightToLeft
+    LayoutMirroring.childrenInherit: true
 
     width: 320
     height: contentLayout.implicitHeight
@@ -18,26 +28,6 @@ ApplicationWindow {
 
     readonly property real fontPixelSize: Style.topLinePixelSize * 1.5
     readonly property real iconWidth: fontPixelSize * 2
-
-    // TODO: Rather than setting all these palette colours manually,
-    // create a custom style and do it for all components globally
-    palette {
-        text: Style.ncTextColor
-        windowText: Style.ncTextColor
-        buttonText: Style.ncTextColor
-        brightText: Style.ncTextBrightColor
-        highlight: Style.lightHover
-        highlightedText: Style.ncTextColor
-        light: Style.lightHover
-        midlight: Style.ncSecondaryTextColor
-        mid: Style.darkerHover
-        dark: Style.menuBorder
-        button: Style.buttonBackgroundColor
-        window: Style.backgroundColor
-        base: Style.backgroundColor
-        toolTipBase: Style.backgroundColor
-        toolTipText: Style.ncTextColor
-    }
 
     Component.onCompleted: {
         Systray.forceWindowInit(root);
@@ -50,7 +40,7 @@ ApplicationWindow {
 
     Rectangle {
         id: windowBackground
-        color: Style.backgroundColor
+        color: palette.base
         radius: Style.trayWindowRadius
         border.color: palette.dark
         anchors.fill: parent

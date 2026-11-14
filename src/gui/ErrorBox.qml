@@ -1,22 +1,13 @@
 /*
- * Copyright (C) 2021 by Felix Weilbach <felix.weilbach@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2021 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
-import QtQuick 2.15
-import QtQuick.Layouts 1.15
-import QtQuick.Controls 2.15
+import QtQuick
+import QtQuick.Layouts
+import QtQuick.Controls
 
-import Style 1.0
+import Style
 import "./tray"
 
 Item {
@@ -70,7 +61,7 @@ Item {
 
             background: null
             icon.color: palette.buttonText
-            icon.source: "qrc:///client/theme/close.svg"
+            icon.source: "image://svgimage-custom-color/close.svg"
 
             visible: errorBox.showCloseButton
             enabled: visible

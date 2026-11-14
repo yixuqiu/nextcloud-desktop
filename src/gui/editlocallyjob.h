@@ -1,15 +1,6 @@
 /*
- * Copyright (C) by Claudio Cambra <claudio.cambra@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2022 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #pragma once
@@ -32,38 +23,31 @@ class EditLocallyJob : public QObject
     Q_OBJECT
 
 public:
-    explicit EditLocallyJob(const QString &userId,
+    explicit EditLocallyJob(const AccountStatePtr &accountState,
                             const QString &relPath,
-                            const QString &token,
                             QObject *parent = nullptr);
 
-    [[nodiscard]] static bool isTokenValid(const QString &token);
-    [[nodiscard]] static bool isRelPathValid(const QString &relPath);
     [[nodiscard]] static OCC::Folder *findFolderForFile(const QString &relPath, const QString &userId);
     [[nodiscard]] static QString prefixSlashToPath(const QString &path);
 
-signals:
+Q_SIGNALS:
     void error(const QString &message, const QString &informativeText);
     void finished();
     void callShowError(const QString &message, const QString &informativeText);
 
-public slots:
+public Q_SLOTS:
     void startSetup();
     void startEditLocally();
 
-private slots:
+private Q_SLOTS:
     void fetchRemoteFileParentInfo();
     void startSyncBeforeOpening();
 
-    void startTokenRemoteCheck();
     void proceedWithSetup();
     void findAfolderAndConstructPaths();
 
     void showError(const QString &message, const QString &informativeText);
-    void showErrorNotification(const QString &message, const QString &informativeText) const;
-    void showErrorMessageBox(const QString &message, const QString &informativeText) const;
 
-    void remoteTokenCheckResultReceived(const int statusCode);
     void slotItemDiscovered(const OCC::SyncFileItemPtr &item);
     void slotItemCompleted(const OCC::SyncFileItemPtr &item);
 
@@ -72,7 +56,7 @@ private slots:
 
     void processLocalItem();
     void openFile();
-    void lockFile();
+    void lockFile(const QString &etag);
 
     void fileAlreadyLocked();
     void fileLockSuccess(const OCC::SyncFileItemPtr &item);
@@ -92,16 +76,12 @@ private:
 
     [[nodiscard]] bool isFileParentItemValid() const;
 
-    bool _tokenVerified = false;
-
     bool _shouldScheduleFolderSyncAfterFileIsOpened = false;
 
     AccountStatePtr _accountState;
-    QString _userId;
     QString _relPath; // full remote path for a file (as on the server)
     QString _relativePathToRemoteRoot; // (relative path - Folder::remotePath()) for folders pointing to a non-root remote path e.g. '/subfolder' instead of '/'
     QString _relPathParent; // a folder where the file resides ('/' if it is in the first level of a remote root, or e.g. a '/subfolder/a/b/c if it resides in a nested folder)
-    QString _token;
     SyncFileItemPtr _fileParentItem;
 
     QString _fileName;

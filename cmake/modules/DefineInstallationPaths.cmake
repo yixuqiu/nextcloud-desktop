@@ -1,4 +1,6 @@
-# (c) 2014 Copyright ownCloud GmbH
+# SPDX-FileCopyrightText: 2014 ownCloud GmbH
+# SPDX-License-Identifier: BSD-3-Clause
+#
 # Redistribution and use is allowed according to the terms of the BSD license.
 # For details see the accompanying COPYING* file.
 
@@ -93,7 +95,7 @@ if (UNIX)
     "${SHARE_INSTALL_PREFIX}/info"
     CACHE PATH "The ${APPLICATION_SHORTNAME} info install dir (default prefix/info)"
   )
-endif (UNIX)
+endif ()
 
 if (WIN32)
   # Same same
@@ -108,4 +110,4 @@ if (WIN32)
   set(LOCALE_INSTALL_DIR "lang" CACHE PATH "-")
   set(SYSCONF_INSTALL_DIR "config" CACHE PATH "-")
   set(MAN_INSTALL_DIR "man" CACHE PATH "-")
-endif (WIN32)
+endif ()

@@ -1,16 +1,7 @@
 /*
- * Copyright (C) by Klaas Freitag <freitag@owncloud.com>
- * Copyright (C) by Julius Härtl <jus@bitgrid.net>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2017 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2014 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include <glib.h>
@@ -22,6 +13,7 @@
 #include <account.h>
 #include <folder.h>
 #include <accountstate.h>
+#include <QApplication>
 #include <QDesktopServices>
 #include "openfilemanager.h"
 #include "owncloudgui.h"
@@ -29,14 +21,18 @@
 
 using namespace OCC;
 
+Q_LOGGING_CATEGORY(lcNextcloudCloudProviderIntegration, "nextcloud.cloudprovider.integration", QtInfoMsg)
+
 GSimpleActionGroup *actionGroup = nullptr;
+
+int CloudProviderWrapper::preferredTextWidth = 0;
 
 CloudProviderWrapper::CloudProviderWrapper(QObject *parent, Folder *folder, int folderId, CloudProvidersProviderExporter* cloudprovider) : QObject(parent)
   , _folder(folder)
 {
     GMenuModel *model = nullptr;
     GActionGroup *action_group = nullptr;
-    QString accountName = QString("Folder/%1").arg(folderId);
+    QString accountName = QStringLiteral("Folder/%1").arg(folderId);
 
     _cloudProvider = CLOUD_PROVIDERS_PROVIDER_EXPORTER(cloudprovider);
     _cloudProviderAccount = cloud_providers_account_exporter_new(_cloudProvider, accountName.toUtf8().data());
@@ -59,6 +55,11 @@ CloudProviderWrapper::CloudProviderWrapper(QObject *parent, Folder *folder, int 
     updatePauseStatus();
     g_clear_object (&model);
     g_clear_object (&action_group);
+}
+
+void mainMenuWasDeleted(gpointer data, GObject *where_the_object_was)
+{
+    qCDebug(lcNextcloudCloudProviderIntegration) << "I was deleted" << data << where_the_object_was;
 }
 
 CloudProviderWrapper::~CloudProviderWrapper()
@@ -96,19 +97,26 @@ void CloudProviderWrapper::slotUpdateProgress(const QString &folder, const Progr
 {
     // Only update progress for the current folder
     Folder *f = FolderMan::instance()->folder(folder);
-    if (f != _folder)
+    if (f != _folder) {
         return;
+    }
 
     // Build recently changed files list
     if (!progress._lastCompletedItem.isEmpty() && shouldShowInRecentsMenu(progress._lastCompletedItem)) {
+        const auto fm = QFontMetricsF{QApplication::font()};
         QString kindStr = Progress::asResultString(progress._lastCompletedItem);
+        QString elidedKindStr = fm.elidedText(kindStr, Qt::ElideRight, preferredTextWidth);
         QString timeStr = QTime::currentTime().toString("hh:mm");
-        QString actionText = tr("%1 (%2, %3)").arg(progress._lastCompletedItem._file, kindStr, timeStr);
+        QString fileName = progress._lastCompletedItem._file;
+        QString elidedFileName = fm.elidedText(fileName, Qt::ElideRight, preferredTextWidth);
+        //: %1 is the elided file name. %2 is the sync result. %3 is the current time.
+        QString actionText = tr("%1 (%2, %3)").arg(elidedFileName, elidedKindStr, timeStr);
         if (f) {
-            QString fullPath = f->path() + '/' + progress._lastCompletedItem._file;
+            QString fullPath = f->path() + '/' + fileName;
             if (QFile(fullPath).exists()) {
-                if (_recentlyChanged.length() > 5)
+                if (_recentlyChanged.length() > 5) {
                     _recentlyChanged.removeFirst();
+                }
                 _recentlyChanged.append(qMakePair(actionText, fullPath));
             } else {
                 _recentlyChanged.append(qMakePair(actionText, QString("")));
@@ -170,7 +178,11 @@ void CloudProviderWrapper::slotUpdateProgress(const QString &folder, const Progr
 
 void CloudProviderWrapper::updateStatusText(QString statusText)
 {
-    QString status = QString("%1 - %2").arg(_folder->accountState()->stateString(_folder->accountState()->state()), statusText);
+    if (!_folder) {
+        return;
+    }
+
+    QString status = QStringLiteral("%1 - %2").arg(_folder->accountState()->stateString(_folder->accountState()->state()), statusText);
     cloud_providers_account_exporter_set_status_details(_cloudProviderAccount, status.toUtf8().data());
 }
 
@@ -207,23 +219,38 @@ void CloudProviderWrapper::slotSyncFinished(const SyncResult &result)
     updateStatusText(result.statusString());
 }
 
+static GMenuItem* addMenuItem(const QString text, const gchar *action)
+{
+    const auto fm = QFontMetricsF{QApplication::font()};
+    CloudProviderWrapper::preferredTextWidth = MAX (CloudProviderWrapper::preferredTextWidth, (fm.boundingRect (text)).width ());
+    return menu_item_new (text, action);
+}
+
 GMenuModel* CloudProviderWrapper::getMenuModel() {
 
     GMenu* section = nullptr;
     GMenuItem* item = nullptr;
-    QString item_label;
 
     _mainMenu = g_menu_new();
+    g_object_ref(_mainMenu);
+    g_object_weak_ref(reinterpret_cast<GObject*>(_mainMenu), mainMenuWasDeleted, this);
 
     section = g_menu_new();
-    item = menu_item_new(tr("Open website"), "cloudprovider.openwebsite");
+    item = addMenuItem(tr("Open %1 Desktop", "Open Nextcloud main window. Placeholer will be the application name. Please keep it.").arg(APPLICATION_NAME), "cloudprovider.openmaindialog");
+    g_menu_append_item(section, item);
+    g_clear_object (&item);
+    g_menu_append_section(_mainMenu, nullptr, G_MENU_MODEL(section));
+    g_clear_object (&section);
+
+    section = g_menu_new();
+    item = addMenuItem(tr("Open in browser"), "cloudprovider.openwebsite");
     g_menu_append_item(section, item);
     g_clear_object (&item);
     g_menu_append_section(_mainMenu, nullptr, G_MENU_MODEL(section));
     g_clear_object (&section);
 
     _recentMenu = g_menu_new();
-    item = menu_item_new(tr("No recently changed files"), nullptr);
+    item = addMenuItem(tr("No recently changed files"), nullptr);
     g_menu_append_item(_recentMenu, item);
     g_clear_object (&item);
 
@@ -235,23 +262,23 @@ GMenuModel* CloudProviderWrapper::getMenuModel() {
     g_clear_object (&section);
 
     section = g_menu_new();
-    item = menu_item_new(tr("Pause synchronization"), "cloudprovider.pause");
+    item = addMenuItem (tr("Pause synchronization"), "cloudprovider.pause");
     g_menu_append_item(section, item);
     g_clear_object (&item);
     g_menu_append_section(_mainMenu, nullptr, G_MENU_MODEL(section));
     g_clear_object (&section);
 
     section = g_menu_new();
-    item = menu_item_new(tr("Help"), "cloudprovider.openhelp");
+    item = addMenuItem(tr("Help"), "cloudprovider.openhelp");
     g_menu_append_item(section, item);
     g_clear_object (&item);
-    item = menu_item_new(tr("Settings"), "cloudprovider.opensettings");
+    item = addMenuItem(tr("Settings"), "cloudprovider.opensettings");
     g_menu_append_item(section, item);
     g_clear_object (&item);
-    item = menu_item_new(tr("Log out"), "cloudprovider.logout");
+    item = addMenuItem(tr("Log out"), "cloudprovider.logout");
     g_menu_append_item(section, item);
     g_clear_object (&item);
-    item = menu_item_new(tr("Quit sync client"), "cloudprovider.quit");
+    item = addMenuItem(tr("Quit sync client"), "cloudprovider.quit");
     g_menu_append_item(section, item);
     g_clear_object (&item);
     g_menu_append_section(_mainMenu, nullptr, G_MENU_MODEL(section));
@@ -274,6 +301,10 @@ activate_action_open (GSimpleAction *action, GVariant *parameter, gpointer user_
 
     if(g_str_equal(name, "opensettings")) {
         gui->slotShowSettings();
+    }
+
+    if(g_str_equal(name, "openmaindialog")) {
+        gui->slotOpenMainDialog();
     }
 
     if(g_str_equal(name, "openwebsite")) {
@@ -325,6 +356,7 @@ activate_action_pause (GSimpleAction *action,
 }
 
 static GActionEntry actions[] = {
+    { "openmaindialog",  activate_action_open, nullptr, nullptr, nullptr, {0,0,0}},
     { "openwebsite",  activate_action_open, nullptr, nullptr, nullptr, {0,0,0}},
     { "quit",  activate_action_open, nullptr, nullptr, nullptr, {0,0,0}},
     { "logout",  activate_action_open, nullptr, nullptr, nullptr, {0,0,0}},

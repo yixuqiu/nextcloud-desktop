@@ -1,22 +1,10 @@
 /*
  * libcsync -- a library to sync a directory with another
  *
- * Copyright (c) 2008-2013 by Andreas Schneider <asn@cryptomilk.org>
- * Copyright (c) 2013- by Klaas Freitag <freitag@owncloud.com>
- *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * SPDX-FileCopyrightText: 2020 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2013 ownCloud GmbH
+ * SPDX-FileCopyrightText: 2008-2013 by Andreas Schneider <asn@cryptomilk.org>
+ * SPDX-License-Identifier: LGPL-2.1-or-later
  */
 
 #include <cerrno>
@@ -35,8 +23,8 @@
 #include "vio/csync_vio_local.h"
 #include "common/vfs.h"
 
-#include <QtCore/QLoggingCategory>
-#include <QtCore/QFile>
+#include <QLoggingCategory>
+#include <QFile>
 
 Q_LOGGING_CATEGORY(lcCSyncVIOLocal, "nextcloud.sync.csync.vio_local", QtInfoMsg)
 
@@ -49,11 +37,10 @@ struct csync_vio_handle_t {
   QByteArray path;
 };
 
-static int _csync_vio_local_stat_mb(const mbchar_t *wuri, csync_file_stat_t *buf);
+static int _csync_vio_local_stat_mb(const mbchar_t *wuri, csync_file_stat_t *buf, bool checkPermissionsValidity);
 
 csync_vio_handle_t *csync_vio_local_opendir(const QString &name) {
-    QScopedPointer<csync_vio_handle_t> handle(new csync_vio_handle_t{});
-
+    auto handle = std::make_unique<csync_vio_handle_t>();
     auto dirname = QFile::encodeName(name);
 
     handle->dh = _topendir(dirname.constData());
@@ -62,7 +49,7 @@ csync_vio_handle_t *csync_vio_local_opendir(const QString &name) {
     }
 
     handle->path = dirname;
-    return handle.take();
+    return handle.release();
 }
 
 int csync_vio_local_closedir(csync_vio_handle_t *dhandle) {
@@ -72,15 +59,16 @@ int csync_vio_local_closedir(csync_vio_handle_t *dhandle) {
     return rc;
 }
 
-std::unique_ptr<csync_file_stat_t> csync_vio_local_readdir(csync_vio_handle_t *handle, OCC::Vfs *vfs) {
+std::unique_ptr<csync_file_stat_t> csync_vio_local_readdir(csync_vio_handle_t *handle, OCC::Vfs *vfs, bool checkPermissionsValidity) {
 
   struct _tdirent *dirent = nullptr;
   std::unique_ptr<csync_file_stat_t> file_stat;
 
   do {
       dirent = _treaddir(handle->dh);
-      if (!dirent)
+      if (!dirent) {
           return {};
+      }
   } while (qstrcmp(dirent->d_name, ".") == 0 || qstrcmp(dirent->d_name, "..") == 0);
 
   file_stat = std::make_unique<csync_file_stat_t>();
@@ -112,10 +100,11 @@ std::unique_ptr<csync_file_stat_t> csync_vio_local_readdir(csync_vio_handle_t *h
   }
 #endif
 
-  if (file_stat->path.isNull())
+  if (file_stat->path.isNull()) {
       return file_stat;
+  }
 
-  if (_csync_vio_local_stat_mb(fullPath.constData(), file_stat.get()) < 0) {
+  if (_csync_vio_local_stat_mb(fullPath.constData(), file_stat.get(), checkPermissionsValidity) < 0) {
       // Will get excluded by _csync_detect_update.
       file_stat->type = ItemTypeSkip;
   }
@@ -132,12 +121,12 @@ std::unique_ptr<csync_file_stat_t> csync_vio_local_readdir(csync_vio_handle_t *h
 }
 
 
-int csync_vio_local_stat(const QString &uri, csync_file_stat_t *buf)
+int csync_vio_local_stat(const QString &uri, csync_file_stat_t *buf, bool checkPermissionsValidity)
 {
-    return _csync_vio_local_stat_mb(QFile::encodeName(uri).constData(), buf);
+    return _csync_vio_local_stat_mb(QFile::encodeName(uri).constData(), buf, checkPermissionsValidity);
 }
 
-static int _csync_vio_local_stat_mb(const mbchar_t *wuri, csync_file_stat_t *buf)
+static int _csync_vio_local_stat_mb(const mbchar_t *wuri, csync_file_stat_t *buf, bool checkPermissionsValidity)
 {
     csync_stat_t sb;
 
@@ -170,5 +159,9 @@ static int _csync_vio_local_stat_mb(const mbchar_t *wuri, csync_file_stat_t *buf
   buf->inode = sb.st_ino;
   buf->modtime = sb.st_mtime;
   buf->size = sb.st_size;
+  if (checkPermissionsValidity) {
+      buf->isPermissionsInvalid = (sb.st_mode & S_IWOTH) == S_IWOTH;
+  }
+
   return 0;
 }

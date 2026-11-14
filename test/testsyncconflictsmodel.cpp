@@ -1,15 +1,6 @@
 /*
- * Copyright (C) by Claudio Cambra <claudio.cambra@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2023 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "gui/syncconflictsmodel.h"
@@ -24,6 +15,7 @@
 #include <QTest>
 #include <QAbstractItemModelTester>
 #include <QSignalSpy>
+#include <QLocale>
 
 namespace {
 
@@ -47,18 +39,21 @@ class TestSyncConflictsModel : public QObject
     Q_OBJECT
 
 private:
+    QLocale _locale;
 
-private slots:
+private Q_SLOTS:
     void initTestCase()
     {
+        OCC::Logger::instance()->setLogFlush(true);
+        OCC::Logger::instance()->setLogDebug(true);
+
+        QStandardPaths::setTestModeEnabled(true);
     }
 
     void testSettingConflicts()
     {
         auto dir = QTemporaryDir {};
         ConfigFile::setConfDir(dir.path()); // we don't want to pollute the user's config file
-
-        FolderMan fm;
 
         auto account = Account::create();
         auto url = QUrl{"http://example.com"};
@@ -69,7 +64,7 @@ private slots:
 
         auto newAccountState{AccountStatePtr{ new FakeAccountState{account}}};
         auto folderman = FolderMan::instance();
-        QCOMPARE(folderman, &fm);
+        QVERIFY(folderman);
 
         auto fakeFolder = FakeFolder{FileInfo::A12_B12_C12_S12()};
 
@@ -100,8 +95,8 @@ private slots:
 
         QCOMPARE(model.rowCount(), 1);
         QCOMPARE(model.data(model.index(0), static_cast<int>(SyncConflictsModel::SyncConflictRoles::ExistingFileName)), QString{"a2"});
-        QCOMPARE(model.data(model.index(0), static_cast<int>(SyncConflictsModel::SyncConflictRoles::ExistingSize)), QString{"6 bytes"});
-        QCOMPARE(model.data(model.index(0), static_cast<int>(SyncConflictsModel::SyncConflictRoles::ConflictSize)), QString{"5 bytes"});
+        QCOMPARE(model.data(model.index(0), static_cast<int>(SyncConflictsModel::SyncConflictRoles::ExistingSize)), _locale.formattedDataSize(6));
+        QCOMPARE(model.data(model.index(0), static_cast<int>(SyncConflictsModel::SyncConflictRoles::ConflictSize)), _locale.formattedDataSize(5));
         QVERIFY(!model.data(model.index(0), static_cast<int>(SyncConflictsModel::SyncConflictRoles::ExistingDate)).toString().isEmpty());
         QVERIFY(!model.data(model.index(0), static_cast<int>(SyncConflictsModel::SyncConflictRoles::ConflictDate)).toString().isEmpty());
         QCOMPARE(model.data(model.index(0), static_cast<int>(SyncConflictsModel::SyncConflictRoles::ExistingPreviewUrl)), QVariant::fromValue(QUrl{QStringLiteral("image://tray-image-provider/:/fileicon%1A/a2").arg(fakeFolder.localPath())}));

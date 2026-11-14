@@ -1,15 +1,6 @@
 /*
- * Copyright (C) by Oleksandr Zolotov <alex@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2023 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #pragma once
@@ -39,13 +30,13 @@ public:
 
     [[nodiscard]] JobParallelism parallelism() const override;
 
-private slots:
+private Q_SLOTS:
     void start();
     void slotFetchMetadataJobFinished(int httpReturnCode, const QString &message);
     void slotUpdateMetadataFinished(int httpReturnCode, const QString &message);
-    void unlockFolder(const EncryptedFolderMetadataHandler::UnlockFolderWithResult result);
+    void unlockFolder(const OCC::EncryptedFolderMetadataHandler::UnlockFolderWithResult result);
 
-signals:
+Q_SIGNALS:
     void fileDropMetadataParsedAndAdjusted(const OCC::FolderMetadata *const metadata);
 
 private:

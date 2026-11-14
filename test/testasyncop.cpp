@@ -1,8 +1,11 @@
 /*
- *    This software is in the public domain, furnished "as is", without technical
- *    support, and with no warranty, express or implied, as to its usefulness for
- *    any purpose.
+ * SPDX-FileCopyrightText: 2020 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2018 ownCloud GmbH
+ * SPDX-License-Identifier: CC0-1.0
  *
+ * This software is in the public domain, furnished "as is", without technical
+ * support, and with no warranty, express or implied, as to its usefulness for
+ * any purpose.
  */
 
 #include <QtTest>
@@ -33,8 +36,8 @@ public:
     {
         setAttribute(QNetworkRequest::HttpStatusCodeAttribute, 202);
         setRawHeader("OC-JobStatus-Location", _pollLocation);
-        emit metaDataChanged();
-        emit finished();
+        Q_EMIT metaDataChanged();
+        Q_EMIT finished();
     }
 
     void abort() override {}
@@ -46,7 +49,14 @@ class TestAsyncOp : public QObject
 {
     Q_OBJECT
 
-private slots:
+private Q_SLOTS:
+    void initTestCase()
+    {
+        OCC::Logger::instance()->setLogFlush(true);
+        OCC::Logger::instance()->setLogDebug(true);
+
+        QStandardPaths::setTestModeEnabled(true);
+    }
 
     void asyncUploadOperations()
     {

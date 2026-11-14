@@ -1,5 +1,8 @@
 #!/usr/bin/env python
 
+# SPDX-FileCopyrightText: 2021 Nextcloud GmbH and Nextcloud contributors
+# SPDX-License-Identifier: GPL-2.0-or-later
+
 import sys
 import os
 import subprocess
@@ -34,7 +37,8 @@ def path_relative_to_package(app_package_file_path, file_path):
 def is_executable(file_path):
     output = str(execute(["file", file_path]))
     if (("Mach-O 64-bit dynamically linked shared library" in output)
-        or ("Mach-O 64-bit executable" in output)):
+        or ("Mach-O 64-bit executable" in output)
+            or ("Mach-O 64-bit bundle" in output)):
         return True
     return False
 

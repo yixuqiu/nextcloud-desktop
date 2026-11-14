@@ -1,15 +1,7 @@
 /*
- * Copyright (C) by Klaas Freitag <freitag@owncloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2018 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2014 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "config.h"
@@ -71,8 +63,9 @@ bool FolderWatcherPrivate::findFoldersBelow(const QDir &dir, QStringList &fullLi
 
 void FolderWatcherPrivate::inotifyRegisterPath(const QString &path)
 {
-    if (path.isEmpty())
+    if (path.isEmpty()) {
         return;
+    }
 
     int wd = inotify_add_watch(_fd, path.toUtf8().constData(),
         IN_CLOSE_WRITE | IN_ATTRIB | IN_MOVE | IN_CREATE | IN_DELETE | IN_DELETE_SELF | IN_MOVE_SELF | IN_UNMOUNT | IN_ONLYDIR);
@@ -84,7 +77,7 @@ void FolderWatcherPrivate::inotifyRegisterPath(const QString &path)
         // unreliable.
         if (_parent->_isReliable && (errno == ENOMEM || errno == ENOSPC)) {
             _parent->_isReliable = false;
-            emit _parent->becameUnreliable(
+            Q_EMIT _parent->becameUnreliable(
                 tr("This problem usually happens when the inotify watches are exhausted. "
                    "Check the FAQ for details."));
         }
@@ -93,8 +86,9 @@ void FolderWatcherPrivate::inotifyRegisterPath(const QString &path)
 
 void FolderWatcherPrivate::slotAddFolderRecursive(const QString &path)
 {
-    if (_pathToWatch.contains(path))
+    if (_pathToWatch.contains(path)) {
         return;
+    }
 
     int subdirs = 0;
     qCDebug(lcFolderWatcher) << "(+) Watcher:" << path;
@@ -166,8 +160,9 @@ void FolderWatcherPrivate::slotReceivedNotification(int fd)
         }
 
         // Fire event for the path that was changed.
-        if (event->len == 0 || event->wd <= -1)
+        if (event->len == 0 || event->wd <= -1) {
             continue;
+        }
         QByteArray fileName(event->name);
         // Filter out journal changes - redundant with filtering in
         // FolderWatcher::pathIsIgnored.
@@ -176,12 +171,17 @@ void FolderWatcherPrivate::slotReceivedNotification(int fd)
             || fileName.startsWith(".sync_")) {
             continue;
         }
-        const QString p = _watchToPath[event->wd] + '/' + fileName;
+        const auto watchPathIt = _watchToPath.constFind(event->wd);
+        if (watchPathIt == _watchToPath.cend()) {
+            qCDebug(lcFolderWatcher) << "Ignoring event for unknown watch descriptor" << event->wd << fileName;
+            continue;
+        }
+
+        const QString p = *watchPathIt + '/' + fileName;
         _parent->changeDetected(p);
 
-        if ((event->mask & (IN_MOVED_TO | IN_CREATE))
-            && QFileInfo(p).isDir()
-            && !_parent->pathIsIgnored(p)) {
+        const auto fileInfo = QFileInfo{p};
+        if ((event->mask & (IN_MOVED_TO | IN_CREATE)) && fileInfo.isDir() && !fileInfo.isSymLink() && !_parent->pathIsIgnored(p)) {
             slotAddFolderRecursive(p);
         }
         if (event->mask & (IN_MOVED_FROM | IN_DELETE)) {
@@ -193,16 +193,18 @@ void FolderWatcherPrivate::slotReceivedNotification(int fd)
 void FolderWatcherPrivate::removeFoldersBelow(const QString &path)
 {
     auto it = _pathToWatch.find(path);
-    if (it == _pathToWatch.end())
+    if (it == _pathToWatch.end()) {
         return;
+    }
 
     QString pathSlash = path + '/';
 
     // Remove the entry and all subentries
     while (it != _pathToWatch.end()) {
         auto itPath = it.key();
-        if (!itPath.startsWith(path))
+        if (!itPath.startsWith(path)) {
             break;
+        }
         if (itPath != path && !itPath.startsWith(pathSlash)) {
             // order is 'foo', 'foo bar', 'foo/bar'
             ++it;

@@ -1,15 +1,6 @@
 /*
- * Copyright (C) 2022 by Claudio Cambra <claudio.cambra@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2022 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #pragma once
@@ -53,26 +44,27 @@ public:
     [[nodiscard]] FileTagModel *fileTagModel() const;
     [[nodiscard]] bool sharingAvailable() const;
 
-public slots:
+public Q_SLOTS:
     void setLocalPath(const QString &localPath);
 
-signals:
+Q_SIGNALS:
     void localPathChanged();
     void fileChanged();
     void lockExpireStringChanged();
     void isFolderChanged();
     void fileTagModelChanged();
 
-private slots:
+private Q_SLOTS:
     void refreshFileDetails();
     void updateLockExpireString();
-    void updateFileTagModel(const OCC::Folder * const folder);
+    void updateFileTagModel();
 
 private:
     QString _localPath;
 
     QFileInfo _fileInfo;
     QFileSystemWatcher _fileWatcher;
+    Folder *_folder = nullptr;
     SyncJournalFileRecord _fileRecord;
     SyncJournalFileLockInfo _filelockState;
     QByteArray _numericFileId;

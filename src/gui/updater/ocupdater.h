@@ -1,15 +1,7 @@
 /*
- * Copyright (C) by Klaas Freitag <freitag@owncloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2018 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2014 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #ifndef OCUPDATER_H
@@ -70,11 +62,11 @@ class UpdaterScheduler : public QObject
 public:
     UpdaterScheduler(QObject *parent);
 
-signals:
+Q_SIGNALS:
     void updaterAnnouncement(const QString &title, const QString &msg, const QUrl &webUrl);
     void requestRestart();
 
-private slots:
+private Q_SLOTS:
     void slotTimerFired();
 
 private:
@@ -114,20 +106,20 @@ public:
     [[nodiscard]] int downloadState() const;
     void setDownloadState(DownloadState state);
 
-signals:
+Q_SIGNALS:
     void downloadStateChanged();
     void newUpdateAvailable(const QString &header, const QString &message, const QUrl &webUrl);
     void requestRestart();
 
-public slots:
+public Q_SLOTS:
     // FIXME Maybe this should be in the NSISUpdater which should have been called WindowsUpdater
     void slotStartInstaller();
 
-protected slots:
+protected Q_SLOTS:
     void backgroundCheckForUpdate() override;
     void slotOpenUpdateUrl();
 
-private slots:
+private Q_SLOTS:
     void slotVersionInfoArrived();
     void slotTimedOut();
 
@@ -155,7 +147,7 @@ class NSISUpdater : public OCUpdater
 public:
     explicit NSISUpdater(const QUrl &url);
     bool handleStartup() override;
-private slots:
+private Q_SLOTS:
     void slotDownloadFinished();
     void slotWriteFile();
 
@@ -181,11 +173,9 @@ class PassiveUpdateNotifier : public OCUpdater
 public:
     explicit PassiveUpdateNotifier(const QUrl &url);
     bool handleStartup() override { return false; }
-    void backgroundCheckForUpdate() override;
 
 private:
     void versionInfoArrived(const UpdateInfo &info) override;
-    QByteArray _runningAppVersion;
 };
 }
 

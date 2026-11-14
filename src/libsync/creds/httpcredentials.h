@@ -1,16 +1,7 @@
 /*
- * Copyright (C) by Klaas Freitag <freitag@kde.org>
- * Copyright (C) by Krzesimir Nowak <krzesimir@endocode.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2018 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2013 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #ifndef MIRALL_CREDS_HTTP_CREDENTIALS_H
@@ -58,13 +49,13 @@ namespace OCC {
                 v
             slotReadJobDone
                 |        |
-                |        +-------> emit fetched()
+                |        +-------> Q_EMIT fetched()
                 |
                 v
             refreshAccessToken()
                 |
                 v
-            emit fetched()
+            Q_EMIT fetched()
 
    2) If the credentials is still not valid when fetched() is emitted, the ui, will call askFromUser()
       which is implemented in HttpCredentialsGui
@@ -76,9 +67,6 @@ class OWNCLOUDSYNC_EXPORT HttpCredentials : public AbstractCredentials
     friend class HttpCredentialsAccessManager;
 
 public:
-    /// Don't add credentials if this is set on a QNetworkRequest
-    static constexpr QNetworkRequest::Attribute DontAddCredentialsAttribute = QNetworkRequest::User;
-
     HttpCredentials();
     explicit HttpCredentials(const QString &user, const QString &password,
             const QByteArray &clientCertBundle = QByteArray(), const QByteArray &clientCertPassword = QByteArray());
@@ -86,7 +74,7 @@ public:
     [[nodiscard]] QString authType() const override;
     [[nodiscard]] QNetworkAccessManager *createQNAM() const override;
     [[nodiscard]] bool ready() const override;
-    void fetchFromKeychain() override;
+    void fetchFromKeychain(const QString &appName = {}) override;
     bool stillValid(QNetworkReply *reply) override;
     void persist() override;
     [[nodiscard]] QString user() const override;

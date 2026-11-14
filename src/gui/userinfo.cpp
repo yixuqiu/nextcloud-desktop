@@ -1,16 +1,6 @@
 /*
- * Copyright (C) by Daniel Molkentin <danimo@owncloud.com>
- * Copyright (C) by Michael Schuster <michael@schuster.ms>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2020 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "userinfo.h"
@@ -24,6 +14,8 @@
 #include <QTimer>
 #include <QJsonDocument>
 #include <QJsonObject>
+
+using namespace Qt::StringLiterals;
 
 namespace OCC {
 
@@ -76,7 +68,7 @@ void UserInfo::slotRequestFailed()
 
 bool UserInfo::canGetInfo() const
 {
-    if (!_accountState || !_active) {
+    if (!_accountState || !_active || !_accountState->account() || _accountState->account()->isPublicShareLink()) {
         return false;
     }
     AccountPtr account = _accountState->account();
@@ -106,15 +98,15 @@ void UserInfo::slotFetchInfo()
 
 void UserInfo::slotUpdateLastInfo(const QJsonDocument &json)
 {
-    auto objData = json.object().value("ocs").toObject().value("data").toObject();
+    auto objData = json.object().value("ocs"_L1).toObject().value("data"_L1).toObject();
 
     AccountPtr account = _accountState->account();
 
-    if (const auto newUserId = objData.value("id").toString(); !newUserId.isEmpty()) {
+    if (const auto newUserId = objData.value("id"_L1).toString(); !newUserId.isEmpty()) {
         if (QString::compare(account->davUser(), newUserId, Qt::CaseInsensitive) != 0) {
             // TODO: the error message should be in the UI
             qInfo() << "Authenticated with the wrong user! Please login with the account:" << account->prettyName();
-            if (const auto cred = account->credentials()) {
+            if (account->credentials()) {
                 account->credentials()->askFromUser();
             }
             return;
@@ -122,25 +114,25 @@ void UserInfo::slotUpdateLastInfo(const QJsonDocument &json)
         account->setDavUser(newUserId);
     }
 
-    QString displayName = objData.value("display-name").toString();
+    QString displayName = objData.value("display-name"_L1).toString();
     if (!displayName.isEmpty()) {
         account->setDavDisplayName(displayName);
     }
 
-    auto objQuota = objData.value("quota").toObject();
-    qint64 used = objQuota.value("used").toDouble();
-    qint64 total = objQuota.value("quota").toDouble();
+    auto objQuota = objData.value("quota"_L1).toObject();
+    qint64 used = objQuota.value("used"_L1).toDouble();
+    qint64 total = objQuota.value("quota"_L1).toDouble();
 
     if(_lastInfoReceived.isNull() || _lastQuotaUsedBytes != used || _lastQuotaTotalBytes != total) {
         _lastQuotaUsedBytes = used;
         _lastQuotaTotalBytes = total;
-        emit quotaUpdated(_lastQuotaTotalBytes, _lastQuotaUsedBytes);
+        Q_EMIT quotaUpdated(_lastQuotaTotalBytes, _lastQuotaUsedBytes);
     }
 
     _jobRestartTimer.start(defaultIntervalT);
     _lastInfoReceived = QDateTime::currentDateTime();
 
-    if(_fetchAvatarImage) {
+    if(_fetchAvatarImage && !account->isPublicShareLink()) {
         auto *job = new AvatarJob(account, account->davUser(), 128, this);
         job->setTimeout(20 * 1000);
         QObject::connect(job, &AvatarJob::avatarPixmap, this, &UserInfo::slotAvatarImage);
@@ -148,14 +140,14 @@ void UserInfo::slotUpdateLastInfo(const QJsonDocument &json)
         return;
     }
 
-    emit fetchedLastInfo(this);
+    Q_EMIT fetchedLastInfo(this);
 }
 
 void UserInfo::slotAvatarImage(const QImage &img)
 {
     _accountState->account()->setAvatar(img);
 
-    emit fetchedLastInfo(this);
+    Q_EMIT fetchedLastInfo(this);
 }
 
 } // namespace OCC

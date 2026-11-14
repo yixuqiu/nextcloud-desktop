@@ -1,15 +1,6 @@
 /*
- * Copyright (C) by Felix Weilbach <felix.weilbach@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2021 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #pragma once
@@ -25,6 +16,7 @@
 #include <QtNumeric>
 
 #include <cstddef>
+#include <deque>
 #include <memory>
 #include <vector>
 
@@ -42,9 +34,13 @@ class UserStatusSelectorModel : public QObject
     Q_PROPERTY(QVariantList clearStageTypes READ clearStageTypes CONSTANT)
     Q_PROPERTY(QString clearAtDisplayString READ clearAtDisplayString NOTIFY clearAtDisplayStringChanged)
     Q_PROPERTY(QString errorMessage READ errorMessage NOTIFY errorMessageChanged)
+    Q_PROPERTY(bool busyStatusSupported READ busyStatusSupported NOTIFY busyStatusSupportedChanged)
+    Q_PROPERTY(bool userStatusLoaded READ userStatusLoaded NOTIFY userStatusLoadedChanged)
+    Q_PROPERTY(bool finishOnOnlineStatusSet READ finishOnOnlineStatusSet WRITE setFinishOnOnlineStatusSet NOTIFY finishOnOnlineStatusSetChanged)
     Q_PROPERTY(QUrl onlineIcon READ onlineIcon CONSTANT)
     Q_PROPERTY(QUrl awayIcon READ awayIcon CONSTANT)
     Q_PROPERTY(QUrl dndIcon READ dndIcon CONSTANT)
+    Q_PROPERTY(QUrl busyIcon READ busyIcon CONSTANT)
     Q_PROPERTY(QUrl invisibleIcon READ invisibleIcon CONSTANT)
 
 public:
@@ -74,45 +70,58 @@ public:
     explicit UserStatusSelectorModel(const UserStatus &userStatus,
         QObject *parent = nullptr);
 
-    Q_REQUIRED_RESULT int userIndex() const;
+    [[nodiscard]] int userIndex() const;
 
-    Q_REQUIRED_RESULT UserStatus::OnlineStatus onlineStatus() const;
+    [[nodiscard]] UserStatus::OnlineStatus onlineStatus() const;
     void setOnlineStatus(UserStatus::OnlineStatus status);
 
-    Q_REQUIRED_RESULT QUrl onlineIcon() const;
-    Q_REQUIRED_RESULT QUrl awayIcon() const;
-    Q_REQUIRED_RESULT QUrl dndIcon() const;
-    Q_REQUIRED_RESULT QUrl invisibleIcon() const;
+    [[nodiscard]] QUrl onlineIcon() const;
+    [[nodiscard]] QUrl awayIcon() const;
+    [[nodiscard]] QUrl dndIcon() const;
+    [[nodiscard]] QUrl busyIcon() const;
+    [[nodiscard]] QUrl invisibleIcon() const;
 
-    Q_REQUIRED_RESULT QString userStatusMessage() const;
+    [[nodiscard]] QString userStatusMessage() const;
     void setUserStatusMessage(const QString &message);
-    Q_REQUIRED_RESULT QString userStatusEmoji() const;
+    [[nodiscard]] QString userStatusEmoji() const;
     void setUserStatusEmoji(const QString &emoji);
 
     [[nodiscard]] QVector<UserStatus> predefinedStatuses() const;
 
-    Q_REQUIRED_RESULT QVariantList clearStageTypes() const;
-    Q_REQUIRED_RESULT QString clearAtDisplayString() const;
+    [[nodiscard]] QVariantList clearStageTypes() const;
+    [[nodiscard]] QString clearAtDisplayString() const;
     [[nodiscard]] Q_INVOKABLE QString clearAtReadable(const OCC::UserStatus &status) const;
 
-    Q_REQUIRED_RESULT QString errorMessage() const;
+    [[nodiscard]] QString errorMessage() const;
+    [[nodiscard]] bool busyStatusSupported() const;
+    [[nodiscard]] bool userStatusLoaded() const;
+    [[nodiscard]] bool finishOnOnlineStatusSet() const;
 
-public slots:
+public Q_SLOTS:
     void setUserIndex(const int userIndex);
+    void setFinishOnOnlineStatusSet(bool finishOnOnlineStatusSet);
     void setUserStatus();
     void clearUserStatus();
     void setClearAt(const OCC::UserStatusSelectorModel::ClearStageType clearStageType);
     void setPredefinedStatus(const OCC::UserStatus &predefinedStatus);
 
-signals:
+Q_SIGNALS:
     void userIndexChanged();
     void errorMessageChanged();
+    void busyStatusSupportedChanged();
+    void userStatusLoadedChanged();
     void userStatusChanged();
     void clearAtDisplayStringChanged();
     void predefinedStatusesChanged();
+    void finishOnOnlineStatusSetChanged();
     void finished();
 
 private:
+    enum class SetUserStatusOperation {
+        OnlineStatus,
+        Message,
+    };
+
     void init();
     void reset();
     void onUserStatusFetched(const UserStatus &userStatus);
@@ -121,18 +130,23 @@ private:
     void onMessageCleared();
     void onError(UserStatusConnector::Error error);
 
-    Q_REQUIRED_RESULT QString clearAtReadable(const Optional<ClearAt> &clearAt) const;
-    Q_REQUIRED_RESULT QString clearAtStageToString(ClearStageType stage) const;
-    Q_REQUIRED_RESULT QString timeDifferenceToString(int differenceSecs) const;
-    Q_REQUIRED_RESULT Optional<ClearAt> clearStageTypeToDateTime(ClearStageType type) const;
+    [[nodiscard]] QString clearAtReadable(const Optional<ClearAt> &clearAt) const;
+    [[nodiscard]] QString clearAtStageToString(ClearStageType stage) const;
+    [[nodiscard]] QString timeDifferenceToString(int differenceSecs) const;
+    [[nodiscard]] Optional<ClearAt> clearStageTypeToDateTime(ClearStageType type) const;
     void setError(const QString &reason);
     void clearError();
+    void setUserStatusLoaded(bool userStatusLoaded);
+    void setUserStatus(SetUserStatusOperation operation);
 
     int _userIndex = -1;
+    bool _finishOnOnlineStatusSet = true;
     std::shared_ptr<UserStatusConnector> _userStatusConnector {};
     QVector<UserStatus> _predefinedStatuses;
     UserStatus _userStatus;
+    bool _userStatusLoaded = false;
     std::unique_ptr<DateTimeProvider> _dateTimeProvider;
+    std::deque<SetUserStatusOperation> _setUserStatusOperations;
 
     QString _errorMessage;
 

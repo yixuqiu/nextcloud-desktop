@@ -7,7 +7,8 @@
 # The standard <name>_FOUND variables can be used in the same way
 # as when using the normal FIND_PACKAGE()
 
-# Copyright (c) 2006-2010 Alexander Neundorf, <neundorf@kde.org>
+# SPDX-FileCopyrightText: 2006-2010 Alexander Neundorf <neundorf@kde.org>
+# SPDX-License-Identifier: BSD-3-Clause
 #
 # Redistribution and use is allowed according to the terms of the BSD license.
 # For details see the accompanying COPYING-CMAKE-SCRIPTS file.
@@ -17,13 +18,13 @@
 macro(_MOFP_SET_EMPTY_IF_DEFINED _name _var)
    if(DEFINED ${_name}_${_var})
       set(${_name}_${_var} "")
-   endif(DEFINED ${_name}_${_var})
+   endif()
 
    string(TOUPPER ${_name} _nameUpper)
    if(DEFINED ${_nameUpper}_${_var})
       set(${_nameUpper}_${_var}  "")
-   endif(DEFINED ${_nameUpper}_${_var})
-endmacro(_MOFP_SET_EMPTY_IF_DEFINED _package _var)
+   endif()
+endmacro()
 
 
 macro (MACRO_OPTIONAL_FIND_PACKAGE _name )
@@ -43,5 +44,5 @@ macro (MACRO_OPTIONAL_FIND_PACKAGE _name )
       _mofp_set_empty_if_defined(${_name} LIBS)
       _mofp_set_empty_if_defined(${_name} FLAGS)
       _mofp_set_empty_if_defined(${_name} DEFINITIONS)
-   endif (WITH_${_name})
-endmacro (MACRO_OPTIONAL_FIND_PACKAGE)
+   endif ()
+endmacro ()

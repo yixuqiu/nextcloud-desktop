@@ -1,16 +1,7 @@
 /*
- * Copyright (C) by Klaas Freitag <freitag@kde.org>
- * Copyright (c) by Markus Goetz <guruz@owncloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2020 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2014 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include <QLoggingCategory>
@@ -56,8 +47,10 @@ protected:
 
         QNetworkRequest req(request);
 
-        QByteArray credHash = QByteArray(_cred->user().toUtf8() + ":" + _cred->password().toUtf8()).toBase64();
-        req.setRawHeader(QByteArray("Authorization"), QByteArray("Basic ") + credHash);
+        if (!req.attribute(AbstractCredentials::DontAddCredentialsAttribute).toBool()) {
+            QByteArray credHash = QByteArray(_cred->user().toUtf8() + ":" + _cred->password().toUtf8()).toBase64();
+            req.setRawHeader(QByteArray("Authorization"), QByteArray("Basic ") + credHash);
+        }
 
         // A pre-authenticated cookie
         QByteArray token = _cred->_token.toUtf8();
@@ -125,7 +118,7 @@ void TokenCredentials::fetchFromKeychain()
 
 void TokenCredentials::askFromUser()
 {
-    emit asked();
+    Q_EMIT asked();
 }
 
 

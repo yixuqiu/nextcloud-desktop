@@ -1,15 +1,7 @@
 /*
- * Copyright (C) by Olivier Goffart <ogoffart@owncloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2017 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2016 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "config.h"
@@ -33,6 +25,8 @@
 #include <cmath>
 #include <cstring>
 
+using namespace Qt::StringLiterals;
+
 namespace OCC {
 
 constexpr auto relativeUploadsPath = "remote.php/dav/uploads/";
@@ -50,7 +44,7 @@ QUrl PropagateUploadFileNG::chunkUrl(const int chunk) const
     constexpr auto maxChunkDigits = 5; // Chunk V2: max num of chunks is 10000
 
     // We need to do add leading 0 because the server orders the chunk alphabetically
-    const auto chunkNumString = QString("%1").arg(chunk, maxChunkDigits, 10, QChar('0'));
+    const auto chunkNumString = QStringLiteral("%1").arg(chunk, maxChunkDigits, 10, QChar('0'));
     return Utility::concatUrlPath(chunkUploadFolderUrl(), chunkNumString);
 }
 
@@ -88,7 +82,7 @@ QUrl PropagateUploadFileNG::chunkUrl(const int chunk) const
 QByteArray PropagateUploadFileNG::destinationHeader() const
 {
     const auto davUrl = Utility::trailingSlashPath(propagator()->account()->davUrl().toString());
-    const auto remotePath = Utility::noLeadingSlashPath(propagator()->fullRemotePath(_fileToUpload._file));
+    const auto remotePath = QUrl::toPercentEncoding(Utility::noLeadingSlashPath(propagator()->fullRemotePath(_fileToUpload._file)), "/"_ba);
     const auto destination = QString(davUrl + remotePath);
     return destination.toUtf8();
 }
@@ -121,7 +115,7 @@ void PropagateUploadFileNG::doStartUpload()
         // The upload info is stale. remove the stale chunks on the server
         _transferId = progressInfo._transferid;
         // Fire and forget. Any error will be ignored.
-        (new DeleteJob(propagator()->account(), chunkUploadFolderUrl(), this))->start();
+        (new DeleteJob(propagator()->account(), chunkUploadFolderUrl(), {}, this))->start();
         // startNewUpload will reset the _transferId and the UploadInfo in the db.
     }
 
@@ -168,7 +162,7 @@ void PropagateUploadFileNG::slotPropfindFinished()
 
         // Wipe the old chunking data.
         // Fire and forget. Any error will be ignored.
-        (new DeleteJob(propagator()->account(), chunkUploadFolderUrl(), this))->start();
+        (new DeleteJob(propagator()->account(), chunkUploadFolderUrl(), {}, this))->start();
 
         propagator()->_activeJobList.append(this);
         startNewUpload();
@@ -185,8 +179,8 @@ void PropagateUploadFileNG::slotPropfindFinished()
         // Make sure that if there is a "hole" and then a few more chunks, on the server
         // we should remove the later chunks. Otherwise when we do dynamic chunk sizing, we may end up
         // with corruptions if there are too many chunks, or if we abort and there are still stale chunks.
-        for (const auto &serverChunk : qAsConst(_serverChunks)) {
-            auto job = new DeleteJob(propagator()->account(), Utility::concatUrlPath(chunkUploadFolderUrl(), serverChunk.originalName), this);
+        for (const auto &serverChunk : std::as_const(_serverChunks)) {
+            auto job = new DeleteJob(propagator()->account(), Utility::concatUrlPath(chunkUploadFolderUrl(), serverChunk.originalName), {}, this);
             QObject::connect(job, &DeleteJob::finishedSignal, this, &PropagateUploadFileNG::slotDeleteJobFinished);
             _jobs.append(job);
             job->start();
@@ -328,6 +322,12 @@ void PropagateUploadFileNG::finishUpload()
 
     const auto fileSize = _fileToUpload._size;
     headers[QByteArrayLiteral("OC-Total-Length")] = QByteArray::number(fileSize);
+    if (_item->_lockOwnerType == SyncFileItem::LockOwnerType::TokenLock &&
+        _item->_locked == SyncFileItem::LockStatus::LockedItem &&
+        _item->_instruction != CSYNC_INSTRUCTION_NEW &&
+        _item->_instruction != CSYNC_INSTRUCTION_TYPE_CHANGE) {
+        headers[QByteArrayLiteral("If")] = (QLatin1String("<") + propagator()->account()->davUrl().toString() + _fileToUpload._file + "> (<opaquelocktoken:" + _item->_lockToken.toUtf8() + ">)").toUtf8();
+    }
 
     const auto job = new MoveJob(propagator()->account(), Utility::concatUrlPath(chunkUploadFolderUrl(), "/.file"), destination, headers, this);
     _jobs.append(job);
@@ -341,8 +341,9 @@ void PropagateUploadFileNG::finishUpload()
 
 void PropagateUploadFileNG::startNextChunk()
 {
-    if (propagator()->_abortRequested)
+    if (propagator()->_abortRequested) {
         return;
+    }
 
     const auto fileSize = _fileToUpload._size;
     ENFORCE(fileSize >= _sent, "Sent data exceeds file size")
@@ -355,15 +356,19 @@ void PropagateUploadFileNG::startNextChunk()
     }
 
     const auto fileName = _fileToUpload._path;
+    if (FileSystem::isFileLocked(fileName, FileSystem::LockMode::SharedRead)) {
+        // If the file is currently locked, we want to retry the sync
+        // when it becomes available again.
+        Q_EMIT propagator()->seenLockedFile(fileName);
+
+        // Soft error because this is likely caused by the user modifying his files while syncing
+        abortWithError(SyncFileItem::FileLocked, tr("File is locked preventing syncing it", "Generic warning message when a locked file cannot be synced"));
+        return;
+    }
     auto device = std::make_unique<UploadDevice>(fileName, _sent, _currentChunkSize, &propagator()->_bandwidthManager);
     if (!device->open(QIODevice::ReadOnly)) {
         qCWarning(lcPropagateUploadNG) << "Could not prepare upload device: " << device->errorString();
 
-        // If the file is currently locked, we want to retry the sync
-        // when it becomes available again.
-        if (FileSystem::isFileLocked(fileName)) {
-            emit propagator()->seenLockedFile(fileName);
-        }
         // Soft error because this is likely caused by the user modifying his files while syncing
         abortWithError(SyncFileItem::SoftError, device->errorString());
         return;
@@ -372,6 +377,7 @@ void PropagateUploadFileNG::startNextChunk()
     QMap<QByteArray, QByteArray> headers;
     headers["OC-Chunk-Offset"] = QByteArray::number(_sent);
     headers["Destination"] = destinationHeader();
+    headers[QByteArrayLiteral("OC-Total-Length")] = QByteArray::number(fileSize);
 
     _sent += _currentChunkSize;
     const auto url = chunkUrl(_currentChunk);
@@ -544,7 +550,9 @@ void PropagateUploadFileNG::slotMoveJobFinished()
 
     if (_item->_etag.isEmpty()) {
         qCWarning(lcPropagateUploadNG) << "Server did not return an ETAG" << _item->_file;
-        abortWithError(SyncFileItem::NormalError, tr("Missing ETag from server"));
+        const auto errorMessage = _item->isDirectory() ? tr("Folder is not accessible on the server.", "server error")
+                                                       : tr("File is not accessible on the server.", "server error");
+        abortWithError(SyncFileItem::NormalError, errorMessage);
         return;
     }
     finalize();

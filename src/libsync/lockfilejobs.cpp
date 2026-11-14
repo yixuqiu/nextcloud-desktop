@@ -1,21 +1,13 @@
 /*
- * Copyright (C) by Matthieu Gallien <matthieu.gallien@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2022 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "lockfilejobs.h"
 
 #include "account.h"
 #include "common/syncjournaldb.h"
+#include "common/syncjournalfilerecord.h"
 #include "filesystem.h"
 
 #include <QLoggingCategory>
@@ -30,6 +22,7 @@ LockFileJob::LockFileJob(const AccountPtr account,
                          const QString &path,
                          const QString &remoteSyncPathWithTrailingSlash,
                          const QString &localSyncPath,
+                         const QString &etag,
                          const SyncFileItem::LockStatus requestedLockState,
                          const SyncFileItem::LockOwnerType lockOwnerType,
                          QObject *parent)
@@ -39,6 +32,7 @@ LockFileJob::LockFileJob(const AccountPtr account,
     , _requestedLockOwnerType(lockOwnerType)
     , _remoteSyncPathWithTrailingSlash(remoteSyncPathWithTrailingSlash)
     , _localSyncPath(localSyncPath)
+    , _existingEtag(etag)
 {
     if (!_localSyncPath.endsWith(QLatin1Char('/'))) {
         _localSyncPath.append(QLatin1Char('/'));
@@ -47,7 +41,16 @@ LockFileJob::LockFileJob(const AccountPtr account,
 
 void LockFileJob::start()
 {
-    qCInfo(lcLockFileJob()) << "start with path:" << path()
+    auto remotePath = path();
+
+    SyncJournalFileRecord record;
+    const auto relativePathInDb = path().mid(_remoteSyncPathWithTrailingSlash.size());
+    if (_journal->getFileRecord(relativePathInDb, &record) && record.isValid() && record.isE2eEncrypted()) {
+        remotePath = _remoteSyncPathWithTrailingSlash + record.e2eMangledName();
+        qCDebug(lcLockFileJob).nospace() << "will (un)lock e2ee file path=" << path() << " remotePath=" << remotePath;
+    }
+
+    qCInfo(lcLockFileJob()) << "start with path:" << remotePath
                             << "lock state:" <<  _requestedLockState
                             << "lock owner type:" << _requestedLockOwnerType;
 
@@ -65,13 +68,17 @@ void LockFileJob::start()
     switch(_requestedLockState)
     {
     case SyncFileItem::LockStatus::LockedItem:
+    {
+        const auto etagValue = QLatin1String("\"%1\"").arg(_existingEtag.toLatin1());
+        request.setRawHeader(QByteArrayLiteral("If-Match"), etagValue.toLatin1());
         verb = "LOCK";
         break;
+    }
     case SyncFileItem::LockStatus::UnlockedItem:
         verb = "UNLOCK";
         break;
     }
-    sendRequest(verb, makeDavUrl(path()), request);
+    sendRequest(verb, makeDavUrl(remotePath), request);
 
     AbstractNetworkJob::start();
 }
@@ -79,7 +86,7 @@ void LockFileJob::start()
 bool LockFileJob::finished()
 {
     if (reply()->error() != QNetworkReply::NoError) {
-        qCInfo(lcLockFileJob()) << "finished with error" << reply()->error() << reply()->errorString() << _requestedLockState << _requestedLockOwnerType;
+        qCInfo(lcLockFileJob()) << "finished with error" << reply()->error() << reply()->errorString() << _requestedLockState << _requestedLockOwnerType << _existingEtag;
         const auto httpErrorCode = reply()->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         if (httpErrorCode == LOCKED_HTTP_ERROR_CODE) {
             const auto record = handleReply();
@@ -115,6 +122,7 @@ void LockFileJob::setFileRecordLocked(SyncJournalFileRecord &record) const
     record._lockstate._lockEditorApp = _editorName;
     record._lockstate._lockTime = _lockTime;
     record._lockstate._lockTimeout = _lockTimeout;
+    record._lockstate._lockToken = _lockToken;
     if (!_etag.isEmpty()) {
         record._etag = _etag;
     }
@@ -129,6 +137,7 @@ void LockFileJob::resetState()
     _userId.clear();
     _lockTime = 0;
     _lockTimeout = 0;
+    _lockToken.clear();
 }
 
 SyncJournalFileRecord LockFileJob::handleReply()
@@ -241,6 +250,8 @@ void LockFileJob::decodeStartElement(const QString &name,
         _editorName = reader.readElementText();
     } else if (name == QStringLiteral("getetag")) {
         _etag = reader.readElementText().toUtf8();
+    } else if (name == QStringLiteral("lock-token")) {
+        _lockToken = reader.readElementText();
     }
 }
 

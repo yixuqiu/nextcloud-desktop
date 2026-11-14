@@ -1,16 +1,7 @@
 /*
- * Copyright (C) by Klaas Freitag <freitag@kde.org>
- * Copyright (C) by Krzesimir Nowak <krzesimir@endocode.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2018 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2013 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include <QLoggingCategory>
@@ -22,11 +13,7 @@
 #include <QJsonDocument>
 #include <QBuffer>
 
-#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
 #include <qt6keychain/keychain.h>
-#else
-#include <qt5keychain/keychain.h>
-#endif
 
 #include "account.h"
 #include "accessmanager.h"
@@ -64,7 +51,7 @@ protected:
     QNetworkReply *createRequest(Operation op, const QNetworkRequest &request, QIODevice *outgoingData) override
     {
         QNetworkRequest req(request);
-        if (!req.attribute(HttpCredentials::DontAddCredentialsAttribute).toBool()) {
+        if (!req.attribute(AbstractCredentials::DontAddCredentialsAttribute).toBool()) {
             if (_cred && !_cred->password().isEmpty()) {
                 QByteArray credHash = QByteArray(_cred->user().toUtf8() + ":" + _cred->password().toUtf8()).toBase64();
                 req.setRawHeader("Authorization", "Basic " + credHash);
@@ -162,8 +149,9 @@ QString HttpCredentials::fetchUser()
     return _user;
 }
 
-void HttpCredentials::fetchFromKeychain()
+void HttpCredentials::fetchFromKeychain(const QString &appName)
 {
+    Q_UNUSED(appName)
     _wasFetched = true;
 
     // User must be fetched from config file
@@ -223,7 +211,7 @@ void HttpCredentials::deleteOldKeychainEntries()
 
 bool HttpCredentials::keychainUnavailableRetryLater(QKeychain::ReadPasswordJob *incoming)
 {
-#if defined(Q_OS_UNIX) && !defined(Q_OS_MAC)
+#if defined(Q_OS_UNIX) && !defined(Q_OS_MACOS)
     Q_ASSERT(!incoming->insecureFallback()); // If insecureFallback is set, the next test would be pointless
     if (_retryOnKeyChainError && (incoming->error() == QKeychain::NoBackendAvailable
             || incoming->error() == QKeychain::OtherError)) {
@@ -245,8 +233,9 @@ bool HttpCredentials::keychainUnavailableRetryLater(QKeychain::ReadPasswordJob *
 void HttpCredentials::slotReadClientCertPasswordJobDone(QKeychain::Job *job)
 {
     auto readJob = qobject_cast<QKeychain::ReadPasswordJob*>(job);
-    if (keychainUnavailableRetryLater(readJob))
+    if (keychainUnavailableRetryLater(readJob)) {
         return;
+    }
 
     if (readJob->error() == QKeychain::NoError) {
         _clientCertPassword = readJob->binaryData();
@@ -266,8 +255,9 @@ void HttpCredentials::slotReadClientCertPasswordJobDone(QKeychain::Job *job)
 void HttpCredentials::slotReadClientCertPEMJobDone(QKeychain::Job *incoming)
 {
     auto readJob = qobject_cast<QKeychain::ReadPasswordJob*>(incoming);
-    if (keychainUnavailableRetryLater(readJob))
+    if (keychainUnavailableRetryLater(readJob)) {
         return;
+    }
 
     // Store PEM in memory
     if (readJob->error() == QKeychain::NoError && readJob->binaryData().length() > 0) {
@@ -365,7 +355,7 @@ void HttpCredentials::slotReadJobDone(QKeychain::Job *incoming)
         // Still, the password can be empty which indicates a problem and
         // the password dialog has to be opened.
         _ready = true;
-        emit fetched();
+        Q_EMIT fetched();
     } else {
         // we come here if the password is empty or any other keychain
         // error happened.
@@ -374,7 +364,7 @@ void HttpCredentials::slotReadJobDone(QKeychain::Job *incoming)
 
         _password = QString();
         _ready = false;
-        emit fetched();
+        Q_EMIT fetched();
     }
 
     // If keychain data was read from legacy location, wipe these entries and store new ones
@@ -438,7 +428,7 @@ void HttpCredentials::persist()
         // it's just written if it gets passed into the constructor.
         _account->setCredentialSetting(QLatin1String(clientCertBundleC), _clientCertBundle);
     }
-    emit _account->wantsAccountSaved(_account);
+    Q_EMIT _account->wantsAccountSaved(_account->sharedFromThis());
 
     // write secrets to the keychain
     if (!_clientCertBundle.isEmpty()) {
@@ -534,8 +524,9 @@ void HttpCredentials::slotWriteJobDone(QKeychain::Job *job)
 
 void HttpCredentials::slotAuthentication(QNetworkReply *reply, QAuthenticator *authenticator)
 {
-    if (!_ready)
+    if (!_ready) {
         return;
+    }
 
     Q_UNUSED(authenticator)
     // Because of issue #4326, we need to set the login and password manually at every requests
@@ -547,8 +538,9 @@ void HttpCredentials::slotAuthentication(QNetworkReply *reply, QAuthenticator *a
 bool HttpCredentials::retryIfNeeded(AbstractNetworkJob *job)
 {
     auto *reply = job->reply();
-    if (!reply || !reply->property(needRetryC).toBool())
+    if (!reply || !reply->property(needRetryC).toBool()) {
         return false;
+    }
 
     job->retry();
     return true;
@@ -556,8 +548,9 @@ bool HttpCredentials::retryIfNeeded(AbstractNetworkJob *job)
 
 bool HttpCredentials::unpackClientCertBundle()
 {
-    if (_clientCertBundle.isEmpty())
+    if (_clientCertBundle.isEmpty()) {
         return true;
+    }
 
     QBuffer certBuffer(&_clientCertBundle);
     certBuffer.open(QIODevice::ReadOnly);
@@ -567,3 +560,5 @@ bool HttpCredentials::unpackClientCertBundle()
 }
 
 } // namespace OCC
+
+#include "moc_httpcredentials.cpp"

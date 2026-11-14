@@ -1,35 +1,33 @@
 /*
  * libcsync -- a library to sync a directory with another
  *
- * Copyright (c) 2013 by Klaas Freitag <freitag@owncloud.com>
- *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * SPDX-FileCopyrightText: 2024 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2013 ownCloud, Inc.
+ * SPDX-License-Identifier: LGPL-2.1-or-later
  */
+
 #include "common/filesystembase.h"
 #include "csync/csync.h"
 #include "csync/vio/csync_vio_local.h"
+#include "logger.h"
 
 #include <QTemporaryFile>
 #include <QTest>
-
+#include <QStandardPaths>
 
 class TestLongWindowsPath : public QObject
 {
     Q_OBJECT
 
 private Q_SLOTS:
+    void initTestCase()
+    {
+        OCC::Logger::instance()->setLogFlush(true);
+        OCC::Logger::instance()->setLogDebug(true);
+
+        QStandardPaths::setTestModeEnabled(true);
+    }
+
 #ifdef Q_OS_WIN
     void check_long_win_path()
     {
@@ -130,7 +128,7 @@ private Q_SLOTS:
         file.close();
 
         csync_file_stat_t buf;
-        QVERIFY(csync_vio_local_stat(longPath.filePath(), &buf) != -1);
+        QVERIFY(csync_vio_local_stat(longPath.filePath(), &buf, true) != -1);
         QVERIFY(buf.size == data.size());
         QVERIFY(buf.size == longPath.size());
 

@@ -1,51 +1,37 @@
 /*
- * Copyright (C) 2023 by Claudio Cambra <claudio.cambra@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2023 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "fileprovidersettingscontroller.h"
 
-#include <QFileDialog>
-#include <QQmlApplicationEngine>
+#include <QDesktopServices>
+#include <QDir>
+#include <QList>
+#include <QMessageBox>
+#include <QPushButton>
 
-#include "gui/systray.h"
+#include "gui/accountmanager.h"
+#include "gui/folderman.h"
 #include "gui/userinfo.h"
 #include "gui/macOS/fileprovider.h"
 #include "gui/macOS/fileprovideritemmetadata.h"
-#include "gui/macOS/fileprovidermaterialiseditemsmodel.h"
 #include "gui/macOS/fileproviderutils.h"
+#include "libsync/configfile.h"
+#include "libsync/theme.h"
 
 // Objective-C imports
 #import <Foundation/Foundation.h>
-
-#import "fileproviderstorageuseenumerationobserver.h"
+#import <FileProvider/FileProvider.h>
+#import <AppKit/AppKit.h>
 // End of Objective-C imports
 
+static_assert(__has_feature(objc_arc), "fileprovidersettingscontroller_mac requires ARC.");
+
 namespace {
-constexpr auto fpSettingsQmlPath = "qrc:/qml/src/gui/macOS/ui/FileProviderSettings.qml";
-constexpr auto fpEvictionDialogQmlPath = "qrc:/qml/src/gui/macOS/ui/FileProviderEvictionDialog.qml";
-
-// QML properties -- make sure they match up in QML file!
-constexpr auto fpAccountUserIdAtHostProp = "accountUserIdAtHost";
-constexpr auto fpMaterialisedItemsModelProp = "materialisedItemsModel";
-
 // NSUserDefaults entries
 constexpr auto enabledAccountsSettingsKey = "enabledAccounts";
 
-float gbFromBytesWithOneDecimal(const unsigned long long bytes)
-{
-    constexpr auto bytesIn100Mb = 1ULL * 1000ULL * 1000ULL * 100ULL;
-    return ((bytes * 1.0) / bytesIn100Mb) / 10.0;
-}
 } // namespace
 
 namespace OCC {
@@ -60,13 +46,33 @@ public:
     enum class VfsAccountsAction {
         VfsAccountsNoAction,
         VfsAccountsEnabledChanged,
+        VfsAccountsFailed,
     };
 
     explicit MacImplementation(FileProviderSettingsController *const parent)
     {
         q = parent;
-        initialCheck();
-        fetchMaterialisedFilesStorageUsage();
+
+        if (!migrateToAppSandbox()) {
+            return;
+        }
+        ensureModeFlagInitialized();
+        removeOrphanedDomains();
+
+        if (Mac::FileProvider::available()) {
+            // Domains are reconciled with the app-level mode later, in
+            // performStartupReconciliation(), once the event loop runs and a possible
+            // conflict with classic sync folders can be put in front of the user.
+            Mac::FileProvider::instance()->domainManager()->reconcileDomainDisplayNames();
+            Mac::FileProvider::instance()->domainManager()->reconnectAll();
+            Mac::FileProvider::instance()->configureXPC();
+        } else {
+            disableFileProviderForAllEnabledAccountsOnUnsupportedOS();
+
+            // Keep the persisted app-level mode consistent with what this OS can run, so
+            // the wizard, folder guard and settings pages all read the same state.
+            ConfigFile().setMacFileProviderModeEnabled(false);
+        }
     };
 
     ~MacImplementation() override = default;
@@ -74,245 +80,349 @@ public:
     [[nodiscard]] QStringList enabledAccounts() const
     {
         QStringList qEnabledAccounts;
-        NSArray<NSString *> *const enabledAccounts = nsEnabledAccounts();
-        for (NSString *const userIdAtHostString in enabledAccounts) {
-            qEnabledAccounts.append(QString::fromNSString(userIdAtHostString));
+        const auto accountStates = AccountManager::instance()->accounts();
+
+        for (const auto &accountState : accountStates) {
+            const auto account = accountState->account();
+            const auto domainId = account->fileProviderDomainIdentifier();
+
+            if (domainId.isEmpty()) {
+                continue;
+            }
+
+            qEnabledAccounts.append(account->userIdAtHostWithPort());
         }
+
         return qEnabledAccounts;
     }
 
     [[nodiscard]] bool vfsEnabledForAccount(const QString &userIdAtHost) const
     {
-        NSArray<NSString *> *const vfsEnabledAccounts = nsEnabledAccounts();
-        return [vfsEnabledAccounts containsObject:userIdAtHost.toNSString()];
+        return q->fileProviderDomainIdentifierForAccount(userIdAtHost).isEmpty() == false;
     }
 
     [[nodiscard]] VfsAccountsAction setVfsEnabledForAccount(const QString &userIdAtHost, const bool setEnabled) const
     {
-        NSArray<NSString *> *vfsEnabledAccounts = nsEnabledAccounts();
+        if (!ConfigFile().fileProviderDomainsAppSandboxMigrationCompleted() && !migrateToAppSandbox()) {
+            return VfsAccountsAction::VfsAccountsFailed;
+        }
 
-        qCInfo(lcFileProviderSettingsController) << "Setting file provider-based vfs of account"
+        qCInfo(lcFileProviderSettingsController) << "Setting file provider enablement of account"
                                                  << userIdAtHost
                                                  << "to"
                                                  << setEnabled;
 
-        if (vfsEnabledAccounts == nil) {
-            qCDebug(lcFileProviderSettingsController) << "Received nil array for accounts, creating new array";
-            vfsEnabledAccounts = NSArray.array;
-        }
+        const auto existingDomainId = q->fileProviderDomainIdentifierForAccount(userIdAtHost);
 
-        NSString *const nsUserIdAtHost = userIdAtHost.toNSString();
-        const BOOL accountEnabled = [vfsEnabledAccounts containsObject:nsUserIdAtHost];
-
-        if (accountEnabled == setEnabled) {
-            qCDebug(lcFileProviderSettingsController) << "VFS enablement status for"
-                                                      << userIdAtHost
-                                                      << "matches config.";
+        if (!setEnabled && existingDomainId.isEmpty()) {
+            qCInfo(lcFileProviderSettingsController) << "Account has no file provider domain, nothing to disable." << userIdAtHost;
             return VfsAccountsAction::VfsAccountsNoAction;
         }
 
-        NSMutableArray<NSString *> *const mutableVfsAccounts = vfsEnabledAccounts.mutableCopy;
+        const auto accountManager = AccountManager::instance();
+        const auto accountState = accountManager->accountFromUserId(userIdAtHost);
 
-        if (setEnabled) {
-            [mutableVfsAccounts addObject:nsUserIdAtHost];
-        } else {
-            [mutableVfsAccounts removeObject:nsUserIdAtHost];
+        if (!accountState) {
+            qCWarning(lcFileProviderSettingsController) << "Unable to set file provider enablement, account not found!" << userIdAtHost;
+            return VfsAccountsAction::VfsAccountsNoAction;
         }
 
-        NSArray<NSString *> *const modifiedVfsAccounts = mutableVfsAccounts.copy;
-        [_userDefaults setObject:modifiedVfsAccounts forKey:_accountsKey];
+        if (setEnabled) {
+            // addDomainForAccount is idempotent: it returns the existing identifier when
+            // the domain is still registered with the system, re-creates it when the
+            // stored identifier is stale (the "fake" identifiers minted by
+            // migrateToAppSandbox, or a domain the user removed in System Settings), or
+            // creates a fresh one. Always going through it guarantees a real domain
+            // exists before the caller discards the classic sync folders.
+            auto const identifier = Mac::FileProvider::instance()->domainManager()->addDomainForAccount(accountState.data());
 
-        Q_ASSERT(vfsEnabledForAccount(userIdAtHost) == setEnabled);
+            if (identifier.isEmpty()) {
+                qCWarning(lcFileProviderSettingsController) << "Failed to create file provider domain for account"
+                                                            << userIdAtHost;
+                return VfsAccountsAction::VfsAccountsFailed;
+            }
+
+            accountManager->setFileProviderDomainIdentifier(userIdAtHost, identifier);
+        } else {
+            // Check if the extension has dirty user data before removing the domain.
+            const auto dirtyUserData = Mac::FileProvider::instance()->fileProviderDomainHasDirtyUserData(existingDomainId);
+            if (!dirtyUserData.has_value()) {
+                qCWarning(lcFileProviderSettingsController)
+                    << "Could not determine whether file provider domain has dirty user data; preserving it." << existingDomainId;
+            } else if (*dirtyUserData) {
+                qCWarning(lcFileProviderSettingsController) << "File provider domain" << existingDomainId << "has dirty user data.";
+            }
+
+            const auto preservedDataUrl = Mac::FileProvider::instance()->domainManager()->removeDomainByAccount(accountState.data());
+
+            if (!preservedDataUrl.has_value()) {
+                qCWarning(lcFileProviderSettingsController) << "Could not confirm removal of file provider domain" << existingDomainId;
+                return VfsAccountsAction::VfsAccountsFailed;
+            }
+
+            if (!preservedDataUrl->isEmpty()) {
+                // UI operations must be dispatched to main queue
+                // Copy the URL to ensure it's valid in the block
+                const QString capturedUrl = *preservedDataUrl;
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    QMessageBox::warning(nullptr,
+                                       q->tr("Unsynchronized Content"),
+                                       q->tr("Some of your locally changed items were not uploaded yet but will be preserved."));
+                    NSURL *url = [NSURL fileURLWithPath:capturedUrl.toNSString() isDirectory:YES];
+                    qCDebug(lcFileProviderSettingsController) << "Opening directory in file viewer:" << url.path;
+                    [[NSWorkspace sharedWorkspace] activateFileViewerSelectingURLs:@[url]];
+                });
+            } else if (!dirtyUserData.has_value() || *dirtyUserData) {
+                qCWarning(lcFileProviderSettingsController) << "Could not get preserved data URL for domain" << existingDomainId;
+            }
+
+            accountManager->setFileProviderDomainIdentifier(userIdAtHost, "");
+        }
+
+        Mac::FileProvider::instance()->configureXPC();
 
         return VfsAccountsAction::VfsAccountsEnabledChanged;
     }
 
-    [[nodiscard]] VfsAccountsAction enableVfsForAllAccounts() const
+    [[nodiscard]] bool migrateToAppSandbox() const
     {
+        ConfigFile cfg;
+
+        if (cfg.fileProviderDomainsAppSandboxMigrationCompleted()) {
+            qCInfo(lcFileProviderSettingsController) << "Migration app sandbox was already completed earlier.";
+            return true;
+        }
+
+        qCInfo(lcFileProviderSettingsController) << "Starting migration to app sandbox...";
+        qCInfo(lcFileProviderSettingsController) << "Removing all existing file provider domains...";
+
+        if (!Mac::FileProvider::instance()->domainManager()->removeAllDomains()) {
+            qCWarning(lcFileProviderSettingsController) << "Could not confirm removal of all file provider domains; postponing app sandbox migration.";
+            return false;
+        }
+
+        qCInfo(lcFileProviderSettingsController) << "Removing file provider domain to account mappings from configuration file...";
+
+        cfg.removeFileProviderDomainMapping();
+
+        qCInfo(lcFileProviderSettingsController) << "Migrating user defaults...";
+
+        const auto userDefaults = NSUserDefaults.standardUserDefaults;
+        NSString *const accountsKey = [NSString stringWithUTF8String:enabledAccountsSettingsKey];
+        NSArray<NSString *> *const legacyEnabledAccounts = (NSArray<NSString *> *)[userDefaults objectForKey:accountsKey];
+
         const auto accManager = AccountManager::instance();
         const auto accountsList = accManager->accounts();
 
-        if (accountsList.count() == 0) {
-            return VfsAccountsAction::VfsAccountsNoAction;
+        for (const auto &accountState : accountsList) {
+            const auto account = accountState->account();
+            const auto accountIdentifier = account->userIdAtHostWithPort();
+            const bool accountEnabled = legacyEnabledAccounts && [legacyEnabledAccounts containsObject:accountIdentifier.toNSString()];
+
+            if (accountEnabled == false) {
+                qCInfo(lcFileProviderSettingsController) << "Skipping file provider disabled account" << accountIdentifier;
+                continue;
+            } else {
+                qCInfo(lcFileProviderSettingsController) << "Migrating file provider enabled account" << accountIdentifier;
+            }
+
+            auto const identifier = QUuid::createUuid().toString(QUuid::WithoutBraces);
+            qCInfo(lcFileProviderSettingsController) << "Assigning temporary fake file provider domain identifier" << identifier;
+            accManager->setFileProviderDomainIdentifier(accountIdentifier, identifier);
         }
 
-        auto overallActResult = VfsAccountsAction::VfsAccountsNoAction;
+        // Cleanup migrated legacy preference to avoid reprocessing
+        [userDefaults removeObjectForKey:accountsKey];
+        cfg.setFileProviderDomainsAppSandboxMigrationCompleted(true);
+        qCInfo(lcFileProviderSettingsController) << "App sandbox migration completed.";
+        return true;
+    }
 
-        for (const auto &account : accountsList) {
-            const auto qAccountUserIdAtHost = account->account()->userIdAtHostWithPort();
-            const auto accountActResult = setVfsEnabledForAccount(qAccountUserIdAtHost, true);
+    void ensureModeFlagInitialized()
+    {
+        ConfigFile cfg;
 
-            if (accountActResult == VfsAccountsAction::VfsAccountsEnabledChanged) {
-                overallActResult = accountActResult;
+        // Stay off while enforced off, so lifting the policy does not re-enable File Provider.
+        if (const auto managedVfs = cfg.managedVirtualFilesMode(); managedVfs.isEnforced && !managedVfs.enabled) {
+            cfg.setMacFileProviderModeEnabled(false);
+            return;
+        }
+
+        const auto brandingDisablesVfs = Theme::instance()->disableVirtualFilesSyncFolder();
+        const auto accounts = AccountManager::instance()->accounts();
+
+        // With no accounts configured there is no deployment state to preserve, so always
+        // (re-)default to File Provider on a supported, non-branding-disabled build. This
+        // is the product default for a new setup — the first account becomes a File
+        // Provider — and it also recovers a stale flag left behind after all accounts were
+        // removed (removing accounts does not clear this key). Done before the "already
+        // set" guard on purpose. On an unsupported OS the caller forces the flag back off
+        // afterwards.
+        if (accounts.isEmpty()) {
+            qCInfo(lcFileProviderSettingsController) << "No accounts configured; defaulting app-level file provider mode to" << !brandingDisablesVfs;
+            cfg.setMacFileProviderModeEnabled(!brandingDisablesVfs);
+            return;
+        }
+
+        // Existing deployment: decide the app-level mode only once, so a later explicit
+        // user choice is respected across launches. Keep per-account File Provider users
+        // on File Provider; leave a classic-only deployment (accounts configured, none
+        // using the File Provider) on classic so an upgrade does not disrupt them.
+        if (cfg.macFileProviderModeEnabledIsSet()) {
+            return;
+        }
+
+        const auto modeEnabled = !enabledAccounts().isEmpty() && !brandingDisablesVfs;
+        qCInfo(lcFileProviderSettingsController) << "Initialising app-level file provider mode:" << modeEnabled;
+        cfg.setMacFileProviderModeEnabled(modeEnabled);
+    }
+
+    void ensureDomainConfigurationMatchesMode()
+    {
+        const auto modeEnabled = ConfigFile().macFileProviderModeEnabled();
+        qCInfo(lcFileProviderSettingsController) << "Reconciling file provider domains with app-level mode:" << modeEnabled;
+
+        const auto accountStates = AccountManager::instance()->accounts();
+
+        if (modeEnabled) {
+            auto domainsAvailable = false;
+            const auto domains = Mac::FileProvider::instance()->domainManager()->getDomains(&domainsAvailable);
+
+            if (!domainsAvailable) {
+                qCWarning(lcFileProviderSettingsController) << "Could not list file provider domains; postponing domain reconciliation.";
+                return;
+            }
+            QSet<QString> existingDomainIdentifiers;
+            auto restoredDomain = false;
+
+            for (NSFileProviderDomain * const domain : domains) {
+                existingDomainIdentifiers.insert(QString::fromNSString(domain.identifier));
+            }
+
+            for (const auto &accountState : accountStates) {
+                const auto account = accountState->account();
+
+                if (!account) {
+                    continue;
+                }
+
+                const auto userIdAtHost = account->userIdAtHostWithPort();
+                const auto identifier = account->fileProviderDomainIdentifier();
+
+                if (identifier.isEmpty()) {
+                    qCInfo(lcFileProviderSettingsController) << "Creating missing file provider domain for account" << userIdAtHost;
+                    (void)setVfsEnabledForAccount(userIdAtHost, true);
+                } else if (existingDomainIdentifiers.contains(identifier) == false) {
+                    qCInfo(lcFileProviderSettingsController) << "Restoring missing domain with identifier"
+                                                             << identifier
+                                                             << "for account"
+                                                             << userIdAtHost;
+
+                    const auto newIdentifier = Mac::FileProvider::instance()->domainManager()->addDomainForAccount(accountState.data());
+
+                    if (newIdentifier.isEmpty() == false) {
+                        AccountManager::instance()->setFileProviderDomainIdentifier(userIdAtHost, newIdentifier);
+                        restoredDomain = true;
+                    }
+                }
+            }
+
+            if (restoredDomain) {
+                // Restored domains need their XPC service rediscovered even when their identifier is unchanged.
+                Mac::FileProvider::instance()->configureXPC();
+            }
+        } else {
+            for (const auto &accountState : accountStates) {
+                const auto account = accountState->account();
+
+                if (!account || account->fileProviderDomainIdentifier().isEmpty()) {
+                    continue;
+                }
+
+                const auto userIdAtHost = account->userIdAtHostWithPort();
+                qCInfo(lcFileProviderSettingsController) << "Removing file provider domain of account" << userIdAtHost;
+                (void)setVfsEnabledForAccount(userIdAtHost, false);
             }
         }
 
-        return overallActResult;
+        qCInfo(lcFileProviderSettingsController) << "Finished reconciling file provider domains with app-level mode.";
     }
 
-    [[nodiscard]] unsigned long long localStorageUsageForAccount(const QString &userIdAtHost) const
+    void removeOrphanedDomains()
     {
-        // Return cached value as we fetch asynchronously on initialisation of this class.
-        // We will then emit a signal when the new value is found.
-        return _storageUsage.value(userIdAtHost);
-    }
+        qCInfo(lcFileProviderSettingsController) << "Removing orphaned domains...";
 
-    [[nodiscard]] QVector<FileProviderItemMetadata> materialisedItemsForAccount(const QString &userIdAtHost) const
-    {
-        return _materialisedFiles.value(userIdAtHost);
-    }
+        auto domainsAvailable = false;
+        const auto domains = Mac::FileProvider::instance()->domainManager()->getDomains(&domainsAvailable);
 
-    void signalFileProviderDomain(const QString &userIdAtHost) const
-    {
-        qCInfo(lcFileProviderSettingsController) << "Signalling file provider domain" << userIdAtHost;
-        NSFileProviderDomain * const domain = FileProviderUtils::domainForIdentifier(userIdAtHost);
-        NSFileProviderManager * const manager = [NSFileProviderManager managerForDomain:domain];
-        [manager signalEnumeratorForContainerItemIdentifier:NSFileProviderRootContainerItemIdentifier
-                                          completionHandler:^(NSError *const error) {
-            if (error != nil) {
-                qCWarning(lcFileProviderSettingsController) << "Could not signal file provider domain, error"
-                                                            << error.localizedDescription;
-                return;
+        if (!domainsAvailable) {
+            qCWarning(lcFileProviderSettingsController) << "Could not list file provider domains; postponing orphan removal.";
+            return;
+        }
+        QSet<QString> configuredDomainIdentifiers;
+        const auto accountStates = AccountManager::instance()->accounts();
+
+        for (const auto &accountState : accountStates) {
+            const auto account = accountState->account();
+
+            if (!account) {
+                continue;
             }
 
-            qCInfo(lcFileProviderSettingsController) << "Successfully signalled file provider domain";
-            // TODO: Provide some feedback in the UI
-        }];
-    }
+            const auto identifier = account->fileProviderDomainIdentifier();
 
-    [[nodiscard]] FileProviderDomainSyncStatus *domainSyncStatusForAccount(const QString &userIdAtHost) const
-    {
-        return _fileProviderDomainSyncStatuses.value(userIdAtHost);
-    }
-
-public slots:
-    void enumerateMaterialisedFilesForDomainManager(NSFileProviderManager * const managerForDomain,
-                                                    NSFileProviderDomain * const domain)
-    {
-        const id<NSFileProviderEnumerator> enumerator = [managerForDomain enumeratorForMaterializedItems];
-        Q_ASSERT(enumerator != nil);
-        [enumerator retain];
-
-        FileProviderStorageUseEnumerationObserver *const storageUseObserver = [[FileProviderStorageUseEnumerationObserver alloc] init];
-        [storageUseObserver retain];
-        storageUseObserver.enumerationFinishedHandler = ^(NSError *const error) {
-            qCInfo(lcFileProviderSettingsController) << "Enumeration finished for" << domain.identifier;
-            if (error != nil) {
-                qCWarning(lcFileProviderSettingsController) << "Error while enumerating storage use" << error.localizedDescription;
-                [storageUseObserver release];
-                [enumerator release];
-                return;
+            if (identifier.isEmpty()) {
+                continue;
             }
 
-            const auto items = storageUseObserver.materialisedItems;
-            Q_ASSERT(items != nil);
+            configuredDomainIdentifiers.insert(identifier);
+        }
 
-            // Remember that OCC::Account::userIdAtHost == domain.identifier for us
-            const auto qDomainIdentifier = QString::fromNSString(domain.identifier);
-            QVector<FileProviderItemMetadata> qMaterialisedItems;
-            qMaterialisedItems.reserve(items.count);
-            for (const id<NSFileProviderItem> item in items) {
-                const auto itemMetadata = FileProviderItemMetadata::fromNSFileProviderItem(item, qDomainIdentifier);
-                const auto storageUsage = _storageUsage.value(qDomainIdentifier) + itemMetadata.documentSize();
-                qCDebug(lcFileProviderSettingsController) << "Adding item" << itemMetadata.identifier()
-                                                          << "with size" << itemMetadata.documentSize()
-                                                          << "to storage usage for account" << qDomainIdentifier
-                                                          << "with total size" << storageUsage;
-                qMaterialisedItems.append(itemMetadata);
-                _storageUsage.insert(qDomainIdentifier, storageUsage);
+        for (NSFileProviderDomain * const domain : domains) {
+            const auto identifier = QString::fromNSString(domain.identifier);
+
+            if (!configuredDomainIdentifiers.contains(identifier)) {
+                qCInfo(lcFileProviderSettingsController) << "Identified orphaned domain" << domain.identifier;
+                Mac::FileProvider::instance()->domainManager()->removeDomain(domain);
+            } else {
+                qCInfo(lcFileProviderSettingsController) << "Identified domain belonging to an account" << domain.identifier;
             }
-            _materialisedFiles.insert(qDomainIdentifier, qMaterialisedItems);
+        }
 
-            emit q->localStorageUsageForAccountChanged(qDomainIdentifier);
-            emit q->materialisedItemsForAccountChanged(qDomainIdentifier);
-
-            [storageUseObserver release];
-            [enumerator release];
-        };
-        [enumerator enumerateItemsForObserver:storageUseObserver startingAtPage:NSFileProviderInitialPageSortedByName];
+        qCInfo(lcFileProviderSettingsController) << "Finished removing orphaned domains.";
     }
 
-private slots:
-    void updateDomainSyncStatuses()
+    // macOS 13 Ventura cleanup: removes any pre-existing file provider domain
+    // gracefully (preserving dirty user data) for each account that still has
+    // VFS enabled. Can be deleted once Ventura is no longer supported.
+    void disableFileProviderForAllEnabledAccountsOnUnsupportedOS()
     {
-        qCInfo(lcFileProviderSettingsController) << "Updating domain sync statuses";
-        _fileProviderDomainSyncStatuses.clear();
-        const auto enabledAccounts = nsEnabledAccounts();
-        for (NSString *const domainIdentifier in enabledAccounts) {
-            const auto qDomainIdentifier = QString::fromNSString(domainIdentifier);
-            const auto syncStatus = new FileProviderDomainSyncStatus(qDomainIdentifier, q);
-            _fileProviderDomainSyncStatuses.insert(qDomainIdentifier, syncStatus);
+        qCInfo(lcFileProviderSettingsController) << "macOS 13 Ventura: disabling file provider for all enabled accounts.";
+
+        const auto accountStates = AccountManager::instance()->accounts();
+
+        for (const auto &accountState : accountStates) {
+            const auto account = accountState->account();
+
+            if (!account) {
+                continue;
+            }
+
+            if (account->fileProviderDomainIdentifier().isEmpty()) {
+                continue;
+            }
+
+            const auto userIdAtHost = account->userIdAtHostWithPort();
+            qCInfo(lcFileProviderSettingsController) << "Disabling file provider for account" << userIdAtHost;
+            (void)setVfsEnabledForAccount(userIdAtHost, false);
         }
     }
 
 private:
-    [[nodiscard]] NSArray<NSString *> *nsEnabledAccounts() const
-    {
-        return (NSArray<NSString *> *)[_userDefaults objectForKey:_accountsKey];
-    }
-
-    void fetchMaterialisedFilesStorageUsage()
-    {
-        qCInfo(lcFileProviderSettingsController) << "Fetching materialised files storage usage";
-
-        [NSFileProviderManager getDomainsWithCompletionHandler: ^(NSArray<NSFileProviderDomain *> *const domains, NSError *const error) {
-            if (error != nil) {
-                qCWarning(lcFileProviderSettingsController) << "Could not get file provider domains:"
-                                                            << error.localizedDescription
-                                                            << "Will try again in 2 secs";
-
-                // HACK: Sometimes the system is not in a state where it wants to give us access to
-                //       the file provider domains. We will try again in 2 seconds and hope it works
-                const auto thisQobject = (QObject*)this;
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    [NSTimer scheduledTimerWithTimeInterval:2 repeats:NO block:^(NSTimer *const timer) {
-                        Q_UNUSED(timer)
-                        QMetaObject::invokeMethod(thisQobject, [this] { fetchMaterialisedFilesStorageUsage(); });
-                    }];
-                });
-                return;
-            }
-
-            for (NSFileProviderDomain *const domain in domains) {
-                qCInfo(lcFileProviderSettingsController) << "Checking storage use for domain:" << domain.identifier;
-
-                NSFileProviderManager *const managerForDomain = [NSFileProviderManager managerForDomain:domain];
-                if (managerForDomain == nil) {
-                    qCWarning(lcFileProviderSettingsController) << "Got a nil file provider manager for domain"
-                                                                << domain.identifier
-                                                                << ", returning early.";
-                    return;
-                }
-
-                enumerateMaterialisedFilesForDomainManager(managerForDomain, domain);
-            }
-        }];
-    }
-
-    void initialCheck()
-    {
-        qCInfo(lcFileProviderSettingsController) << "Running initial checks for file provider settings controller.";
-
-        NSArray<NSString *> *const vfsEnabledAccounts = nsEnabledAccounts();
-        if (vfsEnabledAccounts != nil) {
-            updateDomainSyncStatuses();
-            connect(q, &FileProviderSettingsController::vfsEnabledAccountsChanged, this, &MacImplementation::updateDomainSyncStatuses);
-            return;
-        }
-
-        qCInfo(lcFileProviderSettingsController) << "Initial check for file provider settings found nil enabled vfs accounts array."
-                                                  << "Enabling all accounts on initial setup.";
-
-        [[maybe_unused]] const auto result = enableVfsForAllAccounts();
-    }
-
-    FileProviderSettingsController *q = nullptr;
-    NSUserDefaults *_userDefaults = NSUserDefaults.standardUserDefaults;
-    NSString *_accountsKey = [NSString stringWithUTF8String:enabledAccountsSettingsKey];
-    QHash<QString, QVector<FileProviderItemMetadata>> _materialisedFiles;
-    QHash<QString, unsigned long long> _storageUsage;
-    QHash<QString, FileProviderDomainSyncStatus*> _fileProviderDomainSyncStatuses;
+    [[maybe_unused]] FileProviderSettingsController *q = nullptr;
 };
+
+// MARK: -
 
 FileProviderSettingsController *FileProviderSettingsController::instance()
 {
@@ -333,22 +443,31 @@ FileProviderSettingsController::FileProviderSettingsController(QObject *parent)
         const auto accountUserIdAtHost = account->userIdAtHostWithPort();
 
         _userInfos.insert(accountUserIdAtHost, userInfo);
-        connect(userInfo, &UserInfo::fetchedLastInfo, this, [this, accountUserIdAtHost] {
-            emit remoteStorageUsageForAccountChanged(accountUserIdAtHost);
-        });
         userInfo->setActive(true);
     }
-}
 
-QQuickWidget *FileProviderSettingsController::settingsViewWidget(const QString &accountUserIdAtHost,
-                                                                 QWidget *const parent,
-                                                                 const QQuickWidget::ResizeMode resizeMode)
-{
-    const auto settingsViewWidget = new QQuickWidget(Systray::instance()->trayEngine(), parent);
-    settingsViewWidget->setResizeMode(resizeMode);
-    settingsViewWidget->setSource(QUrl(fpSettingsQmlPath));
-    settingsViewWidget->rootObject()->setProperty(fpAccountUserIdAtHostProp, accountUserIdAtHost);
-    return settingsViewWidget;
+    connect(accManager, &AccountManager::accountAdded,
+            this, [this](AccountState *const accountState) {
+        const auto account = accountState ? accountState->account() : nullptr;
+
+        if (!account) {
+            return;
+        }
+
+        const auto accountUserIdAtHost = account->userIdAtHostWithPort();
+
+        if (!_userInfos.contains(accountUserIdAtHost)) {
+            const auto userInfo = new UserInfo(accountState, false, false, this);
+            _userInfos.insert(accountUserIdAtHost, userInfo);
+            userInfo->setActive(true);
+        }
+
+        if (Mac::FileProvider::available() && fileProviderModeEnabled() && !vfsEnabledForAccount(accountUserIdAtHost)) {
+            qCInfo(lcFileProviderSettingsController) << "File provider mode is enabled, setting up domain for new account"
+                                                     << accountUserIdAtHost;
+            setVfsEnabledForAccount(accountUserIdAtHost, true);
+        }
+    });
 }
 
 QStringList FileProviderSettingsController::vfsEnabledAccounts() const
@@ -363,146 +482,382 @@ bool FileProviderSettingsController::vfsEnabledForAccount(const QString &userIdA
 
 void FileProviderSettingsController::setVfsEnabledForAccount(const QString &userIdAtHost, const bool setEnabled)
 {
-    const auto enabledAccountsAction = d->setVfsEnabledForAccount(userIdAtHost, setEnabled);
-    if (enabledAccountsAction == MacImplementation::VfsAccountsAction::VfsAccountsEnabledChanged) {
-        emit vfsEnabledAccountsChanged();
-    }
-}
-
-bool FileProviderSettingsController::fastEnumerationSetForAccount(const QString &userIdAtHost) const
-{
-    const auto xpc = FileProvider::instance()->xpc();
-    if (!xpc) {
-        return false;
-    }
-    if (const auto state = xpc->fastEnumerationStateForExtension(userIdAtHost)) {
-        return state->second;
-    }
-    return false;
-}
-
-bool FileProviderSettingsController::fastEnumerationEnabledForAccount(const QString &userIdAtHost) const
-{
-    const auto xpc = FileProvider::instance()->xpc();
-    if (!xpc) {
-        return true;
-    }
-    if (const auto fastEnumerationState = xpc->fastEnumerationStateForExtension(userIdAtHost)) {
-        return fastEnumerationState->first;
-    }
-    return true;
-}
-
-void FileProviderSettingsController::setFastEnumerationEnabledForAccount(const QString &userIdAtHost, const bool setEnabled)
-{
-    const auto xpc = FileProvider::instance()->xpc();
-    if (!xpc) {
-        // Reset state of UI elements
-        emit fastEnumerationEnabledForAccountChanged(userIdAtHost);
-        emit fastEnumerationSetForAccountChanged(userIdAtHost);
+    // Prevent multiple concurrent operations
+    if (_isOperationInProgress) {
+        qCWarning(lcFileProviderSettingsController) << "Operation already in progress, ignoring request";
         return;
     }
-    xpc->setFastEnumerationEnabledForExtension(userIdAtHost, setEnabled);
-    emit fastEnumerationEnabledForAccountChanged(userIdAtHost);
-    emit fastEnumerationSetForAccountChanged(userIdAtHost);
+
+    setOperationInProgress(true, setEnabled ? tr("Setting up…") : tr("Cleaning up…"));
+
+    // Capture necessary data for the background operation
+    // We need to copy the QString to ensure it's valid in the block
+    const QString capturedUserIdAtHost = userIdAtHost;
+    auto *controller = this;
+
+    // Dispatch to background queue
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        const auto enabledAccountsAction = controller->d->setVfsEnabledForAccount(capturedUserIdAtHost, setEnabled);
+
+        // Dispatch back to main queue for UI updates and signal emissions
+        dispatch_async(dispatch_get_main_queue(), ^{
+            controller->setOperationInProgress(false, QString());
+
+            if (enabledAccountsAction == MacImplementation::VfsAccountsAction::VfsAccountsEnabledChanged) {
+                Q_EMIT controller->vfsEnabledForAccountChanged(capturedUserIdAtHost);
+            }
+        });
+    });
 }
 
-unsigned long long FileProviderSettingsController::localStorageUsageForAccount(const QString &userIdAtHost) const
+void FileProviderSettingsController::resetVfsForAccount(const QString &userIdAtHost)
 {
-    return d->localStorageUsageForAccount(userIdAtHost);
-}
-
-float FileProviderSettingsController::localStorageUsageGbForAccount(const QString &userIdAtHost) const
-{
-    return gbFromBytesWithOneDecimal(localStorageUsageForAccount(userIdAtHost));
-}
-
-unsigned long long FileProviderSettingsController::remoteStorageUsageForAccount(const QString &userIdAtHost) const
-{
-    const auto userInfoForAccount = _userInfos.value(userIdAtHost);
-    if (!userInfoForAccount) {
-        return 0;
+    // Reset only makes sense while the app-level mode is on: with it off there is no
+    // domain to reset and recreating one would contradict the disabled state.
+    if (!fileProviderModeEnabled()) {
+        qCWarning(lcFileProviderSettingsController)
+            << "File provider mode is disabled, ignoring reset request for" << userIdAtHost;
+        return;
     }
 
-    return userInfoForAccount->lastQuotaUsedBytes();
-}
-
-float FileProviderSettingsController::remoteStorageUsageGbForAccount(const QString &userIdAtHost) const
-{
-    return gbFromBytesWithOneDecimal(remoteStorageUsageForAccount(userIdAtHost));
-}
-
-QAbstractListModel *FileProviderSettingsController::materialisedItemsModelForAccount(const QString &userIdAtHost)
-{
-    const auto items = d->materialisedItemsForAccount(userIdAtHost);
-    if (items.isEmpty()) {
-        return nullptr;
+    // Same single-flight guard the other mutating paths use.
+    if (_isOperationInProgress) {
+        qCWarning(lcFileProviderSettingsController)
+            << "Operation already in progress, ignoring reset request";
+        return;
     }
 
-    const auto model = new FileProviderMaterialisedItemsModel(this);
-    model->setItems(items);
+    setOperationInProgress(true, tr("Resetting…"));
 
-    connect(this, &FileProviderSettingsController::materialisedItemsForAccountChanged,
-            model, [this, model, userIdAtHost](const QString &accountUserIdAtHost) {
-        if (accountUserIdAtHost != userIdAtHost) {
+    // Capture necessary data for the background operation
+    // We need to copy the QString to ensure it's valid in the block
+    const QString capturedUserIdAtHost = userIdAtHost;
+    auto *controller = this;
+
+    // NOTE: the worker still reaches into AccountManager (accountFromUserId /
+    // setFileProviderDomainIdentifier) from this background queue — the same pre-existing
+    // cross-thread access the single-account and bulk paths use; a full fix would marshal
+    // all AccountManager access back to the main thread.
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        // Disable: removes the domain preserving dirty user data (may async an
+        // "Unsynchronized Content" box + Finder reveal onto the main queue) and clears
+        // the stored identifier. NoAction if the account currently has no domain.
+        const auto disableAction = controller->d->setVfsEnabledForAccount(capturedUserIdAtHost, false);
+
+        // Re-create the domain only after its removal was confirmed.
+        const auto enableAction = disableAction == MacImplementation::VfsAccountsAction::VfsAccountsFailed
+            ? MacImplementation::VfsAccountsAction::VfsAccountsNoAction
+            : controller->d->setVfsEnabledForAccount(capturedUserIdAtHost, true);
+
+        const auto reAddFailed = enableAction == MacImplementation::VfsAccountsAction::VfsAccountsFailed;
+
+        // Dispatch back to main queue for UI updates and signal emissions
+        dispatch_async(dispatch_get_main_queue(), ^{
+            controller->setOperationInProgress(false, QString());
+
+            if (disableAction == MacImplementation::VfsAccountsAction::VfsAccountsEnabledChanged
+                || enableAction == MacImplementation::VfsAccountsAction::VfsAccountsEnabledChanged) {
+                Q_EMIT controller->vfsEnabledForAccountChanged(capturedUserIdAtHost);
+            }
+
+            if (reAddFailed) {
+                qCWarning(lcFileProviderSettingsController)
+                    << "Failed to re-create file provider domain after reset for" << capturedUserIdAtHost;
+                QMessageBox::warning(nullptr,
+                                     tr("File Provider reset failed"),
+                                     tr("The File Provider domain for this account could not be re-created. "
+                                        "File Provider is now turned off for this account; it will be set "
+                                        "up again the next time %1 starts.")
+                                         .arg(Theme::instance()->appNameGUI()));
+            }
+        });
+    });
+}
+
+bool FileProviderSettingsController::fileProviderModeEnabled() const
+{
+    return ConfigFile().macFileProviderModeEnabled();
+}
+
+void FileProviderSettingsController::setFileProviderModeEnabled(const bool enabled)
+{
+    if (_isOperationInProgress) {
+        qCWarning(lcFileProviderSettingsController) << "Operation already in progress, ignoring file provider mode change";
+        return;
+    }
+
+    if (enabled == fileProviderModeEnabled()) {
+        // Nothing to do, but let listeners (e.g. the settings switch) re-sync.
+        Q_EMIT fileProviderModeEnabledChanged(enabled);
+        return;
+    }
+
+    if (enabled && !Mac::FileProvider::available()) {
+        qCWarning(lcFileProviderSettingsController) << "Cannot enable file provider mode, it is unavailable on this system.";
+        return;
+    }
+
+    if (enabled) {
+        if (const auto managedVfs = ConfigFile().managedVirtualFilesMode(); managedVfs.isEnforced && !managedVfs.enabled) {
+            qCWarning(lcFileProviderSettingsController) << "Cannot enable file provider mode, virtual files are enforced off by policy.";
+            Q_EMIT fileProviderModeEnabledChanged(false);
             return;
         }
+    }
 
-        const auto items = d->materialisedItemsForAccount(userIdAtHost);
-        model->setItems(items);
-    });
+    // The flag records the user's intent up front. Should anything below fail or the
+    // client die mid-way, "mode enabled + classic folders still configured" is picked
+    // up by performStartupReconciliation() on the next launch.
+    ConfigFile().setMacFileProviderModeEnabled(enabled);
+    Q_EMIT fileProviderModeEnabledChanged(enabled);
 
-    return model;
+    applyFileProviderModeToAllAccounts(enabled);
 }
 
-void FileProviderSettingsController::createEvictionWindowForAccount(const QString &userIdAtHost)
+void FileProviderSettingsController::applyFileProviderModeToAllAccounts(const bool enabled)
 {
-    const auto engine = Systray::instance()->trayEngine();
-    QQmlComponent component(engine, QUrl(fpEvictionDialogQmlPath));
-    const auto model = materialisedItemsModelForAccount(userIdAtHost);
-    const auto genericDialog = component.createWithInitialProperties({
-            {fpAccountUserIdAtHostProp, userIdAtHost},
-            {fpMaterialisedItemsModelProp, QVariant::fromValue(model)},
-    });
-    const auto dialog = qobject_cast<QQuickWindow *>(genericDialog);
-    QObject::connect(dialog, SIGNAL(reloadMaterialisedItems(QString)),
-                     this, SLOT(refreshMaterialisedItemsForAccount(QString)));
-    Q_ASSERT(dialog);
-    dialog->show();
-}
-
-void FileProviderSettingsController::refreshMaterialisedItemsForAccount(const QString &userIdAtHost)
-{
-    d->enumerateMaterialisedFilesForDomainManager(FileProviderUtils::managerForDomainIdentifier(userIdAtHost),
-                                                  FileProviderUtils::domainForIdentifier(userIdAtHost));
-}
-
-void FileProviderSettingsController::signalFileProviderDomain(const QString &userIdAtHost)
-{
-    d->signalFileProviderDomain(userIdAtHost);
-}
-
-void FileProviderSettingsController::createDebugArchive(const QString &userIdAtHost)
-{
-    const auto filename = QFileDialog::getSaveFileName(nullptr,
-                                                       tr("Create Debug Archive"),
-                                                       QStandardPaths::writableLocation(QStandardPaths::StandardLocation::DocumentsLocation),
-                                                       tr("Text files") + " (*.txt)");
-    if (filename.isEmpty()) {
+    if (_isOperationInProgress) {
+        qCWarning(lcFileProviderSettingsController) << "Operation already in progress, not applying file provider mode";
         return;
     }
 
-    const auto xpc = FileProvider::instance()->xpc();
-    if (!xpc) {
-        qCWarning(lcFileProviderSettingsController) << "Could not create debug archive, FileProviderXPC is not available.";
-        return;
+    setOperationInProgress(true, enabled ? tr("Setting up…") : tr("Cleaning up…"));
+
+    // Snapshot the account ids on the main thread; AccountManager is not to be iterated
+    // from the background worker.
+    QStringList accountIds;
+    const auto accountStates = AccountManager::instance()->accounts();
+
+    for (const auto &accountState : accountStates) {
+        if (const auto account = accountState->account()) {
+            accountIds.append(account->userIdAtHostWithPort());
+        }
     }
-    xpc->createDebugArchiveForExtension(userIdAtHost, filename);
+
+    const QStringList capturedAccountIds = accountIds;
+    auto *controller = this;
+
+    // NOTE: the per-account worker still reaches into AccountManager (accountFromUserId /
+    // setFileProviderDomainIdentifier) from this background queue — the same pre-existing
+    // cross-thread access the single-account path has always used. This loop widens the
+    // window; a full fix would marshal all AccountManager access back to the main thread.
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        QStringList changedAccounts;
+        QStringList failedAccounts;
+
+        for (const auto &accountId : capturedAccountIds) {
+            switch (controller->d->setVfsEnabledForAccount(accountId, enabled)) {
+            case MacImplementation::VfsAccountsAction::VfsAccountsEnabledChanged:
+                changedAccounts.append(accountId);
+                break;
+            case MacImplementation::VfsAccountsAction::VfsAccountsFailed:
+                failedAccounts.append(accountId);
+                break;
+            case MacImplementation::VfsAccountsAction::VfsAccountsNoAction:
+                break;
+            }
+        }
+
+        const QStringList capturedChangedAccounts = changedAccounts;
+        const QStringList capturedFailedAccounts = failedAccounts;
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            controller->setOperationInProgress(false, QString());
+
+            for (const auto &accountId : capturedChangedAccounts) {
+                Q_EMIT controller->vfsEnabledForAccountChanged(accountId);
+            }
+
+            if (enabled && capturedFailedAccounts.isEmpty()) {
+                // Only discard the classic sync folder configurations once every
+                // account's domain has verifiably been created.
+                controller->removeAllClassicSyncFolders();
+
+                if (!capturedChangedAccounts.isEmpty()) {
+                    QMessageBox::information(nullptr,
+                                             tr("File Provider enabled"),
+                                             tr("File Provider has been enabled for all accounts.\n\nYour files are now accessible in Finder under the \"Locations\" section."));
+                }
+            } else if (enabled) {
+                QMessageBox::warning(nullptr,
+                                     tr("File Provider could not be enabled for all accounts"),
+                                     tr("File Provider could not be set up for the following account(s):\n%1\n\nYour classic sync folders were left unchanged. You will be asked how to proceed the next time %2 starts, or you can resolve it from the account settings.")
+                                         .arg(capturedFailedAccounts.join(QStringLiteral("\n")),
+                                              Theme::instance()->appNameGUI()));
+            }
+
+            Q_EMIT controller->fileProviderModeApplyFinished(enabled, capturedFailedAccounts);
+        });
+    });
 }
 
-FileProviderDomainSyncStatus *FileProviderSettingsController::domainSyncStatusForAccount(const QString &userIdAtHost) const
+void FileProviderSettingsController::removeAllClassicSyncFolders()
 {
-    return d->domainSyncStatusForAccount(userIdAtHost);
+    const auto folderMan = FolderMan::instance();
+
+    if (!folderMan) {
+        return;
+    }
+
+    const auto folders = folderMan->map().values();
+
+    if (folders.isEmpty()) {
+        return;
+    }
+
+    qCInfo(lcFileProviderSettingsController) << "Removing" << folders.count()
+                                             << "classic sync folder connection(s); local files are kept on disk.";
+
+    for (const auto folder : folders) {
+        folderMan->removeFolder(folder);
+    }
+}
+
+static void notifyVfsEnforcedChanged()
+{
+    ConfigFile config;
+    const auto managedVfs = config.managedVirtualFilesMode();
+    const auto enforcedOff = managedVfs.isEnforced && !managedVfs.enabled;
+    if (config.fileProviderVfsEnforcedOffNotified() == enforcedOff) {
+        return;
+    }
+
+    config.setFileProviderVfsEnforcedOffNotified(enforcedOff);
+
+    const auto headline =
+        enforcedOff ? QObject::tr("Virtual files is disabled by an organization policy") : QObject::tr("Virtual files is enabled by an organization policy");
+    const auto details = enforcedOff ? QObject::tr("You can set up classic sync folders instead.")
+                                     : QObject::tr("You can use it by clicking the File Provider checkbox in the general settings.");
+
+    // macOS does not show the window title, so the headline is the bold message text.
+    QMessageBox messageBox(QMessageBox::Information, headline, headline, QMessageBox::Ok, nullptr);
+    messageBox.setInformativeText(details);
+    messageBox.exec();
+}
+
+void FileProviderSettingsController::performStartupReconciliation()
+{
+    if (!Mac::FileProvider::available()) {
+        return;
+    }
+
+    notifyVfsEnforcedChanged();
+
+    if (_isOperationInProgress) {
+        qCWarning(lcFileProviderSettingsController) << "Operation already in progress, skipping reconciliation";
+        return;
+    }
+
+    if (!d->migrateToAppSandbox()) {
+        return;
+    }
+    d->ensureModeFlagInitialized();
+
+    const auto folderMan = FolderMan::instance();
+    const auto hasClassicFolders = folderMan && !folderMan->map().isEmpty();
+
+    if (fileProviderModeEnabled() && hasClassicFolders) {
+        // App-level conflict: the File Provider extension and the FinderSync extension
+        // (classic sync folders) cannot run at the same time. Let the user pick a side.
+        showReconciliationDialog();
+        return;
+    }
+
+    d->ensureDomainConfigurationMatchesMode();
+}
+
+void FileProviderSettingsController::showReconciliationDialog()
+{
+    if (_reconciliationDialogShowing) {
+        return;
+    }
+
+    _reconciliationDialogShowing = true;
+
+    const auto messageBoxText = tr("This installation has both the File Provider integration and classic sync folders configured. macOS cannot run the File Provider integration and the classic Finder integration at the same time.")
+        + QStringLiteral("\n\n")
+        + tr("Keep File Provider: all accounts appear in Finder under \"Locations\". Classic sync folder connections will be removed. Already synced files will be preserved in place.")
+        + QStringLiteral("\n\n")
+        + tr("Keep classic sync folders: File Provider is turned off for all accounts. Items that were not uploaded yet will be preserved.");
+
+    const auto messageBox = new QMessageBox(QMessageBox::Question,
+                                            tr("Choose how to sync your files"),
+                                            messageBoxText);
+    messageBox->setAttribute(Qt::WA_DeleteOnClose);
+    const auto keepFileProviderButton = messageBox->addButton(tr("Keep File Provider"), QMessageBox::AcceptRole);
+    const auto keepClassicButton = messageBox->addButton(tr("Keep classic sync folders"), QMessageBox::AcceptRole);
+    // The single RejectRole button, so Esc and closing the window mean "Decide later".
+    messageBox->addButton(tr("Decide later"), QMessageBox::RejectRole);
+
+    connect(messageBox, &QMessageBox::finished, this, [this, messageBox, keepFileProviderButton, keepClassicButton] {
+        _reconciliationDialogShowing = false;
+
+        // The dialog is non-modal, so the mode may have been changed elsewhere (e.g. the
+        // General settings switch) while it was open. Re-validate against the current
+        // state so a stale click cannot destroy the user's configuration.
+        const auto modeEnabled = fileProviderModeEnabled();
+
+        if (messageBox->clickedButton() == keepFileProviderButton) {
+            if (!modeEnabled) {
+                qCInfo(lcFileProviderSettingsController) << "Ignoring stale 'Keep File Provider' choice; mode was disabled meanwhile.";
+                return;
+            }
+            // Create any missing domains and, on full success, discard the classic sync
+            // folder configurations (local files stay on disk).
+            applyFileProviderModeToAllAccounts(true);
+        } else if (messageBox->clickedButton() == keepClassicButton) {
+            if (!modeEnabled) {
+                qCInfo(lcFileProviderSettingsController) << "Ignoring stale 'Keep classic' choice; mode already disabled.";
+                return;
+            }
+            // The dialog is the explicit confirmation for turning File Provider off.
+            setFileProviderModeEnabled(false);
+        }
+        // "Decide later": both configurations stay untouched; the dialog is shown
+        // again on the next launch and can be reopened from the account settings.
+    });
+    messageBox->open();
+}
+
+QString FileProviderSettingsController::fileProviderDomainIdentifierForAccount(const QString &userIdAtHost) const
+{
+    const auto accountState = AccountManager::instance()->accountFromUserId(userIdAtHost);
+
+    if (!accountState) {
+        qCWarning(lcFileProviderSettingsController) << "Account not found for user" << userIdAtHost;
+        return {};
+    }
+
+    const auto account = accountState->account();
+
+    if (!account) {
+        qCWarning(lcFileProviderSettingsController) << "Account missing in state for user" << userIdAtHost;
+        return {};
+    }
+
+    return account->fileProviderDomainIdentifier();
+}
+
+bool FileProviderSettingsController::isOperationInProgress() const
+{
+    return _isOperationInProgress;
+}
+
+QString FileProviderSettingsController::operationMessage() const
+{
+    return _operationMessage;
+}
+
+void FileProviderSettingsController::setOperationInProgress(bool inProgress, const QString &message)
+{
+    if (_isOperationInProgress != inProgress) {
+        _isOperationInProgress = inProgress;
+        Q_EMIT operationInProgressChanged();
+    }
+    if (_operationMessage != message) {
+        _operationMessage = message;
+        Q_EMIT operationMessageChanged();
+    }
 }
 
 } // namespace Mac

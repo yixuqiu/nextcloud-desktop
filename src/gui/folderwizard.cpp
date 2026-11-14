@@ -1,44 +1,46 @@
 /*
- * Copyright (C) by Duncan Mac-Vicar P. <duncan@kde.org>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2018 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2014 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "folderwizard.h"
-#include "folderman.h"
-#include "configfile.h"
-#include "theme.h"
-#include "networkjobs.h"
 #include "account.h"
-#include "selectivesyncdialog.h"
 #include "accountstate.h"
-#include "creds/abstractcredentials.h"
-#include "wizard/owncloudwizard.h"
 #include "common/asserts.h"
+#include "configfile.h"
+#include "creds/abstractcredentials.h"
+#include "folderman.h"
+#include "guiutility.h"
+#include "networkjobs.h"
+#include "selectivesyncdialog.h"
+#include "settingspanelstyle.h"
+#include "theme.h"
 
+#ifdef Q_OS_MACOS
+#include "common/macsandboxpersistentaccess.h"
+#include "common/utility_mac_sandbox.h"
+#include "macOS/macsandboxfolderpicker.h"
+#endif
+
+#include <QCheckBox>
 #include <QDesktopServices>
 #include <QDir>
+#include <QEvent>
 #include <QFileDialog>
-#include <QFileInfo>
 #include <QFileIconProvider>
+#include <QFileInfo>
 #include <QInputDialog>
+#include <QLabel>
+#include <QLoggingCategory>
+#include <QMessageBox>
+#include <QPointer>
+#include <QStandardPaths>
+#include <QTreeWidget>
 #include <QUrl>
+#include <QVBoxLayout>
 #include <QValidator>
 #include <QWizardPage>
-#include <QTreeWidget>
-#include <QVBoxLayout>
-#include <QEvent>
-#include <QCheckBox>
-#include <QMessageBox>
-#include <QStandardPaths>
 
 #include <cstdlib>
 
@@ -59,20 +61,22 @@ QPalette yellowWarnWidgetPalette(const QPalette &existingPalette)
 
 namespace OCC {
 
+Q_LOGGING_CATEGORY(lcFolderWizard, "nextcloud.gui.folderwizard", QtInfoMsg)
+
 QString FormatWarningsWizardPage::formatWarnings(const QStringList &warnings) const
 {
-    QString ret;
+    QString formattedWarning;
     if (warnings.count() == 1) {
-        ret = tr("<b>Warning:</b> %1").arg(warnings.first());
+        formattedWarning = Utility::escape(warnings.first());
     } else if (warnings.count() > 1) {
-        ret = tr("<b>Warning:</b>") + " <ul>";
-        Q_FOREACH (QString warning, warnings) {
-            ret += QString::fromLatin1("<li>%1</li>").arg(warning);
+        formattedWarning = "<ul>";
+        for (const auto &warning : warnings) {
+            formattedWarning += QString::fromLatin1("<li>%1</li>").arg(Utility::escape(warning));
         }
-        ret += "</ul>";
+        formattedWarning += "</ul>";
     }
 
-    return ret;
+    return formattedWarning;
 }
 
 FolderWizardLocalPath::FolderWizardLocalPath(const AccountPtr &account)
@@ -86,9 +90,6 @@ FolderWizardLocalPath::FolderWizardLocalPath(const AccountPtr &account)
 
     QUrl serverUrl = _account->url();
     serverUrl.setUserName(_account->credentials()->user());
-    QString defaultPath = QDir::homePath() + QLatin1Char('/') + Theme::instance()->appName();
-    defaultPath = FolderMan::instance()->findGoodPathForNewSyncFolder(defaultPath, serverUrl, FolderMan::GoodPathStrategy::AllowOnlyNewPath);
-    _ui.localFolderLineEdit->setText(QDir::toNativeSeparators(defaultPath));
     _ui.localFolderLineEdit->setToolTip(tr("Enter the path to the local folder."));
 
     _ui.warnLabel->setTextFormat(Qt::RichText);
@@ -102,6 +103,12 @@ FolderWizardLocalPath::~FolderWizardLocalPath() = default;
 void FolderWizardLocalPath::initializePage()
 {
     _ui.warnLabel->hide();
+    
+    // Automatically trigger folder selection dialog on first appearance
+    if (_initialFolderSelection) {
+        // Use QTimer to defer the dialog until the page is fully shown
+        QTimer::singleShot(0, this, &FolderWizardLocalPath::slotChooseLocalFolder);
+    }
 }
 
 void FolderWizardLocalPath::cleanupPage()
@@ -138,27 +145,55 @@ bool FolderWizardLocalPath::isComplete() const
 
 void FolderWizardLocalPath::slotChooseLocalFolder()
 {
-    QString sf = QStandardPaths::writableLocation(QStandardPaths::HomeLocation);
-    QDir d(sf);
+    const bool isInitialSelection = _initialFolderSelection;
 
-    // open the first entry of the home dir. Otherwise the dir picker comes
-    // up with the closed home dir icon, stupid Qt default...
-    QStringList dirs = d.entryList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks,
-        QDir::DirsFirst | QDir::Name);
-
-    if (dirs.count() > 0)
-        sf += "/" + dirs.at(0); // Take the first dir in home dir.
-
-    QString dir = QFileDialog::getExistingDirectory(this,
-        tr("Select the source folder"),
-        sf);
-    if (!dir.isEmpty()) {
-        // set the last directory component name as alias
-        _ui.localFolderLineEdit->setText(QDir::toNativeSeparators(dir));
-    }
-    emit completeChanged();
+#ifdef Q_OS_MACOS
+    // QFileDialog gives up the sandbox access to the chosen folder before returning, so only the
+    // native panel can provide a bookmark for it.
+    const QPointer<FolderWizardLocalPath> page(this);
+    Mac::SandboxFolderPicker::select(window()->windowHandle(),
+                                     tr("Select the source folder"),
+                                     Utility::getRealHomeDirectory(),
+                                     [page, isInitialSelection](Mac::SandboxFolderPicker::FolderSelection selection) {
+                                         if (page) {
+                                             page->applyChosenLocalFolder(selection.path, selection.bookmarkData, isInitialSelection);
+                                         }
+                                     });
+#else
+    const auto localFolder = QFileDialog::getExistingDirectory(this,
+                                                               tr("Select the source folder"),
+                                                               QStandardPaths::writableLocation(QStandardPaths::HomeLocation),
+                                                               QFileDialog::ShowDirsOnly);
+    applyChosenLocalFolder(localFolder, {}, isInitialSelection);
+#endif
 }
 
+void FolderWizardLocalPath::applyChosenLocalFolder(const QString &localFolder, const QByteArray &bookmarkData, bool initialSelection)
+{
+    if (!localFolder.isEmpty()) {
+        _chosenLocalFolder = localFolder;
+        _chosenLocalFolderBookmarkData = bookmarkData;
+#ifdef Q_OS_MACOS
+        // Keeps sandbox access to the chosen folder while the wizard validates and creates it.
+        _chosenLocalFolderAccess = Utility::MacSandboxPersistentAccess::createValidFromBookmarkData(bookmarkData);
+#endif
+        _ui.localFolderLineEdit->setText(QDir::toNativeSeparators(localFolder));
+        _initialFolderSelection = false;
+    } else if (initialSelection) {
+        // The user cancelled the automatic initial selection, so close the wizard.
+        Q_EMIT initialFolderSelectionCanceled();
+    }
+    Q_EMIT completeChanged();
+}
+
+QByteArray FolderWizardLocalPath::securityScopedBookmarkData() const
+{
+    const auto enteredFolder = FolderDefinition::prepareLocalPath(QDir::fromNativeSeparators(_ui.localFolderLineEdit->text()));
+    if (_chosenLocalFolder.isEmpty() || enteredFolder != FolderDefinition::prepareLocalPath(_chosenLocalFolder)) {
+        return {};
+    }
+    return _chosenLocalFolderBookmarkData;
+}
 
 void FolderWizardLocalPath::changeEvent(QEvent *e)
 {
@@ -230,8 +265,9 @@ void FolderWizardRemotePath::slotAddRemoteFolder()
 
 void FolderWizardRemotePath::slotCreateRemoteFolder(const QString &folder)
 {
-    if (folder.isEmpty())
+    if (folder.isEmpty()) {
         return;
+    }
 
     QTreeWidgetItem *current = _ui.folderTreeWidget->currentItem();
     QString fullPath;
@@ -250,7 +286,7 @@ void FolderWizardRemotePath::slotCreateRemoteFolder(const QString &folder)
 
 void FolderWizardRemotePath::slotCreateRemoteFolderFinished()
 {
-    qCDebug(lcWizard) << "webdav mkdir request finished";
+    qCDebug(lcFolderWizard) << "webdav mkdir request finished";
     showWarn(tr("Folder was successfully created on %1.").arg(Theme::instance()->appNameGUI()));
     slotRefreshFolders();
     _ui.folderEntry->setText(dynamic_cast<MkColJob *>(sender())->path());
@@ -259,7 +295,7 @@ void FolderWizardRemotePath::slotCreateRemoteFolderFinished()
 
 void FolderWizardRemotePath::slotHandleMkdirNetworkError(QNetworkReply *reply)
 {
-    qCWarning(lcWizard) << "webdav mkdir request failed:" << reply->error();
+    qCWarning(lcFolderWizard) << "webdav mkdir request failed:" << reply->error();
     if (!_account->credentials()->stillValid(reply)) {
         showWarn(tr("Authentication failed accessing %1").arg(Theme::instance()->appNameGUI()));
     } else {
@@ -298,8 +334,9 @@ static QTreeWidgetItem *findFirstChild(QTreeWidgetItem *parent, const QString &t
 
 void FolderWizardRemotePath::recursiveInsert(QTreeWidgetItem *parent, QStringList pathTrail, QString path)
 {
-    if (pathTrail.isEmpty())
+    if (pathTrail.isEmpty()) {
         return;
+    }
 
     const QString parentPath = parent->data(0, Qt::UserRole).toString();
     const QString folderName = pathTrail.first();
@@ -317,7 +354,7 @@ void FolderWizardRemotePath::recursiveInsert(QTreeWidgetItem *parent, QStringLis
         item->setIcon(0, folderIcon);
         item->setText(0, folderName);
         item->setData(0, Qt::UserRole, folderPath);
-        item->setToolTip(0, folderPath);
+        item->setToolTip(0, Utility::escape(folderPath));
         item->setChildIndicatorPolicy(QTreeWidgetItem::ShowIndicator);
     }
 
@@ -337,7 +374,7 @@ bool FolderWizardRemotePath::selectByPath(QString path)
     QTreeWidgetItem *it = _ui.folderTreeWidget->topLevelItem(0);
     if (!path.isEmpty()) {
         const QStringList pathTrail = path.split(QLatin1Char('/'));
-        foreach (const QString &path, pathTrail) {
+        for (const auto &path : pathTrail) {
             if (!it) {
                 return false;
             }
@@ -367,7 +404,7 @@ void FolderWizardRemotePath::slotUpdateDirectories(const QStringList &list)
     }
     QStringList sortedList = list;
     Utility::sortFilenames(sortedList);
-    foreach (QString path, sortedList) {
+    for (auto path : std::as_const(sortedList)) {
         path.remove(webdavFolder);
 
         // Don't allow to select subfolders of encrypted subfolders
@@ -379,8 +416,9 @@ void FolderWizardRemotePath::slotUpdateDirectories(const QStringList &list)
         }
 
         QStringList paths = path.split('/');
-        if (paths.last().isEmpty())
+        if (paths.last().isEmpty()) {
             paths.removeLast();
+        }
         recursiveInsert(root, paths, path);
     }
     root->setExpanded(true);
@@ -427,7 +465,7 @@ void FolderWizardRemotePath::slotCurrentItemChanged(QTreeWidgetItem *item)
         _ui.folderEntry->setText(dir);
     }
 
-    emit completeChanged();
+    Q_EMIT completeChanged();
 }
 
 void FolderWizardRemotePath::slotFolderEntryEdited(const QString &text)
@@ -444,8 +482,9 @@ void FolderWizardRemotePath::slotFolderEntryEdited(const QString &text)
 void FolderWizardRemotePath::slotLsColFolderEntry()
 {
     QString path = _ui.folderEntry->text();
-    if (path.startsWith(QLatin1Char('/')))
+    if (path.startsWith(QLatin1Char('/'))) {
         path = path.mid(1);
+    }
 
     LsColJob *job = runLsColJob(path);
     // No error handling, no updating, we do this manually
@@ -466,10 +505,8 @@ void FolderWizardRemotePath::slotTypedPathFound(const QStringList &subpaths)
 LsColJob *FolderWizardRemotePath::runLsColJob(const QString &path)
 {
     auto *job = new LsColJob(_account, path);
-    auto props = QList<QByteArray>() << "resourcetype";
-    if (_account->capabilities().clientSideEncryptionAvailable()) {
-        props << "http://nextcloud.org/ns:is-encrypted";
-    }
+    const auto props = QList<QByteArray>() << "resourcetype"
+                                           << "http://nextcloud.org/ns:is-encrypted";
     job->setProperties(props);
     connect(job, &LsColJob::directoryListingSubfolders,
         this, &FolderWizardRemotePath::slotUpdateDirectories);
@@ -486,34 +523,41 @@ FolderWizardRemotePath::~FolderWizardRemotePath() = default;
 
 bool FolderWizardRemotePath::isComplete() const
 {
-    if (!_ui.folderTreeWidget->currentItem())
+    if (!_ui.folderTreeWidget->currentItem()) {
         return false;
-
-    QStringList warnStrings;
-    QString dir = _ui.folderTreeWidget->currentItem()->data(0, Qt::UserRole).toString();
-    if (!dir.startsWith(QLatin1Char('/'))) {
-        dir.prepend(QLatin1Char('/'));
     }
-    wizard()->setProperty("targetPath", dir);
 
-    Folder::Map map = FolderMan::instance()->map();
-    Folder::Map::const_iterator i = map.constBegin();
-    for (i = map.constBegin(); i != map.constEnd(); i++) {
-        auto *f = static_cast<Folder *>(i.value());
-        if (f->accountState()->account() != _account) {
+    auto targetPath = _ui.folderTreeWidget->currentItem()->data(0, Qt::UserRole).toString();
+    if (!targetPath.startsWith(QLatin1Char('/'))) {
+        targetPath.prepend(QLatin1Char('/'));
+    }
+    wizard()->setProperty("targetPath", targetPath);
+
+    for (const auto folder : std::as_const(FolderMan::instance()->map())) {
+        if (folder->accountState()->account() != _account) {
             continue;
         }
-        QString curDir = f->remotePathTrailingSlash();
-        if (QDir::cleanPath(dir) == QDir::cleanPath(curDir)) {
-            warnStrings.append(tr("This folder is already being synced."));
-        } else if (dir.startsWith(curDir)) {
-            warnStrings.append(tr("You are already syncing <i>%1</i>, which is a parent folder of <i>%2</i>.").arg(Utility::escape(curDir), Utility::escape(dir)));
-        } else if (curDir.startsWith(dir)) {
-            warnStrings.append(tr("You are already syncing <i>%1</i>, which is a subfolder of <i>%2</i>.").arg(Utility::escape(curDir), Utility::escape(dir)));
+
+        const auto remoteDir = folder->remotePathTrailingSlash();
+        const auto localDir = folder->cleanPath();
+        if (QDir::cleanPath(targetPath) == QDir::cleanPath(remoteDir)) {
+            showWarn(tr("Please choose a different location. %1 is already being synced to %2.").arg(Utility::escape(remoteDir), Utility::escape(localDir)));
+            break;
+        }
+
+        if (targetPath.startsWith(remoteDir)) {
+            _ui.warnFrame->show();
+            _ui.warnLabel->hide();
+            _ui.infoLabel->setText(tr("You are already syncing the subfolder %1 at %2.").arg(Utility::escape(targetPath), Utility::escape(localDir)));
+            break;
+        }
+
+        if (remoteDir.startsWith(targetPath)) {
+            showWarn(tr("Please choose a different location. %1 is already being synced to %2.").arg(Utility::escape(remoteDir), Utility::escape(localDir)));
+            break;
         }
     }
 
-    showWarn(formatWarnings(warnStrings));
     return true;
 }
 
@@ -535,6 +579,7 @@ void FolderWizardRemotePath::showWarn(const QString &msg) const
 
     } else {
         _ui.warnFrame->show();
+        _ui.infoLabel->hide();
         _ui.warnLabel->setText(msg);
     }
 }
@@ -569,14 +614,18 @@ FolderWizardSelectiveSync::FolderWizardSelectiveSync(const AccountPtr &account)
     _selectiveSync = new SelectiveSyncWidget(account, this);
     layout->addWidget(_selectiveSync);
 
-    if (Theme::instance()->showVirtualFilesOption() && bestAvailableVfsMode() != Vfs::Off) {
+    if (!Theme::instance()->disableVirtualFilesSyncFolder() && Theme::instance()->showVirtualFilesOption() && bestAvailableVfsMode() != Vfs::Off) {
         _virtualFilesCheckBox = new QCheckBox(tr("Use virtual files instead of downloading content immediately %1").arg(bestAvailableVfsMode() == Vfs::WindowsCfApi ? QString() : tr("(experimental)")));
         connect(_virtualFilesCheckBox, &QCheckBox::clicked, this, &FolderWizardSelectiveSync::virtualFilesCheckboxClicked);
-        connect(_virtualFilesCheckBox, &QCheckBox::stateChanged, this, [this](int state) {
+        connect(_virtualFilesCheckBox, &QCheckBox::checkStateChanged, this, [this](int state) {
             _selectiveSync->setEnabled(state == Qt::Unchecked);
         });
         _virtualFilesCheckBox->setChecked(bestAvailableVfsMode() == Vfs::WindowsCfApi);
         layout->addWidget(_virtualFilesCheckBox);
+        _virtualFilesManagedLabel = new QLabel(this);
+        _virtualFilesManagedLabel->setVisible(false);
+        SettingsPanelStyle::applyManagedLabelStyle(_virtualFilesManagedLabel);
+        layout->addWidget(_virtualFilesManagedLabel);
     }
 }
 
@@ -590,8 +639,9 @@ void FolderWizardSelectiveSync::initializePage()
         targetPath = targetPath.mid(1);
     }
     QString alias = QFileInfo(targetPath).fileName();
-    if (alias.isEmpty())
+    if (alias.isEmpty()) {
         alias = Theme::instance()->appName();
+    }
     QStringList initialBlacklist;
     if (Theme::instance()->wizardSelectiveSyncDefaultNothing()) {
         initialBlacklist = QStringList("/");
@@ -599,6 +649,7 @@ void FolderWizardSelectiveSync::initializePage()
     _selectiveSync->setFolderInfo(targetPath, alias, initialBlacklist);
 
     if (_virtualFilesCheckBox) {
+        _virtualFilesManagedLabel->setVisible(false);
         // TODO: remove when UX decision is made
         if (Utility::isPathWindowsDrivePartitionRoot(wizard()->field(QStringLiteral("sourceFolder")).toString())) {
             _virtualFilesCheckBox->setChecked(false);
@@ -612,6 +663,13 @@ void FolderWizardSelectiveSync::initializePage()
             if (Theme::instance()->enforceVirtualFilesSyncFolder()) {
                 _virtualFilesCheckBox->setChecked(true);
                 _virtualFilesCheckBox->setDisabled(true);
+            } else if (const auto managedVfs = ConfigFile().managedVirtualFilesMode(); managedVfs.isManaged) {
+                _virtualFilesCheckBox->setChecked(managedVfs.enabled);
+                _virtualFilesCheckBox->setDisabled(managedVfs.isEnforced);
+                if (managedVfs.isEnforced) {
+                    _virtualFilesManagedLabel->setText(ConfigFile().sourceLabel(QStringLiteral("virtualFilesMode")));
+                    _virtualFilesManagedLabel->setVisible(true);
+                }
             }
         }
         //
@@ -622,11 +680,15 @@ void FolderWizardSelectiveSync::initializePage()
 
 bool FolderWizardSelectiveSync::validatePage()
 {
-    const bool useVirtualFiles = _virtualFilesCheckBox && _virtualFilesCheckBox->isChecked();
+    const auto mode = bestAvailableVfsMode();
+    const bool useVirtualFiles = (mode == Vfs::WindowsCfApi) && (_virtualFilesCheckBox && _virtualFilesCheckBox->isChecked());
     if (useVirtualFiles) {
-        const auto availability = Vfs::checkAvailability(wizard()->field(QStringLiteral("sourceFolder")).toString());
+        const auto availability = Vfs::checkAvailability(wizard()->field(QStringLiteral("sourceFolder")).toString(), mode);
         if (!availability) {
-            auto msg = new QMessageBox(QMessageBox::Warning, tr("Virtual files are not available for the selected folder"), availability.error(), QMessageBox::Ok, this);
+            auto msg = new QMessageBox(QMessageBox::Warning,
+                                       tr("Virtual files are not supported at the selected location"),
+                                       availability.error(),
+                                       QMessageBox::Ok, this);
             msg->setAttribute(Qt::WA_DeleteOnClose);
             msg->open();
             return false;
@@ -641,8 +703,9 @@ void FolderWizardSelectiveSync::cleanupPage()
 {
     QString targetPath = wizard()->property("targetPath").toString();
     QString alias = QFileInfo(targetPath).fileName();
-    if (alias.isEmpty())
+    if (alias.isEmpty()) {
         alias = Theme::instance()->appName();
+    }
     _selectiveSync->setFolderInfo(targetPath, alias);
     QWizardPage::cleanupPage();
 }
@@ -652,9 +715,10 @@ void FolderWizardSelectiveSync::virtualFilesCheckboxClicked()
     // The click has already had an effect on the box, so if it's
     // checked it was newly activated.
     if (_virtualFilesCheckBox->isChecked()) {
-        OwncloudWizard::askExperimentalVirtualFilesFeature(this, [this](bool enable) {
-            if (!enable)
+        Utility::askExperimentalVirtualFilesFeature(this, [this](bool enable) {
+            if (!enable) {
                 _virtualFilesCheckBox->setChecked(false);
+            }
         });
     }
 }
@@ -672,6 +736,7 @@ FolderWizard::FolderWizard(AccountPtr account, QWidget *parent)
     , _folderWizardSourcePage(new FolderWizardLocalPath(account))
     , _folderWizardSelectiveSyncPage(new FolderWizardSelectiveSync(account))
 {
+    setWizardStyle(QWizard::ModernStyle);
     setWindowFlags(windowFlags() & ~Qt::WindowContextHelpButtonHint);
     setPage(Page_Source, _folderWizardSourcePage);
     _folderWizardSourcePage->installEventFilter(this);
@@ -685,9 +750,18 @@ FolderWizard::FolderWizard(AccountPtr account, QWidget *parent)
     setWindowTitle(tr("Add Folder Sync Connection"));
     setOptions(QWizard::CancelButtonOnLeft);
     setButtonText(QWizard::FinishButton, tr("Add Sync Connection"));
+    
+    // Close the wizard if initial folder selection is canceled
+    connect(_folderWizardSourcePage, &FolderWizardLocalPath::initialFolderSelectionCanceled,
+            this, &FolderWizard::reject);
 }
 
 FolderWizard::~FolderWizard() = default;
+
+QByteArray FolderWizard::securityScopedBookmarkData() const
+{
+    return _folderWizardSourcePage->securityScopedBookmarkData();
+}
 
 bool FolderWizard::eventFilter(QObject *watched, QEvent *event)
 {

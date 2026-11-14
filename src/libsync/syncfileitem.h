@@ -1,15 +1,7 @@
 /*
- * Copyright (C) by Klaas Freitag <freitag@owncloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2018 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2014 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #ifndef SYNCFILEITEM_H
@@ -23,7 +15,8 @@
 
 #include <csync.h>
 
-#include <owncloudlib.h>
+#include "owncloudlib.h"
+#include "common/syncitemenums.h"
 
 namespace OCC {
 
@@ -45,6 +38,13 @@ public:
         Down
     };
     Q_ENUM(Direction)
+
+    enum class SynchronizationOptions {
+        NormalSynchronization,
+        WantsPermanentDeletion,
+        MoveToClientTrashBin,
+    };
+    Q_ENUM(SynchronizationOptions)
 
     using EncryptionStatus = EncryptionStatusEnums::ItemEncryptionStatus;
 
@@ -107,20 +107,9 @@ public:
     };
     Q_ENUM(Status)
 
-    enum class LockStatus {
-        UnlockedItem = 0,
-        LockedItem = 1,
-    };
+    using LockStatus = SyncFileItemEnums::LockStatus;
 
-    Q_ENUM(LockStatus)
-
-    enum class LockOwnerType : int{
-        UserLock = 0,
-        AppLock = 1,
-        TokenLock = 2,
-    };
-
-    Q_ENUM(LockOwnerType)
+    using LockOwnerType = SyncFileItemEnums::LockOwnerType;
 
     [[nodiscard]] SyncJournalFileRecord toSyncJournalFileRecordWithInode(const QString &localFileName) const;
 
@@ -135,7 +124,6 @@ public:
      */
     [[nodiscard]] static SyncFileItemPtr fromProperties(const QString &filePath, const QMap<QString, QString> &properties, RemotePermissions::MountedPermissionAlgorithm algorithm);
 
-
     SyncFileItem()
         : _type(ItemTypeSkip)
         , _direction(None)
@@ -145,6 +133,7 @@ public:
         , _status(NoStatus)
         , _isRestoration(false)
         , _isSelectiveSync(false)
+        , _isUploadForbiddenItemKept(false)
     {
     }
 
@@ -174,15 +163,19 @@ public:
             prefixL++;
         }
 
-        if (prefixL == d2.size())
+        if (prefixL == d2.size()) {
             return false;
-        if (prefixL == d1.size())
+        }
+        if (prefixL == d1.size()) {
             return true;
+        }
 
-        if (data1[prefixL] == '/')
+        if (data1[prefixL] == '/') {
             return true;
-        if (data2[prefixL] == '/')
+        }
+        if (data2[prefixL] == '/') {
             return false;
+        }
 
         return data1[prefixL] < data2[prefixL];
     }
@@ -202,7 +195,7 @@ public:
 
     [[nodiscard]] bool isDirectory() const
     {
-        return _type == ItemTypeDirectory;
+        return _type == ItemTypeDirectory || _type == ItemTypeVirtualDirectory;
     }
 
     /**
@@ -237,6 +230,8 @@ public:
     [[nodiscard]] bool isEncrypted() const { return _e2eEncryptionStatus != EncryptionStatus::NotEncrypted; }
 
     void updateLockStateFromDbRecord(const SyncJournalFileRecord &dbRecord);
+
+    [[nodiscard]] static SyncJournalFileRecord fromSyncFileItem(const SyncFileItem &syncFile);
 
     // Variables useful for everybody
 
@@ -283,6 +278,7 @@ public:
     Status _status BITFIELD(4);
     bool _isRestoration BITFIELD(1); // The original operation was forbidden, and this is a restoration
     bool _isSelectiveSync BITFIELD(1); // The file is removed or ignored because it is in the selective sync list
+    bool _isUploadForbiddenItemKept BITFIELD(1); // The upload was ignored, and the local-only data was kept on disk (new item in a read-only folder)
     EncryptionStatus _e2eEncryptionStatus = EncryptionStatus::NotEncrypted; // The file is E2EE or the content of the directory should be E2EE
     EncryptionStatus _e2eEncryptionServerCapability = EncryptionStatus::NotEncrypted;
     EncryptionStatus _e2eEncryptionStatusRemote = EncryptionStatus::NotEncrypted;
@@ -326,6 +322,7 @@ public:
     QString _lockEditorApp;
     qint64 _lockTime = 0;
     qint64 _lockTimeout = 0;
+    QString _lockToken;
 
     bool _isShared = false;
     time_t _lastShareStateFetchedTimestamp = 0;
@@ -338,6 +335,28 @@ public:
 
     bool _isAnyInvalidCharChild = false;
     bool _isAnyCaseClashChild = false;
+
+    bool _isLivePhoto = false;
+    QString _livePhotoFile;
+
+    bool isPermissionsInvalid = false;
+
+    QString _discoveryResult;
+
+    SynchronizationOptions _wantsSpecificActions = SynchronizationOptions::NormalSynchronization;
+
+    struct FolderQuota {
+        int64_t bytesUsed = -1;
+        int64_t bytesAvailable = -1;
+        static constexpr char availableBytesC[] = "quota-available-bytes";
+        static constexpr char usedBytesC[] = "quota-used-bytes";
+    };
+    FolderQuota _folderQuota;
+
+    [[nodiscard]] QString localName() const
+    {
+        return _file;
+    }
 };
 
 inline bool operator<(const SyncFileItemPtr &item1, const SyncFileItemPtr &item2)

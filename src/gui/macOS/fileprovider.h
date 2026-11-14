@@ -1,23 +1,16 @@
 /*
- * Copyright (C) by Claudio Cambra <claudio.cambra@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2022 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #pragma once
 
 #include <QObject>
 
+#include <optional>
+
 #include "fileproviderdomainmanager.h"
-#include "fileprovidersocketserver.h"
+#include "fileproviderservice.h"
 #include "fileproviderxpc.h"
 
 namespace OCC {
@@ -37,17 +30,27 @@ public:
     static FileProvider *instance();
     ~FileProvider() override;
 
-    [[nodiscard]] static bool fileProviderAvailable();
+    /**
+     * @brief Whether the macOS file provider feature is usable on the current OS.
+     *
+     * Returns false on macOS 13 Ventura, where the extension is incompatible
+     * (see nextcloud/desktop#9927). This runtime check can be removed once
+     * macOS 13 Ventura is no longer supported.
+     */
+    [[nodiscard]] static bool available();
+
+    void configureXPC();
 
     [[nodiscard]] FileProviderXPC *xpc() const;
+    [[nodiscard]] FileProviderDomainManager *domainManager() const;
+    [[nodiscard]] FileProviderService *service() const;
 
-private slots:
-    void configureXPC();
+    [[nodiscard]] std::optional<bool> fileProviderDomainHasDirtyUserData(const QString &fileProviderDomainIdentifier);
 
 private:
     std::unique_ptr<FileProviderDomainManager> _domainManager;
-    std::unique_ptr<FileProviderSocketServer> _socketServer;
     std::unique_ptr<FileProviderXPC> _xpc;
+    std::unique_ptr<FileProviderService> _service;
 
     static FileProvider *_instance;
     explicit FileProvider(QObject * const parent = nullptr);

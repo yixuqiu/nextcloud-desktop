@@ -1,24 +1,14 @@
 /*
- * Copyright (C) by Dominik Schmidt <dschmidt@owncloud.com>
- *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * SPDX-FileCopyrightText: 2021 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: ownCloud GmbH
+ * SPDX-License-Identifier: LGPL-2.1-or-later
  */
 
 #pragma once
 
 #include "ocsynclib.h"
+#include "result.h"
+
 #include <QObject>
 
 namespace OCC {
@@ -28,6 +18,15 @@ class OCSYNC_EXPORT PluginFactory
 public:
     virtual ~PluginFactory();
     virtual QObject* create(QObject* parent) = 0;
+
+    [[nodiscard]] virtual bool checkAvailability() const;
+
+    /**
+     * @param path The path for which the plugin should be prepared
+     * @param accountUuid The UUID of the account for which the plugin should be prepared (might be null during account setup)
+     * @return Nothing or an error string
+     */
+    [[nodiscard]] virtual Result<void, QString> prepare(const QString &path, const QUuid &accountUuid) const = 0;
 };
 
 template<class PluginClass>

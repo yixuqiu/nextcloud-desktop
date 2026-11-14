@@ -1,16 +1,7 @@
 /*
- * Copyright (C) by Klaas Freitag <freitag@kde.org>
- * Copyright (C) by Olivier Goffart <ogoffart@woboq.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2018 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2015 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #pragma once
@@ -42,12 +33,10 @@ public:
         SyncProgressOverallPercent,
         SyncProgressOverallString,
         SyncProgressItemString,
-        WarningCount,
-        SyncRunning,
-        SyncDate,
 
         AddButton, // 1 = enabled; 2 = disabled
         FolderSyncText,
+        FolderNeedsSandboxBookmark,
         DataRoleCount
 
     };
@@ -63,9 +52,10 @@ public:
     static QRect optionsButtonRect(QRect within, Qt::LayoutDirection direction);
     static QRect addButtonRect(QRect within, Qt::LayoutDirection direction);
     static QRect errorsListRect(QRect within);
+    static QRect sandboxButtonRect(QRect errorBannerRect);
     static int rootFolderHeightWithoutErrors(const QFontMetrics &fm, const QFontMetrics &aliasFm);
 
-public slots:
+public Q_SLOTS:
     void slotStyleChanged();
 
 private:

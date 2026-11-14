@@ -1,15 +1,6 @@
 /*
- * Copyright (C) by Kevin Ottens <kevin.ottens@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2020 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "hydrationjob.h"
@@ -32,6 +23,8 @@ OCC::HydrationJob::HydrationJob(QObject *parent)
     : QObject(parent)
 {
 }
+
+OCC::HydrationJob::~HydrationJob() = default;
 
 OCC::AccountPtr OCC::HydrationJob::account() const
 {
@@ -111,6 +104,16 @@ QString OCC::HydrationJob::e2eMangledName() const
 void OCC::HydrationJob::setE2eMangledName(const QString &e2eMangledName)
 {
     _e2eMangledName = e2eMangledName;
+}
+
+qint64 OCC::HydrationJob::fileTotalSize() const
+{
+    return _fileTotalSize;
+}
+
+void OCC::HydrationJob::setFileTotalSize(qint64 fileTotalSize)
+{
+    _fileTotalSize = fileTotalSize;
 }
 
 OCC::HydrationJob::Status OCC::HydrationJob::status() const
@@ -203,9 +206,9 @@ void OCC::HydrationJob::emitFinished(Status status)
     }
 
     if (status == Success) {
-        connect(_transferDataSocket, &QLocalSocket::disconnected, this, [=] {
+        connect(_transferDataSocket, &QLocalSocket::disconnected, this, [=, this] {
             _transferDataSocket->close();
-            emit finished(this);
+            Q_EMIT finished(this);
         });
         _transferDataSocket->disconnectFromServer();
         return;
@@ -215,7 +218,7 @@ void OCC::HydrationJob::emitFinished(Status status)
         _transferDataSocket->close();
     }
 
-    emit finished(this);
+    Q_EMIT finished(this);
 }
 
 void OCC::HydrationJob::onCancellationServerNewConnection()
@@ -306,6 +309,9 @@ void OCC::HydrationJob::slotFetchMetadataJobFinished(int statusCode, const QStri
             qCDebug(lcHydration) << "Found matching encrypted metadata for file, starting download" << _requestId << _folderPath;
             _transferDataSocket = _transferDataServer->nextPendingConnection();
             _job = new GETEncryptedFileJob(_account, Utility::trailingSlashPath(_remoteSyncRootPath) + e2eMangledName(), _transferDataSocket, {}, {}, 0, file, this);
+            if (_fileTotalSize >= 0) {
+                _job->setDecompressionThresholdBase(_fileTotalSize);
+            }
 
             connect(qobject_cast<GETEncryptedFileJob *>(_job), &GETEncryptedFileJob::finishedSignal, this, &HydrationJob::onGetFinished);
             _job->start();
@@ -348,6 +354,9 @@ void OCC::HydrationJob::handleNewConnection()
     qCInfo(lcHydration) << "Got new connection starting GETFileJob" << _requestId << _folderPath;
     _transferDataSocket = _transferDataServer->nextPendingConnection();
     _job = new GETFileJob(_account, Utility::trailingSlashPath(_remoteSyncRootPath) + _folderPath, _transferDataSocket, {}, {}, 0, this);
+    if (_fileTotalSize >= 0) {
+        _job->setDecompressionThresholdBase(_fileTotalSize);
+    }
     connect(_job, &GETFileJob::finishedSignal, this, &HydrationJob::onGetFinished);
     _job->start();
 }

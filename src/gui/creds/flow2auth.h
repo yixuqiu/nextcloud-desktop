@@ -1,16 +1,6 @@
 /*
- * Copyright (C) by Olivier Goffart <ogoffart@woboq.com>
- * Copyright (C) by Michael Schuster <michael@schuster.ms>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2019 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #pragma once
@@ -18,6 +8,8 @@
 #include <QUrl>
 #include <QTimer>
 #include "accountfwd.h"
+
+class QNetworkReply;
 
 namespace OCC {
 
@@ -53,7 +45,7 @@ public:
     void copyLinkToClipboard();
     [[nodiscard]] QUrl authorisationLink() const;
 
-signals:
+Q_SIGNALS:
     /**
      * The state has changed.
      * when logged in, appPassword has the value of the app password.
@@ -63,14 +55,15 @@ signals:
 
     void statusChanged(const OCC::Flow2Auth::PollStatus status, int secondsLeft);
 
-public slots:
+public Q_SLOTS:
     void slotPollNow();
 
-private slots:
+private Q_SLOTS:
     void slotPollTimerTimeout();
 
 private:
     void fetchNewToken(const TokenAction action);
+    [[nodiscard]] QJsonObject handleResponse(QNetworkReply *reply);
 
     Account *_account;
     QUrl _loginUrl;

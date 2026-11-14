@@ -1,15 +1,7 @@
 /*
- * Copyright (C) by Daniel Molkentin <danimo@owncloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2020 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2014 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include <QThread>
@@ -80,7 +72,7 @@ void WatcherThread::watchChanges(size_t fileNotifyBufferSize,
             const DWORD errorCode = GetLastError();
             if (errorCode == ERROR_NOTIFY_ENUM_DIR) {
                 qCDebug(lcFolderWatcher) << "The buffer for changes overflowed! Triggering a generic change and resizing";
-                emit changed(_path);
+                Q_EMIT changed(_path);
                 *increaseBufferSize = true;
             } else {
                 qCWarning(lcFolderWatcher) << "ReadDirectoryChangesW error" << Utility::formatWinError(errorCode);
@@ -88,7 +80,7 @@ void WatcherThread::watchChanges(size_t fileNotifyBufferSize,
             break;
         }
 
-        emit ready();
+        Q_EMIT ready();
 
         HANDLE handles[] = { _resultEvent, _stopEvent };
         DWORD result = WaitForMultipleObjects(
@@ -110,8 +102,8 @@ void WatcherThread::watchChanges(size_t fileNotifyBufferSize,
             const DWORD errorCode = GetLastError();
             if (errorCode == ERROR_NOTIFY_ENUM_DIR) {
                 qCDebug(lcFolderWatcher) << "The buffer for changes overflowed! Triggering a generic change and resizing";
-                emit lostChanges();
-                emit changed(_path);
+                Q_EMIT lostChanges();
+                Q_EMIT changed(_path);
                 *increaseBufferSize = true;
             } else {
                 qCWarning(lcFolderWatcher) << "GetOverlappedResult error" << Utility::formatWinError(errorCode);
@@ -120,7 +112,7 @@ void WatcherThread::watchChanges(size_t fileNotifyBufferSize,
         }
 
         FILE_NOTIFY_INFORMATION *curEntry = pFileNotifyBuffer;
-        forever {
+        Q_FOREVER {
             const int len = curEntry->FileNameLength / sizeof(wchar_t);
             QString longfile = longPath + QString::fromWCharArray(curEntry->FileName, len);
 
@@ -133,29 +125,21 @@ void WatcherThread::watchChanges(size_t fileNotifyBufferSize,
                 const auto error = GetLastError();
                 if (longNameSize > 0) {
                     longfile = QString::fromWCharArray(fileNameBuffer, longNameSize);
-                } else {
+                } else if (error != ERROR_FILE_NOT_FOUND) {
                     qCWarning(lcFolderWatcher) << "Error converting file name" << longfile << "to full length, keeping original name." << Utility::formatWinError(error);
                 }
             }
 
-#if QT_VERSION < QT_VERSION_CHECK(5, 14, 0)
-            // The prefix is needed for native Windows functions before Windows 10, version 1607
-            const bool hasLongPathPrefix = longPath.startsWith(QStringLiteral("\\\\?\\"));
-            if (hasLongPathPrefix)
-            {
-                longfile.remove(0, 4);
-            }
-#endif
             longfile = QDir::cleanPath(longfile);
 
             // Skip modifications of folders: One of these is triggered for changes
             // and new files in a folder, probably because of the folder's mtime
             // changing. We don't need them.
             const bool skip = curEntry->Action == FILE_ACTION_MODIFIED
-                && QFileInfo(longfile).isDir();
+                && FileSystem::isDir(longfile);
 
             if (!skip) {
-                emit changed(longfile);
+                Q_EMIT changed(longfile);
             } else {
                 qCDebug(lcFolderWatcher) << "Skipping syncing of" << longfile;
             }

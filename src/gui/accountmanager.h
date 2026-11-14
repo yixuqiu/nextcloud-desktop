@@ -1,15 +1,7 @@
 /*
- * Copyright (C) by Olivier Goffart <ogoffart@woboq.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2019 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2015 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #pragma once
@@ -32,6 +24,7 @@ class AccountManager : public QObject
 public:
     enum AccountsRestoreResult {
         AccountsRestoreFailure = 0,
+        AccountsNotFound,
         AccountsRestoreSuccess,
         AccountsRestoreSuccessFromLegacyVersion,
         AccountsRestoreSuccessWithSkipped
@@ -90,9 +83,9 @@ public:
      */
     static void backwardMigrationSettingsKeys(QStringList *deleteKeys, QStringList *ignoreKeys);
 
-public slots:
-    /// Saves account data, not including the credentials
-    void saveAccount(OCC::Account *a);
+public Q_SLOTS:
+    /// Saves account data when adding user, when updating e.g. dav user, not including the credentials
+    void saveAccount(const OCC::AccountPtr &newAccountData);
 
     /// Saves account state data, not including the account
     void saveAccountState(OCC::AccountState *a);
@@ -103,22 +96,39 @@ public slots:
     /// Delete the AccountState
     void deleteAccount(OCC::AccountState *account);
 
+    /// Remove the AccountState without clearing credentials from the shared account
+    void removeAccountState(OCC::AccountState *account);
+
     /// Remove all accounts
     void shutdown();
 
     void setForceLegacyImport(const bool forceLegacyImport);
 
-signals:
+#ifdef BUILD_FILE_PROVIDER_MODULE
+    void setFileProviderDomainIdentifier(const QString &accountUserIdAtHost, const QString &identifier);
+    [[nodiscard]] AccountStatePtr accountFromFileProviderDomainIdentifier(const QString &identifier) const;
+#endif
+
+Q_SIGNALS:
     void accountAdded(OCC::AccountState *account);
     void accountRemoved(OCC::AccountState *account);
     void accountSyncConnectionRemoved(OCC::AccountState *account);
     void removeAccountFolders(OCC::AccountState *account);
     void forceLegacyImportChanged();
+    void capabilitiesChanged();
+    void accountListInitialized();
 
 private:
+    enum class AccountRemovalMode {
+        KeepSensitiveData,
+        ForgetSensitiveData,
+    };
+
     // saving and loading Account to settings
-    void saveAccountHelper(Account *account, QSettings &settings, bool saveCredentials = true);
+    void saveAccountHelper(const AccountPtr &account, QSettings &settings, bool saveCredentials = true);
     AccountPtr loadAccountHelper(QSettings &settings);
+    void migrateNetworkSettings(const AccountPtr &account, const QSettings &settings);
+    void removeAccountState(OCC::AccountState *account, AccountRemovalMode removalMode);
 
     bool restoreFromLegacySettings();
 
@@ -126,12 +136,18 @@ private:
     [[nodiscard]] QString generateFreeAccountId() const;
 
     // Adds an account to the tracked list, emitting accountAdded()
-    void addAccountState(AccountState *accountState);
+    void addAccountState(AccountState *const accountState);
+
+    // update config serverHasValidSubscription when accounts list changes
+    void updateServerHasValidSubscriptionConfig();
+    void updateServerDesktopEnterpriseUpdateChannel();
+    void updateServerManagedSettings();
 
     AccountManager() = default;
     QList<AccountStatePtr> _accounts;
     /// Account ids from settings that weren't read
     QSet<QString> _additionalBlockedAccountIds;
     bool _forceLegacyImport = false;
+    bool _serverCapabilitiesEverLoaded = false;
 };
 }

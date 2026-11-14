@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2020 Nextcloud GmbH and Nextcloud contributors
+# SPDX-FileCopyrightText: 2011 ownCloud GmbH
+# SPDX-License-Identifier: GPL-2.0-or-later
+
 include(DefinePlatformDefaults)
 
 include(nextcloud_add_test.cmake)
@@ -5,6 +9,8 @@ include(nextcloud_add_test.cmake)
 set(CMAKE_AUTOMOC TRUE)
 
 find_package(Qt${QT_VERSION_MAJOR}Core5Compat ${REQUIRED_QT_VERSION} CONFIG QUIET)
+find_package(Qt${QT_VERSION_MAJOR} OPTIONAL_COMPONENTS HttpServer CONFIG QUIET)
+find_package(Qt${QT_VERSION_MAJOR} ${REQUIRED_QT_VERSION} REQUIRED COMPONENTS QuickTest)
 
 add_library(testutils
   STATIC
@@ -15,16 +21,27 @@ add_library(testutils
   sharetestutils.cpp
   endtoendtestutils.cpp
   activitylistmodeltestutils.cpp
+  foldermantestutils.cpp
 )
 
 target_link_libraries(testutils PUBLIC Nextcloud::sync Qt::Test Qt::Core5Compat)
 target_include_directories(testutils PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(testutils PRIVATE QT_NO_KEYWORDS)
 set_target_properties(testutils PROPERTIES FOLDER Tests)
 
 nextcloud_add_test(NextcloudPropagator)
+if(Qt${QT_VERSION_MAJOR}HttpServer_FOUND)
+    target_compile_definitions(NextcloudPropagatorTest PRIVATE HAVE_QHTTPSERVER=1)
+    target_link_libraries(NextcloudPropagatorTest PRIVATE Qt::HttpServer)
+endif()
 
 IF(BUILD_UPDATER)
     nextcloud_add_test(Updater)
+
+    if(Qt${QT_VERSION_MAJOR}HttpServer_FOUND)
+        target_compile_definitions(UpdaterTest PRIVATE HAVE_QHTTPSERVER=1)
+        target_link_libraries(UpdaterTest PRIVATE Qt::HttpServer)
+    endif()
 endif()
 
 nextcloud_add_test(NetrcParser)
@@ -38,11 +55,22 @@ nextcloud_add_test(ChecksumValidator)
 
 nextcloud_add_test(ClientSideEncryption)
 nextcloud_add_test(ClientSideEncryptionV2)
-nextcloud_add_test(ExcludedFiles)
+
+if (NOT APPLE)
+    nextcloud_add_test(ExcludedFiles)
+endif()
 
 nextcloud_add_test(Utility)
-nextcloud_add_test(SyncEngine)
-nextcloud_add_test(SyncVirtualFiles)
+
+if (APPLE)
+    add_subdirectory(macOS)
+endif()
+
+if (NOT APPLE)
+    nextcloud_add_test(SyncEngine)
+    nextcloud_add_test(SyncVirtualFiles)
+endif()
+
 nextcloud_add_test(SyncMove)
 nextcloud_add_test(SyncDelete)
 nextcloud_add_test(SyncConflict)
@@ -55,20 +83,136 @@ nextcloud_add_test(AllFilesDeleted)
 nextcloud_add_test(Blacklist)
 nextcloud_add_test(LocalDiscovery)
 nextcloud_add_test(RemoteDiscovery)
+nextcloud_add_test(Governance)
+
 nextcloud_add_test(Permissions)
+
 nextcloud_add_test(SelectiveSync)
 nextcloud_add_test(DatabaseError)
 nextcloud_add_test(LockedFiles)
-nextcloud_add_test(FolderWatcher)
+
+if (NOT WIN32)
+    nextcloud_add_test(FolderWatcher)
+endif()
+nextcloud_add_test(FolderWatcherChangeDetection)
+
+nextcloud_add_test(InvalidFilenameDialog)
 nextcloud_add_test(Capabilities)
+nextcloud_add_test(UnifiedSharing)
+target_link_libraries(UnifiedSharingTest PRIVATE nextcloudGuiSharing)
+nextcloud_add_test(PermissionModel)
+target_link_libraries(PermissionModelTest PRIVATE nextcloudGuiSharing)
+nextcloud_add_test(RecipientModel)
+target_link_libraries(RecipientModelTest PRIVATE nextcloudGuiSharing)
+nextcloud_add_test(SharingDialog)
+target_link_libraries(SharingDialogTest PRIVATE nextcloudGuiSharing nextcloudGuiSharingplugin)
 nextcloud_add_test(PushNotifications)
 nextcloud_add_test(Theme)
+nextcloud_add_test(SettingsDialog)
 nextcloud_add_test(IconUtils)
+nextcloud_add_test(CustomStateIcons)
+target_compile_definitions(CustomStateIconsTest PRIVATE NEXTCLOUD_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+target_link_libraries(CustomStateIconsTest PRIVATE Qt::Gui)
+nextcloud_add_test(NotificationSoundPlayer)
 nextcloud_add_test(SetUserStatusDialog)
+nextcloud_add_test(TrayAccountMenuPolicy)
+if(NOT APPLE)
+    nextcloud_add_test(TrayAccountMenuQt)
+    set_tests_properties(TrayAccountMenuQtTest PROPERTIES ENVIRONMENT
+        "QT_QPA_PLATFORM=offscreen;QT_SCALE_FACTOR=1;QT_SCREEN_SCALE_FACTORS=1;QT_FONT_DPI=96;QT_FORCE_STDERR_LOGGING=1")
+    if(WIN32)
+        file(TO_CMAKE_PATH "$ENV{WINDIR}/Fonts" tray_menu_font_dir)
+        set_property(TEST TrayAccountMenuQtTest APPEND PROPERTY ENVIRONMENT "QT_QPA_FONTDIR=${tray_menu_font_dir}")
+    endif()
+endif()
+nextcloud_add_test(TrayActivationPolicy)
+nextcloud_add_test(TrayAccountPopupPresentation)
+if(NOT APPLE)
+    nextcloud_add_test(SystraySyncControlQt)
+endif()
 nextcloud_add_test(UnifiedSearchListmodel)
+nextcloud_add_test(AssistantController)
+target_sources(AssistantControllerTest PRIVATE assistant/fakeassistantclient.cpp)
+nextcloud_add_test(AssistantModels)
+add_executable(AssistantQmlTest
+    qml/assistant/assistantqmltestrunner.cpp
+    assistant/fakeassistantclient.cpp
+    testhelper.h
+)
+target_link_libraries(AssistantQmlTest PRIVATE nextcloudCore Qt::QuickTest)
+target_include_directories(AssistantQmlTest PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+set_target_properties(AssistantQmlTest PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${BIN_OUTPUT_DIRECTORY}
+    FOLDER Tests
+)
+add_test(NAME AssistantQmlTest
+    COMMAND AssistantQmlTest -input "${CMAKE_CURRENT_SOURCE_DIR}/qml/assistant/testassistant.qml"
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+)
+set_tests_properties(AssistantQmlTest PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+add_executable(WindowCloseQmlTest
+    qml/windowclose/windowcloseqmltestrunner.cpp
+)
+target_link_libraries(WindowCloseQmlTest PRIVATE nextcloudCore Qt::QuickTest)
+set_target_properties(WindowCloseQmlTest PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${BIN_OUTPUT_DIRECTORY}
+    FOLDER Tests
+)
+add_test(NAME WindowCloseQmlTest
+    COMMAND WindowCloseQmlTest -input "${CMAKE_CURRENT_SOURCE_DIR}/qml/windowclose/testwindowclose.qml"
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+)
+set_tests_properties(WindowCloseQmlTest PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+nextcloud_add_test(UnifiedSearchPeopleModel)
+target_link_libraries(UnifiedSearchListmodelTest PRIVATE nextcloudGuiSearch)
+target_link_libraries(UnifiedSearchPeopleModelTest PRIVATE nextcloudGuiSearch)
+set_tests_properties(UnifiedSearchPeopleModelTest PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 nextcloud_add_test(ActivityListModel)
 nextcloud_add_test(SortedActivityListModel)
 nextcloud_add_test(ActivityData)
+add_executable(ActivitiesWindowQmlTest
+    qml/activitieswindow/activitieswindowqmltest.cpp
+)
+target_link_libraries(ActivitiesWindowQmlTest PRIVATE
+    nextcloudCore
+    Qt::QuickTest
+)
+set_target_properties(ActivitiesWindowQmlTest PROPERTIES
+    FOLDER Tests
+    RUNTIME_OUTPUT_DIRECTORY ${BIN_OUTPUT_DIRECTORY}
+)
+add_test(NAME ActivitiesWindowQmlTest
+    COMMAND ActivitiesWindowQmlTest
+        -o -,txt
+        -import "${CMAKE_CURRENT_SOURCE_DIR}/qml/imports"
+        -import "${CMAKE_SOURCE_DIR}/theme"
+        -input "${CMAKE_CURRENT_SOURCE_DIR}/qml/activitieswindow/tst_activitieswindow.qml"
+)
+add_test(NAME ActivityFileMenuQmlTest
+    COMMAND Qt6::qmltestrunner
+        -input "${CMAKE_CURRENT_SOURCE_DIR}/qml/activityfilemenu/testactivityfilemenu.qml"
+)
+add_test(NAME AccountWizardWindowQmlTest
+    COMMAND Qt6::qmltestrunner
+        -import "${CMAKE_CURRENT_SOURCE_DIR}/qml/imports"
+        -import "${CMAKE_SOURCE_DIR}/theme"
+        -input "${CMAKE_CURRENT_SOURCE_DIR}/qml/accountwizard/tst_accountwizardwindow.qml"
+)
+set_tests_properties(AccountWizardWindowQmlTest PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+add_executable(SearchQmlTest qml/search/searchqmltestrunner.cpp)
+target_link_libraries(SearchQmlTest PRIVATE nextcloudCore nextcloudGuiSearch nextcloudGuiSearchplugin Qt::QuickTest)
+target_compile_definitions(SearchQmlTest PRIVATE
+    SEARCH_QML_TEST_IMPORT_PATH="${CMAKE_CURRENT_SOURCE_DIR}/qml/search/imports"
+)
+set_target_properties(SearchQmlTest PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${BIN_OUTPUT_DIRECTORY}
+    FOLDER Tests
+)
+add_test(NAME SearchQmlTest
+    COMMAND SearchQmlTest -input "${CMAKE_CURRENT_SOURCE_DIR}/qml/search/testsearch.qml"
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+)
+set_tests_properties(SearchQmlTest PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 nextcloud_add_test(TalkReply)
 nextcloud_add_test(LockFile)
 nextcloud_add_test(ShareModel)
@@ -80,12 +224,22 @@ nextcloud_add_test(SyncConflictsModel)
 nextcloud_add_test(DateFieldBackend)
 nextcloud_add_test(ClientStatusReporting)
 
+nextcloud_add_test(FileSystem)
+
+nextcloud_add_test(FolderStatusModel)
+
+if(NOT BUILD_LIBRARIES_ONLY AND NOT APPLE)
+    nextcloud_add_test(NextcloudCmdProvisioning)
+    add_dependencies(NextcloudCmdProvisioningTest nextcloudcmd)
+endif()
+
 target_link_libraries(SecureFileDropTest PRIVATE Nextcloud::sync)
 configure_file(fake2eelocksucceeded.json "${PROJECT_BINARY_DIR}/bin/fake2eelocksucceeded.json" COPYONLY)
 configure_file(fakefiledrope2eefoldermetadata.json "${PROJECT_BINARY_DIR}/bin/fakefiledrope2eefoldermetadata.json" COPYONLY)
 configure_file(e2etestsfakecert.pem "${PROJECT_BINARY_DIR}/bin/e2etestsfakecert.pem" COPYONLY)
 configure_file(e2etestsfakecertprivatekey.pem "${PROJECT_BINARY_DIR}/bin/e2etestsfakecertprivatekey.pem" COPYONLY)
 configure_file(e2etestsfakecertpublickey.pem "${PROJECT_BINARY_DIR}/bin/e2etestsfakecertpublickey.pem" COPYONLY)
+configure_file(fakeshortcut.base64 "${PROJECT_BINARY_DIR}/bin/fakeshortcut.base64" COPYONLY)
 
 
 if(ADD_E2E_TESTS)
@@ -98,7 +252,7 @@ endif()
 
 if( UNIX AND NOT APPLE )
     nextcloud_add_test(InotifyWatcher)
-endif(UNIX AND NOT APPLE)
+endif()
 
 if (WIN32)
     include_directories(
@@ -106,6 +260,7 @@ if (WIN32)
     )
 
     nextcloud_add_test(SyncCfApi)
+    target_link_libraries(SyncCfApiTest PRIVATE cldapi)
 	nextcloud_add_test(CfApiShellExtensionsIPC)
     target_sources(CfApiShellExtensionsIPCTest PRIVATE "${CMAKE_SOURCE_DIR}/src/libsync/vfs/cfapi/shellext/thumbnailprovideripc.cpp" "${CMAKE_SOURCE_DIR}/src/libsync/vfs/cfapi/shellext/customstateprovideripc.cpp" "${CMAKE_SOURCE_DIR}/src/libsync/vfs/cfapi/shellext/ipccommon.cpp")
 elseif(LINUX) # elseif(LINUX OR APPLE)
@@ -116,8 +271,31 @@ nextcloud_add_test(LongPath)
 nextcloud_add_benchmark(LargeSync)
 
 nextcloud_add_test(Account)
+nextcloud_add_test(AccountManager)
+nextcloud_add_test(AccountState)
+nextcloud_add_test(AccountWizardController)
+nextcloud_add_test(BrowserReAuthController)
+nextcloud_add_test(ConnectionValidator)
+nextcloud_add_test(Folder)
 nextcloud_add_test(FolderMan)
+nextcloud_add_test(FolderWizard)
+# folderwizard.h includes the ui_*.h headers generated for nextcloudCore.
+target_include_directories(FolderWizardTest PRIVATE "$<TARGET_PROPERTY:nextcloudCore,BINARY_DIR>/nextcloudCore_autogen/include")
+nextcloud_add_test(ForceSyncNow)
 nextcloud_add_test(RemoteWipe)
+nextcloud_add_test(Migration)
+nextcloud_add_test(ManagedSettings)
+
+if(NOT BUILD_FILE_PROVIDER_MODULE)
+    # the File Provider build crashes this test in CI for some reason
+    # I'm not yet sure what's causing it as it works fine with a classic build...
+    nextcloud_add_test(AccountSettings)
+endif()
+
+nextcloud_add_test(NetworkSettings)
+nextcloud_add_test(UpdateChannel)
+nextcloud_add_test(FileActionsModel)
+nextcloud_add_test(UriSchemeHandler)
 
 configure_file(test_journal.db "${PROJECT_BINARY_DIR}/bin/test_journal.db" COPYONLY)
 
@@ -125,4 +303,4 @@ find_package(CMocka)
 if (CMOCKA_FOUND)
     include(AddCMockaTest)
     add_subdirectory(csync)
-endif (CMOCKA_FOUND)
+endif ()

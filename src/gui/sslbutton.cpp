@@ -1,15 +1,7 @@
 /*
- * Copyright (C) by Daniel Molkentin <danimo@owncloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2018 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2014 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "sslbutton.h"
@@ -42,8 +34,9 @@ SslButton::SslButton(QWidget *parent)
 
 static QString addCertDetailsField(const QString &key, const QString &value)
 {
-    if (value.isEmpty())
+    if (value.isEmpty()) {
         return QString();
+    }
 
     return QLatin1String("<tr><td style=\"vertical-align: top;\"><b>") + key
         + QLatin1String("</b></td><td style=\"vertical-align: bottom;\">") + value
@@ -67,8 +60,9 @@ QMenu *SslButton::buildCertMenu(QMenu *parent, const QSslCertificate &cert,
     QString country = QStringList(cert.subjectInfo(QSslCertificate::CountryName)).join(QChar(';'));
     QString state = QStringList(cert.subjectInfo(QSslCertificate::StateOrProvinceName)).join(QChar(';'));
     QString issuer = QStringList(cert.issuerInfo(QSslCertificate::CommonName)).join(QChar(';'));
-    if (issuer.isEmpty())
+    if (issuer.isEmpty()) {
         issuer = QStringList(cert.issuerInfo(QSslCertificate::OrganizationalUnitName)).join(QChar(';'));
+    }
     QString sha1 = Utility::formatFingerprint(cert.digest(QCryptographicHash::Sha1).toHex(), false);
     QByteArray sha265hash = cert.digest(QCryptographicHash::Sha256).toHex();
     QString sha256escaped =
@@ -134,8 +128,10 @@ QMenu *SslButton::buildCertMenu(QMenu *parent, const QSslCertificate &cert,
         txt += certId;
     } else {
         if (isSelfSigned(cert)) {
+            //: %1 is the certificate identifier, taken from its common name or organizational unit.
             txt += tr("%1 (self-signed)").arg(certId);
         } else {
+            //: %1 is the certificate identifier, taken from its common name or organizational unit.
             txt += tr("%1").arg(certId);
         }
     }
@@ -173,7 +169,7 @@ void SslButton::updateAccountState(AccountState *accountState)
         QSslCipher cipher = account->_sessionCipher;
         setToolTip(tr("This connection is encrypted using %1 bit %2.\n").arg(cipher.usedBits()).arg(cipher.name()));
     } else {
-        setIcon(QIcon(QLatin1String(":/client/theme/lock-http.svg")));
+        setIcon(QIcon(QLatin1String(":/client/theme/lock-broken.svg")));
         setToolTip(tr("This connection is NOT secure as it is not encrypted.\n"));
     }
 }
@@ -217,15 +213,16 @@ void SslButton::slotUpdateMenu()
         const auto systemCerts = QSslConfiguration::systemCaCertificates();
 
         QList<QSslCertificate> tmpChain;
-        foreach (QSslCertificate cert, chain) {
+        for (const auto &cert : chain) {
             tmpChain << cert;
-            if (systemCerts.contains(cert))
+            if (systemCerts.contains(cert)) {
                 break;
+            }
         }
         chain = tmpChain;
 
         // find trust anchor (informational only, verification is done by QSslSocket!)
-        for (const QSslCertificate &rootCA : systemCerts) {
+        for (const auto &rootCA : systemCerts) {
             if (rootCA.issuerInfo(QSslCertificate::CommonName) == chain.last().issuerInfo(QSslCertificate::CommonName)
                 && rootCA.issuerInfo(QSslCertificate::Organization) == chain.last().issuerInfo(QSslCertificate::Organization)) {
                 chain.append(rootCA);

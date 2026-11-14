@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2024 Nextcloud GmbH and Nextcloud contributors
+# SPDX-FileCopyrightText: 2017 ownCloud GmbH
+# SPDX-License-Identifier: LGPL-2.1-or-later
 include(CheckIncludeFile)
 include(CheckSymbolExists)
 include(CheckFunctionExists)
@@ -28,7 +31,7 @@ if (NOT LINUX)
     if(HAVE_ARGP_H AND HAVE_LIBARGP)
         set(CMAKE_REQUIRED_LIBRARIES ${CMAKE_REQUIRED_LIBRARIES} argp)
     endif()
-endif (NOT LINUX)
+endif ()
 
 if(WIN32)
   set(CMAKE_REQUIRED_LIBRARIES ${CMAKE_REQUIRED_LIBRARIES} psapi kernel32 Rstrtmgr)

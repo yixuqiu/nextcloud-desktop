@@ -1,15 +1,6 @@
 /*
- * Copyright (C) by Oleksandr Zolotov <alex@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2022 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #pragma once
@@ -33,14 +24,14 @@ public:
                                    QString userId,
                                    QUrl serverUrl,
                                    QString localDirPath = {},
-                                   bool nonVfsMode = false,
+                                   bool isVfsEnabled = false,
                                    QString remoteDirPath = QStringLiteral("/"),
                                    QObject *parent = nullptr);
 
-public slots:
-    void handleAccountSetupFromCommandLine();
+public Q_SLOTS:
+    [[nodiscard]] bool handleAccountSetupFromCommandLine();
 
-private slots:
+private Q_SLOTS:
     void checkLastModifiedWithPropfind();
 
     void accountSetupFromCommandLinePropfindHandleSuccess();
@@ -54,6 +45,20 @@ private slots:
     void fetchUserName();
 
 private:
+    /** Whether a classic sync folder has to be set up for the new account.
+     *
+     * With the app-level File Provider mode enabled the account is synced through its
+     * File Provider domain and FolderMan refuses to add a classic sync folder.
+     */
+    [[nodiscard]] bool localSyncFolderRequired() const;
+
+    /** The local folder to use when none was given on the command line.
+     *
+     * Follows what the account wizard suggests: the configured override, otherwise the
+     * theme's default client folder, made unique against the existing sync folders.
+     */
+    [[nodiscard]] QString defaultLocalDirPath() const;
+
     QString _appPassword;
     QString _userId;
     QUrl _serverUrl;

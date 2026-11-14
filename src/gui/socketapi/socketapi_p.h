@@ -1,31 +1,22 @@
 /*
- * Copyright (C) by Dominik Schmidt <dev@dominik-schmidt.de>
- * Copyright (C) by Klaas Freitag <freitag@owncloud.com>
- * Copyright (C) by Roeland Jago Douma <roeland@famdouma.nl>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2021 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2017 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #ifndef SOCKETAPI_P_H
 #define SOCKETAPI_P_H
 
-#include <functional>
 #include <QBitArray>
+#include <QIODevice>
 #include <QPointer>
-
 #include <QJsonDocument>
 #include <QJsonObject>
-
-#include <memory>
 #include <QTimer>
+#include <QLoggingCategory>
+
+#include <functional>
+#include <memory>
 
 namespace OCC {
 
@@ -67,7 +58,9 @@ public:
     {
     }
 
-    void sendMessage(const QString &message, bool doWait = false) const;
+    virtual ~SocketListener() = default;
+
+    virtual void sendMessage(const QString &message, bool doWait = false) const;
     void sendWarning(const QString &message, bool doWait = false) const
     {
         sendMessage(QStringLiteral("WARNING:") + message, doWait);
@@ -79,8 +72,9 @@ public:
 
     void sendMessageIfDirectoryMonitored(const QString &message, uint systemDirectoryHash) const
     {
-        if (_monitoredDirectoriesBloomFilter.isHashMaybeStored(systemDirectoryHash))
+        if (_monitoredDirectoriesBloomFilter.isHashMaybeStored(systemDirectoryHash)) {
             sendMessage(message, false);
+        }
     }
 
     void registerMonitoredDirectory(uint systemDirectoryHash)
@@ -102,7 +96,7 @@ public:
     {
     }
 
-public slots:
+public Q_SLOTS:
     void closureSlot()
     {
         callback_();
@@ -142,13 +136,22 @@ class SocketApiJobV2 : public QObject
 {
     Q_OBJECT
 public:
-    explicit SocketApiJobV2(const QSharedPointer<SocketListener> &socketListener, const QByteArray &command, const QJsonObject &arguments);
+    explicit SocketApiJobV2(const QSharedPointer<SocketListener> &socketListener, const QString &command, const QJsonObject &arguments);
 
     void success(const QJsonObject &response) const;
     void failure(const QString &error) const;
 
-    [[nodiscard]] const QJsonObject &arguments() const { return _arguments; }
-    [[nodiscard]] QByteArray command() const { return _command; }
+    [[nodiscard]] const QJsonObject &arguments() const
+    {
+        return _arguments;
+    }
+    [[nodiscard]] QString command() const
+    {
+        return _command;
+    }
+
+    [[nodiscard]] QString warning() const;
+    void setWarning(const QString &warning);
 
 Q_SIGNALS:
     void finished() const;
@@ -157,9 +160,10 @@ private:
     void doFinish(const QJsonObject &obj) const;
 
     QSharedPointer<SocketListener> _socketListener;
-    const QByteArray _command;
+    const QString _command;
     QString _jobId;
     QJsonObject _arguments;
+    QString _warning;
 };
 }
 

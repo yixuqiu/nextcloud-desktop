@@ -1,15 +1,6 @@
 /*
- * Copyright (C) 2023 by Claudio Cambra <claudio.cambra@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2023 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 import QtQuick 2.15
@@ -40,6 +31,8 @@ Item {
         id: internalLayout
 
         anchors.fill: parent
+
+        spacing: Style.standardSpacing
 
         Image {
             id: fileIconImage
@@ -81,21 +74,18 @@ Item {
                 EnforcedPlainTextLabel {
                     id: fileTypeLabel
                     text: root.fileTypeString
-                    color: Style.ncSecondaryTextColor
+                    color: palette.dark
                 }
             }
         }
 
-        CustomButton {
+        Button {
             id: deleteButton
 
             Layout.minimumWidth: implicitWidth
             Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
 
             text: qsTr("Delete")
-            textColorHovered: Style.ncHeaderTextColor
-            bgColor: Style.errorBoxBackgroundColor
-            contentsFont.bold: true
             onClicked: root.evictItem(root.identifier, root.domainIdentifier)
         }
     }

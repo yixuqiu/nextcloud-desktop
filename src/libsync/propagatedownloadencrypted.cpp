@@ -1,3 +1,7 @@
+/*
+ * SPDX-FileCopyrightText: 2018 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
 #include "propagatedownloadencrypted.h"
 #include "clientsideencryptionjobs.h"
 #include "encryptedfoldermetadatahandler.h"
@@ -18,7 +22,6 @@ PropagateDownloadEncrypted::PropagateDownloadEncrypted(OwncloudPropagator *propa
     const auto rootPath = Utility::noLeadingSlashPath(_propagator->remotePath());
     const auto remoteFilename = _item->_encryptedFileName.isEmpty() ? _item->_file : _item->_encryptedFileName;
     const auto remotePath = QString(rootPath + remoteFilename);
-    const auto remoteParentPath = remotePath.left(remotePath.lastIndexOf('/'));
     _remoteParentPath = remotePath.left(remotePath.lastIndexOf('/'));
 
     const auto filenameInDb = _item->_file;
@@ -32,7 +35,7 @@ void PropagateDownloadEncrypted::start()
     SyncJournalFileRecord rec;
     if (!_propagator->_journal->getRootE2eFolderRecord(Utility::fullRemotePathToRemoteSyncRootRelative(_remoteParentPath, _propagator->remotePath()), &rec)
         || !rec.isValid()) {
-        emit failed();
+        Q_EMIT failed();
         return;
     }
     _encryptedFolderMetadataHandler.reset(new EncryptedFolderMetadataHandler(_propagator->account(), _remoteParentPath, _propagator->remotePath(), _propagator->_journal, rec.path()));
@@ -48,7 +51,7 @@ void PropagateDownloadEncrypted::slotFetchMetadataJobFinished(int statusCode, co
 {
     if (statusCode != 200) {
         qCCritical(lcPropagateDownloadEncrypted) << "Failed to find encrypted metadata information of remote file" << _info.fileName() << message;
-        emit failed();
+        Q_EMIT failed();
         return;
     }
 
@@ -57,7 +60,7 @@ void PropagateDownloadEncrypted::slotFetchMetadataJobFinished(int statusCode, co
     const auto metadata = _encryptedFolderMetadataHandler->folderMetadata();
 
     if (!metadata || !metadata->isValid()) {
-        emit failed();
+        Q_EMIT failed();
         qCCritical(lcPropagateDownloadEncrypted) << "Failed to find encrypted metadata information of remote file" << _info.fileName();
     }
 
@@ -69,12 +72,12 @@ void PropagateDownloadEncrypted::slotFetchMetadataJobFinished(int statusCode, co
             _encryptedInfo = file;
 
             qCDebug(lcPropagateDownloadEncrypted) << "Found matching encrypted metadata for file, starting download";
-            emit fileMetadataFound();
+            Q_EMIT fileMetadataFound();
             return;
         }
     }
     qCCritical(lcPropagateDownloadEncrypted) << "Failed to find matching encrypted metadata for file, starting download of remote file" << _info.fileName();
-    emit failed();
+    Q_EMIT failed();
 }
 
 // TODO: Fix this. Exported in the wrong place.
@@ -99,7 +102,7 @@ bool PropagateDownloadEncrypted::decryptFile(QFile& tmpFile)
 
     // we decripted the temporary into another temporary, so good bye old one
     if (!tmpFile.remove()) {
-        qCDebug(lcPropagateDownloadEncrypted) << "Failed to remove temporary file" << tmpFile.errorString();
+        qCWarning(lcPropagateDownloadEncrypted) << "Failed to remove temporary file" << tmpFile.errorString();
         _errorString = tmpFile.errorString();
         return false;
     }
@@ -116,3 +119,5 @@ QString PropagateDownloadEncrypted::errorString() const
 }
 
 }
+
+#include "moc_propagatedownloadencrypted.cpp"

@@ -1,21 +1,13 @@
 /*
- * Copyright (C) by Kevin Ottens <kevin.ottens@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2020 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "conflictdialog.h"
 #include "ui_conflictdialog.h"
 
 #include "conflictsolver.h"
+#include "common/utility.h"
 
 #include <QDateTime>
 #include <QDebug>
@@ -56,12 +48,12 @@ ConflictDialog::ConflictDialog(QWidget *parent)
     _ui->conflictMessage->setTextFormat(Qt::PlainText);
 
     connect(_ui->localVersionRadio, &QCheckBox::toggled, this, &ConflictDialog::updateButtonStates);
-    connect(_ui->localVersionButton, &QToolButton::clicked, this, [=] {
+    connect(_ui->localVersionButton, &QToolButton::clicked, this, [=, this] {
         QDesktopServices::openUrl(QUrl::fromLocalFile(_solver->localVersionFilename()));
     });
 
     connect(_ui->remoteVersionRadio, &QCheckBox::toggled, this, &ConflictDialog::updateButtonStates);
-    connect(_ui->remoteVersionButton, &QToolButton::clicked, this, [=] {
+    connect(_ui->remoteVersionButton, &QToolButton::clicked, this, [=, this] {
         QDesktopServices::openUrl(QUrl::fromLocalFile(_solver->remoteVersionFilename()));
     });
 
@@ -130,7 +122,7 @@ void ConflictDialog::updateWidgets()
 
     const auto updateGroup = [this, &mimeDb](const QString &filename, QLabel *linkLabel, const QString &linkText, QLabel *mtimeLabel, QLabel *sizeLabel, QToolButton *button) {
         const auto fileUrl = QUrl::fromLocalFile(filename).toString();
-        linkLabel->setText(QStringLiteral("<a href='%1'>%2</a>").arg(fileUrl).arg(linkText));
+        linkLabel->setText(QStringLiteral("<a href=\"%1\">%2</a>").arg(Utility::escape(fileUrl)).arg(linkText));
 
         const auto info = QFileInfo(filename);
         mtimeLabel->setText(info.lastModified().toString());

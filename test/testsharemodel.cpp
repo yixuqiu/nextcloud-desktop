@@ -1,26 +1,18 @@
 /*
- * Copyright (C) by Claudio Cambra <claudio.cambra@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2022 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "gui/filedetails/sharemodel.h"
 
-#include <QTest>
 #include <QAbstractItemModelTester>
-#include <QSignalSpy>
+#include <QDateTime>
 #include <QFileInfo>
 #include <QFlags>
-#include <QDateTime>
+#include <QSignalSpy>
+#include <QTest>
 #include <QTimeZone>
+#include <QUrlQuery>
 
 #include "sharetestutils.h"
 #include "libsync/theme.h"
@@ -39,9 +31,14 @@ private:
     FakeShareDefinition _testUserShareDefinition;
     FakeShareDefinition _testRemoteShareDefinition;
 
-private slots:
+private Q_SLOTS:
     void initTestCase()
     {
+        OCC::Logger::instance()->setLogFlush(true);
+        OCC::Logger::instance()->setLogDebug(true);
+
+        QStandardPaths::setTestModeEnabled(true);
+
         QSignalSpy helperSetupSucceeded(&helper, &ShareTestHelper::setupSucceeded);
         helper.setup();
         QCOMPARE(helperSetupSucceeded.count(), 1);
@@ -273,7 +270,7 @@ private slots:
 
         const auto expectedLinkShareExpireDate = QDate::fromString(_testLinkShareDefinition.shareExpiration, helper.expectedDtFormat);
         QCOMPARE(shareIndex.data(ShareModel::ExpireDateEnabledRole).toBool(), expectedLinkShareExpireDate.isValid());
-        QCOMPARE(shareIndex.data(ShareModel::ExpireDateRole).toLongLong(), expectedLinkShareExpireDate.startOfDay(Qt::UTC).toMSecsSinceEpoch());
+        QCOMPARE(shareIndex.data(ShareModel::ExpireDateRole).toLongLong(), expectedLinkShareExpireDate.startOfDay(QTimeZone::utc()).toMSecsSinceEpoch());
 
         const auto iconUrl = shareIndex.data(ShareModel::IconUrlRole).toString();
         QVERIFY(iconUrl.contains("public.svg"));
@@ -316,7 +313,7 @@ private slots:
 
         const auto expectedShareExpireDate = QDate::fromString(_testEmailShareDefinition.shareExpiration, helper.expectedDtFormat);
         QCOMPARE(shareIndex.data(ShareModel::ExpireDateEnabledRole).toBool(), expectedShareExpireDate.isValid());
-        QCOMPARE(shareIndex.data(ShareModel::ExpireDateRole).toLongLong(), expectedShareExpireDate.startOfDay(Qt::UTC).toMSecsSinceEpoch());
+        QCOMPARE(shareIndex.data(ShareModel::ExpireDateRole).toLongLong(), expectedShareExpireDate.startOfDay(QTimeZone::utc()).toMSecsSinceEpoch());
 
         const auto iconUrl = shareIndex.data(ShareModel::IconUrlRole).toString();
         QVERIFY(iconUrl.contains("email.svg"));
@@ -359,14 +356,14 @@ private slots:
 
         const auto expectedShareExpireDate = QDate::fromString(_testUserShareDefinition.shareExpiration, helper.expectedDtFormat);
         QCOMPARE(shareIndex.data(ShareModel::ExpireDateEnabledRole).toBool(), expectedShareExpireDate.isValid());
-        QCOMPARE(shareIndex.data(ShareModel::ExpireDateRole).toLongLong(), expectedShareExpireDate.startOfDay(Qt::UTC).toMSecsSinceEpoch());
+        QCOMPARE(shareIndex.data(ShareModel::ExpireDateRole).toLongLong(), expectedShareExpireDate.startOfDay(QTimeZone::utc()).toMSecsSinceEpoch());
 
         const auto iconUrl = shareIndex.data(ShareModel::IconUrlRole).toString();
         QVERIFY(iconUrl.contains("user.svg"));
 
         // Check correct user avatar
         const auto avatarUrl = shareIndex.data(ShareModel::AvatarUrlRole).toString();
-        const auto relativeAvatarPath = QString("remote.php/dav/avatars/%1/%2.png").arg(_testUserShareDefinition.shareShareWith, QString::number(64));
+        const auto relativeAvatarPath = QStringLiteral("remote.php/dav/avatars/%1/%2.png").arg(_testUserShareDefinition.shareShareWith, QString::number(64));
         const auto expectedAvatarPath = Utility::concatUrlPath(helper.account->url(), relativeAvatarPath).toString();
         const QString expectedUrl(QStringLiteral("image://tray-image-provider/") + expectedAvatarPath);
         QCOMPARE(avatarUrl, expectedUrl);
@@ -392,6 +389,7 @@ private slots:
         QVERIFY(sharesChanged.wait(5000));
         QCOMPARE(helper.shareCount(), 1); // Check our test is working!
         QCOMPARE(model.rowCount(), helper.shareCount() + 1); // Internal link share!
+        helper.resetSharedWithMeRequestUrls();
 
         // Test if it gets added
         model.createNewLinkShare();
@@ -409,6 +407,13 @@ private slots:
         QVERIFY(sharesChanged.wait(5000));
         QCOMPARE(helper.shareCount(), 3); // Check our test is working!
         QCOMPARE(model.rowCount(), helper.shareCount() + 1); // Internal link share!
+
+        QVERIFY(!helper.sharedWithMeRequestUrls().isEmpty());
+        for (const auto &requestUrl : helper.sharedWithMeRequestUrls()) {
+            const auto requestedPath = QUrlQuery(requestUrl).queryItemValue(QStringLiteral("path"));
+            QVERIFY2(!requestedPath.isEmpty(), qPrintable(requestUrl.toString()));
+            QVERIFY2(requestedPath.endsWith(QString::fromLatin1(ShareTestHelper::testFileName)), qPrintable(requestUrl.toString()));
+        }
 
         // Test if it's the type we wanted
         const auto newUserGroupShareIndex = model.index(model.rowCount() - 1, 0, {});
@@ -579,7 +584,7 @@ private slots:
                 return;
             case Share::TypeUser:
             case Share::TypeGroup:
-            case Share::TypeCircle:
+            case Share::TypeTeam:
             case Share::TypeRoom:
                 expectedExpireDateTime = QDate::currentDate().addDays(internalExpireDays).startOfDay(QTimeZone::utc());
                 break;
@@ -796,14 +801,14 @@ private slots:
         QCOMPARE(shareIndex.data(ShareModel::ExpireDateEnabledRole).toBool(), false);
 
         // Set a new expire date
-        const auto expireDateMsecs = QDate::currentDate().addDays(10).startOfDay(Qt::UTC).toMSecsSinceEpoch();
+        const auto expireDateMsecs = QDate::currentDate().addDays(10).startOfDay(QTimeZone::utc()).toMSecsSinceEpoch();
         model.setShareExpireDate(linkSharePtr, expireDateMsecs);
         QVERIFY(expireDateSet.wait(3000));
         QCOMPARE(shareIndex.data(ShareModel::ExpireDateRole).toLongLong(), expireDateMsecs);
         QCOMPARE(shareIndex.data(ShareModel::ExpireDateEnabledRole).toBool(), true);
 
         // Test the QML-specific slot
-        const QVariant newExpireDateMsecs = QDate::currentDate().addDays(20).startOfDay(Qt::UTC).toMSecsSinceEpoch();
+        const QVariant newExpireDateMsecs = QDate::currentDate().addDays(20).startOfDay(QTimeZone::utc()).toMSecsSinceEpoch();
         model.setShareExpireDateFromQml(QVariant::fromValue(sharePtr), newExpireDateMsecs);
         QVERIFY(expireDateSet.wait(3000));
         QCOMPARE(shareIndex.data(ShareModel::ExpireDateRole).toLongLong(), newExpireDateMsecs);
@@ -815,7 +820,7 @@ private slots:
         helper.resetTestData();
 
         // Test with an existing link share.
-        // This one has a pre-existing password
+        // This one has a pre-existing note
         helper.appendShareReplyData(_testLinkShareDefinition);
         QCOMPARE(helper.shareCount(), 1);
 
@@ -839,7 +844,7 @@ private slots:
         const auto linkSharePtr = sharePtr.dynamicCast<LinkShare>(); // Need to connect to signal
         QSignalSpy noteSet(linkSharePtr.data(), &LinkShare::noteSet);
 
-        model.toggleShareNoteToRecipient(sharePtr, false);
+        model.setShareNote(sharePtr, QStringLiteral(""));
         QVERIFY(noteSet.wait(3000));
         QCOMPARE(shareIndex.data(ShareModel::NoteEnabledRole).toBool(), false);
 
@@ -847,7 +852,7 @@ private slots:
         model.setShareNote(sharePtr, note);
         QVERIFY(noteSet.wait(3000));
         QCOMPARE(shareIndex.data(ShareModel::NoteEnabledRole).toBool(), true);
-        // The model stores the recently set password.
+        // The model stores the recently set note.
         // We want to present the user with it in the UI while the model is alive
         QCOMPARE(shareIndex.data(ShareModel::NoteRole).toString(), note);
     }

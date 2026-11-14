@@ -1,15 +1,7 @@
 /*
- * Copyright (C) by Daniel Molkentin <danimo@owncloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2018 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2014 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include <QUrl>
@@ -44,9 +36,20 @@ Updater *Updater::instance()
     return _instance;
 }
 
+bool Updater::updateCheckAllowed(bool userInitiated, bool skipUpdateCheck, bool autoUpdateCheck)
+{
+    if (skipUpdateCheck) {
+        return false;
+    }
+    return userInitiated || autoUpdateCheck;
+}
+
 QUrl Updater::updateUrl()
 {
-    QUrl updateBaseUrl(QString::fromLocal8Bit(qgetenv("OCC_UPDATE_URL")));
+    QUrl updateBaseUrl;
+#if NEXTCLOUD_DEV
+    updateBaseUrl = QUrl(QString::fromLocal8Bit(qgetenv("OCC_UPDATE_URL")));
+#endif
     if (updateBaseUrl.isEmpty()) {
         updateBaseUrl = QUrl(QLatin1String(APPLICATION_UPDATE_URL));
     }
@@ -56,7 +59,7 @@ QUrl Updater::updateUrl()
 
     auto urlQuery = getQueryParams();
 
-#if defined(Q_OS_MAC) && defined(HAVE_SPARKLE)
+#if defined(Q_OS_MACOS) && defined(HAVE_SPARKLE)
     if (SparkleUpdater::autoUpdaterAllowed()) {
         urlQuery.addQueryItem(QLatin1String("sparkle"), QLatin1String("true"));
     }
@@ -75,9 +78,7 @@ QUrl Updater::updateUrl()
 
 QUrlQuery Updater::getQueryParams()
 {
-    QUrlQuery query;
-    Theme *theme = Theme::instance();
-    QString platform = QStringLiteral("stranger");
+    auto platform = QStringLiteral("stranger");
     if (Utility::isLinux()) {
         platform = QStringLiteral("linux");
     } else if (Utility::isBSD()) {
@@ -88,8 +89,8 @@ QUrlQuery Updater::getQueryParams()
         platform = QStringLiteral("macos");
     }
 
-    QString sysInfo = getSystemInfo();
-    if (!sysInfo.isEmpty()) {
+    QUrlQuery query;
+    if (const auto sysInfo = getSystemInfo(); !sysInfo.isEmpty()) {
         query.addQueryItem(QStringLiteral("client"), sysInfo);
     }
     query.addQueryItem(QStringLiteral("version"), clientVersion());
@@ -97,26 +98,14 @@ QUrlQuery Updater::getQueryParams()
     query.addQueryItem(QStringLiteral("osRelease"), QSysInfo::productType());
     query.addQueryItem(QStringLiteral("osVersion"), QSysInfo::productVersion());
     query.addQueryItem(QStringLiteral("kernelVersion"), QSysInfo::kernelVersion());
-    query.addQueryItem(QStringLiteral("oem"), theme->appName());
+    query.addQueryItem(QStringLiteral("oem"), Theme::instance()->appName());
     query.addQueryItem(QStringLiteral("buildArch"), QSysInfo::buildCpuArchitecture());
     query.addQueryItem(QStringLiteral("currentArch"), QSysInfo::currentCpuArchitecture());
-
-    QString suffix = QStringLiteral(MIRALL_STRINGIFY(MIRALL_VERSION_SUFFIX));
-    query.addQueryItem(QStringLiteral("versionsuffix"), suffix);
-
-    auto channel = ConfigFile().updateChannel();
-    if (channel != QLatin1String("stable")) {
-        query.addQueryItem(QStringLiteral("channel"), channel);
-    }
-
-    // updateSegment (see configfile.h)
-    ConfigFile cfg;
-    auto updateSegment = cfg.updateSegment();
-    query.addQueryItem(QLatin1String("updatesegment"), QString::number(updateSegment));
+    query.addQueryItem(QStringLiteral("versionsuffix"), Theme::instance()->versionSuffix());
+    query.addQueryItem(QStringLiteral("channel"), ConfigFile().currentUpdateChannel());
 
     return query;
 }
-
 
 QString Updater::getSystemInfo()
 {
@@ -126,8 +115,9 @@ QString Updater::getSystemInfo()
     process.waitForFinished();
     QByteArray output = process.readAllStandardOutput();
     qCDebug(lcUpdater) << "Sys Info size: " << output.length();
-    if (output.length() > 1024)
+    if (output.length() > 1024) {
         output.clear(); // don't send too much.
+    }
 
     return QString::fromLocal8Bit(output.toBase64());
 #else
@@ -174,8 +164,9 @@ qint64 Updater::Helper::currentVersionToInt()
 
 qint64 Updater::Helper::stringVersionToInt(const QString &version)
 {
-    if (version.isEmpty())
+    if (version.isEmpty()) {
         return 0;
+    }
     QByteArray baVersion = version.toLatin1();
     int major = 0, minor = 0, patch = 0, build = 0;
     sscanf(baVersion, "%d.%d.%d.%d", &major, &minor, &patch, &build);

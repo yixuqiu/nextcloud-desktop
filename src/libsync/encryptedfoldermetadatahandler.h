@@ -1,15 +1,6 @@
 /*
- * Copyright (C) 2023 by Oleksandr Zolotov <alex@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2023 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #pragma once
@@ -83,7 +74,7 @@ private:
     void fetchFolderEncryptedId();
     bool validateBeforeLock();
 
-private slots:
+private Q_SLOTS:
     void slotFolderEncryptedIdReceived(const QStringList &list);
     void slotFolderEncryptedIdError(QNetworkReply *reply);
 
@@ -99,7 +90,7 @@ private slots:
     void slotEmitUploadSuccess();
     void slotEmitUploadError();
 
-public: signals:
+public: Q_SIGNALS:
     void fetchFinished(int code, const QString &message = {});
     void uploadFinished(int code, const QString &message = {});
     void folderUnlocked(const QByteArray &folderId, int httpStatus);

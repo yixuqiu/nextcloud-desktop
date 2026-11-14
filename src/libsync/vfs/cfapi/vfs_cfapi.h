@@ -1,15 +1,6 @@
 /*
- * Copyright (C) by Kevin Ottens <kevin.ottens@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2020 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 #pragma once
 
@@ -18,6 +9,8 @@
 
 #include "common/vfs.h"
 #include "common/plugin.h"
+
+#include <ntstatus.h>
 
 namespace OCC {
 class HydrationJob;
@@ -41,19 +34,22 @@ public:
     bool socketApiPinStateActionsShown() const override;
     bool isHydrating() const override;
 
-    Result<void, QString> updateMetadata(const QString &filePath, time_t modtime, qint64 size, const QByteArray &fileId) override;
+    OCC::Result<ConvertToPlaceholderResult, QString> updateMetadata(const SyncFileItem &syncItem, const QString &filePath, const QString &replacesFile) override;
 
-    Result<Vfs::ConvertToPlaceholderResult, QString> updatePlaceholderMarkInSync(const QString &filePath, const QByteArray &fileId) override;
+    Result<Vfs::ConvertToPlaceholderResult, QString> updatePlaceholderMarkInSync(const QString &filePath, const SyncFileItem &item) override;
 
     [[nodiscard]] bool isPlaceHolderInSync(const QString &filePath) const override;
 
     Result<void, QString> createPlaceholder(const SyncFileItem &item) override;
+    Result<void, QString> createPlaceholders(const QList<SyncFileItemPtr> &items) override;
+
     Result<void, QString> dehydratePlaceholder(const SyncFileItem &item) override;
     Result<Vfs::ConvertToPlaceholderResult, QString> convertToPlaceholder(const QString &filename, const SyncFileItem &item, const QString &replacesFile, UpdateMetadataTypes updateType) override;
 
     bool needsMetadataUpdate(const SyncFileItem &) override;
     bool isDehydratedPlaceholder(const QString &filePath) override;
     bool statTypeVirtualFile(csync_file_stat_t *stat, void *statData) override;
+    [[nodiscard]] HydrationJob *hydrateFile(const QByteArray &fileId, const QString &targetPath) override;
 
     bool setPinState(const QString &folderPath, PinState state) override;
     Optional<PinState> pinState(const QString &folderPath) override;
@@ -63,11 +59,14 @@ public:
 
     int finalizeHydrationJob(const QString &requestId);
 
-public slots:
+    int finalizeNewPlaceholders(const QList<OCC::PlaceholderCreateInfo> &newEntries,
+                                const QString &pathString);
+
+public Q_SLOTS:
     void requestHydration(const QString &requestId, const QString &path);
     void fileStatusChanged(const QString &systemFileName, OCC::SyncFileStatus fileStatus) override;
 
-signals:
+Q_SIGNALS:
     void hydrationRequestReady(const QString &requestId);
     void hydrationRequestFailed(const QString &requestId);
     void hydrationRequestFinished(const QString &requestId);
@@ -101,6 +100,14 @@ class CfApiVfsPluginFactory : public QObject, public DefaultPluginFactory<VfsCfA
     Q_OBJECT
     Q_PLUGIN_METADATA(IID "org.owncloud.PluginFactory" FILE "vfspluginmetadata.json")
     Q_INTERFACES(OCC::PluginFactory)
+
+public:
+    /**
+     * @param path The path for which the plugin should be prepared
+     * @param accountUuid The UUID of the account for which the plugin should be prepared (might be null during account setup)
+     * @return Nothing or an error string
+     */
+    [[nodiscard]] Result<void, QString> prepare(const QString &path, const QUuid &accountUuid) const override;
 };
 
 } // namespace OCC

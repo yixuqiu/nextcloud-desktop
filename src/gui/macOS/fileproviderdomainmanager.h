@@ -1,22 +1,21 @@
 /*
- * Copyright (C) 2022 by Claudio Cambra <claudio.cambra@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2022 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #pragma once
 
+#include <QList>
 #include <QObject>
+#include <optional>
 
 #include "accountstate.h"
+
+#ifdef __OBJC__
+@class NSFileProviderDomain;
+#else
+struct NSFileProviderDomain;
+#endif
 
 namespace OCC {
 
@@ -32,24 +31,94 @@ public:
     explicit FileProviderDomainManager(QObject * const parent = nullptr);
     ~FileProviderDomainManager() override;
 
-    static AccountStatePtr accountStateFromFileProviderDomainIdentifier(const QString &domainIdentifier);
-    static QString fileProviderDomainIdentifierFromAccountState(const AccountStatePtr &accountState);
-    
+    /**
+     * @brief Add a new file provider domain for the given account.
+     * @return The raw identifier of the added domain as a string.
+     */
+    QString addDomainForAccount(const OCC::AccountState * const accountState);
+
+    /**
+     * @brief Remove all file provider domains managed by this application.
+     * @return Whether discovery and every removal completed successfully.
+     */
+    bool removeAllDomains();
+
+    /**
+     * @brief Reconnect all file provider domains.
+     */
+    void reconnectAll();
+
+    /**
+     * @brief Reconcile registered file provider domain display names with the current account state.
+     *
+     * For every registered domain whose `displayName` no longer matches the owning account's
+     * `Account::shortcutName()` (e.g. the legacy U+2024-escaped form left over from the prior
+     * fix for #7979, or a stale `prettyName()` snapshot), re-register the domain in place so the
+     * macOS-side metadata catches up. Safe to call on every launch — a no-op when names already
+     * match.
+     */
+    void reconcileDomainDisplayNames();
+
+    /**
+     * @brief Remove a file provider domain independent from an account.
+     * @return The preserved-data path, empty for no data, or nullopt on error or timeout.
+     */
+    std::optional<QString> removeDomain(NSFileProviderDomain *domain);
+
+    /**
+     * @brief Remove the file provider domain for the given account.
+     * @return The preserved-data path, empty for no data, or nullopt on error or timeout.
+     */
+    std::optional<QString> removeDomainByAccount(const OCC::AccountState *const accountState);
+
     void start();
 
-signals:
-    void domainSetupComplete();
+    /**
+     * @brief Get registered domains, setting success to false on error or timeout when provided.
+     */
+    [[nodiscard]] QList<NSFileProviderDomain *> getDomains(bool *success = nullptr) const;
 
-private slots:
-    void setupFileProviderDomains();
-    void updateFileProviderDomains();
-
-    void addFileProviderDomainForAccount(const OCC::AccountState * const accountState);
-    void removeFileProviderDomainForAccount(const OCC::AccountState * const accountState);
-    void disconnectFileProviderDomainForAccount(const OCC::AccountState * const accountState, const QString &reason);
-    void reconnectFileProviderDomainForAccount(const OCC::AccountState * const accountState);
+    NSFileProviderDomain *domainForAccount(const OCC::Account *account) const;
 
     void signalEnumeratorChanged(const OCC::Account * const account);
+
+    /**
+     * @brief Get the user-visible URL for a file provider domain's root container.
+     * @param domainIdentifier The identifier of the file provider domain.
+     * @return The user-visible URL of the domain's root container, or an empty QString if not found.
+     */
+    [[nodiscard]] QString userVisibleUrlForDomainIdentifier(const QString &domainIdentifier) const;
+
+    /**
+     * @brief Open the system file viewer at the root container of a file provider domain.
+     * @param domainIdentifier The identifier of the file provider domain.
+     */
+    void openFileViewerForDomainIdentifier(const QString &domainIdentifier) const;
+
+    /**
+     * @brief Tell the system that the previously-returned `NSFileProviderError.insufficientQuota` error no longer applies and signal an enumeration of the working set so the system retries refused uploads.
+     *
+     * Implements the documented contract of
+     * `NSFileProviderManager.signalErrorResolved(_:completionHandler:)` followed by
+     * `signalEnumerator(for: .workingSet)`. Called from `User::slotFileProviderRetryUploads`
+     * when the user clicks the "Retry all uploads" button on the per-folder summary entry
+     * surfaced for nextcloud/desktop#9598.
+     *
+     * @param domainIdentifier The identifier of the affected file provider domain.
+     */
+    void clearInsufficientQuotaErrorAndEnumerate(const QString &domainIdentifier) const;
+
+public Q_SLOTS:
+    /**
+     * @brief Handle file ID changes from push notifications
+     * @param account The account for which file IDs changed
+     * @param fileIds List of file IDs that have changed
+     */
+    void slotHandleFileIdsChanged(const OCC::Account *account, const QList<qint64> &fileIds);
+
+private Q_SLOTS:
+    void disconnectFileProviderDomainForAccount(const OCC::AccountState * const accountState, const QString &reason);
+    void reconnectFileProviderDomainForAccount(const OCC::AccountState * const accountState);
     void slotAccountStateChanged(const OCC::AccountState * const accountState);
 
 private:

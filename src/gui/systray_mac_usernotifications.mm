@@ -1,15 +1,6 @@
 /*
- * Copyright (C) 2023 by Claudio Cambra <claudio.cambra@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2023 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include <QLoggingCategory>
@@ -24,7 +15,9 @@
 #include "accountmanager.h"
 #include "config.h"
 #include "systray.h"
-#include "tray/talkreply.h"
+#include "activity/talkreply.h"
+
+static_assert(__has_feature(objc_arc), "systray_mac_usernotifications requires ARC.");
 
 Q_LOGGING_CATEGORY(lcMacSystrayUserNotifications, "nextcloud.gui.macsystrayusernotifications")
 
@@ -189,7 +182,7 @@ void checkNotificationAuth(MacNotificationAuthorizationOptions additionalAuthOpt
             qCDebug(lcMacSystrayUserNotifications) << "Authorization for notifications not granted.";
             if (error) {
                 const auto errorDescription = QString::fromNSString(error.localizedDescription);
-                qCDebug(lcMacSystrayUserNotifications) << "Error from notification center: " << errorDescription;
+                qCWarning(lcMacSystrayUserNotifications) << "Error from notification center: " << errorDescription;
             }
         }
     }];
@@ -201,7 +194,7 @@ void setUserNotificationCenterDelegate()
 
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        id delegate = [[NotificationCenterDelegate alloc] init];
+        static id delegate = [[NotificationCenterDelegate alloc] init];
         [center setDelegate:delegate];
     });
 }

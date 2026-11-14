@@ -1,19 +1,7 @@
 /*
- * Copyright (C) by Klaas Freitag <freitag@owncloud.com>
- *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * SPDX-FileCopyrightText: 2020 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2015 ownCloud GmbH
+ * SPDX-License-Identifier: LGPL-2.1-or-later
  */
 
 #pragma once
@@ -74,7 +62,7 @@ public:
      */
     void setChecksumType(const QByteArray &type);
 
-    QByteArray checksumType() const;
+    [[nodiscard]] QByteArray checksumType() const;
 
     /**
      * Computes the checksum for the given file path.
@@ -93,10 +81,10 @@ public:
      */
     static QByteArray computeNowOnFile(const QString &filePath, const QByteArray &checksumType);
 
-signals:
+Q_SIGNALS:
     void done(const QByteArray &checksumType, const QByteArray &checksum);
 
-private slots:
+private Q_SLOTS:
     void slotCalculationDone();
 
 private:
@@ -140,12 +128,12 @@ public:
     [[nodiscard]] QByteArray calculatedChecksumType() const;
     [[nodiscard]] QByteArray calculatedChecksum() const;
 
-signals:
+Q_SIGNALS:
     void validated(const QByteArray &checksumType, const QByteArray &checksum);
     void validationFailed(const QString &errMsg, const QByteArray &calculatedChecksumType,
-        const QByteArray &calculatedChecksum, const ValidateChecksumHeader::FailureReason reason);
+        const QByteArray &calculatedChecksum, const OCC::ValidateChecksumHeader::FailureReason reason);
 
-private slots:
+private Q_SLOTS:
     void slotChecksumCalculated(const QByteArray &checksumType, const QByteArray &checksum);
 
 private:

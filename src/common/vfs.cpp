@@ -1,19 +1,7 @@
 /*
- * Copyright (C) by Dominik Schmidt <dschmidt@owncloud.com>
- *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * SPDX-FileCopyrightText: 2020 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2018 ownCloud GmbH
+ * SPDX-License-Identifier: LGPL-2.1-or-later
  */
 
 #include "config.h"
@@ -24,6 +12,7 @@
 
 #include "common/filesystembase.h"
 
+#include <QDir>
 #include <QPluginLoader>
 #include <QLoggingCategory>
 
@@ -48,6 +37,8 @@ QString Vfs::modeToString(Mode mode)
         return QStringLiteral("wincfapi");
     case XAttr:
         return QStringLiteral("xattr");
+    case OpenVFS:
+        return QStringLiteral("openvfs");
     }
     return QStringLiteral("off");
 }
@@ -61,25 +52,37 @@ Optional<Vfs::Mode> Vfs::modeFromString(const QString &str)
         return WithSuffix;
     } else if (str == QLatin1String("wincfapi")) {
         return WindowsCfApi;
+    } else if (str == QLatin1String("xattr")) {
+        return XAttr;
+    } else if (str == QLatin1String("openvfs")) {
+        return OpenVFS;
     }
     return {};
 }
 
-Result<bool, QString> Vfs::checkAvailability(const QString &path)
+Result<void, QString> Vfs::checkAvailability(const QString &path, Vfs::Mode mode)
 {
-    const auto mode = bestAvailableVfsMode();
 #ifdef Q_OS_WIN
     if (mode == Mode::WindowsCfApi) {
-        const auto fs = FileSystem::fileSystemForPath(path);
-        if (fs != QLatin1String("NTFS")) {
-            return tr("The Virtual filesystem feature requires a NTFS file system, %1 is using %2").arg(path, fs);
+        const auto info = QFileInfo(path);
+        const auto nativePath = QDir::toNativeSeparators(path);
+        if (QDir(info.canonicalFilePath()).isRoot()) {
+            return tr("Please choose a different location. %1 is a drive. It doesn't support virtual files.").arg(nativePath);
+        }
+        if (const auto fileSystemForPath = FileSystem::fileSystemForPath(info.absoluteFilePath());
+            fileSystemForPath != QLatin1String("NTFS")) {
+            return tr("Please choose a different location. %1 isn't a NTFS file system. It doesn't support virtual files.").arg(nativePath);
+        }
+        const auto type = GetDriveTypeW(reinterpret_cast<const wchar_t *>(QDir::toNativeSeparators(info.absoluteFilePath().mid(0, 3)).utf16()));
+        if (type == DRIVE_REMOTE) {
+            return tr("Please choose a different location. %1 is a network drive. It doesn't support virtual files.").arg(nativePath);
         }
     }
 #else
     Q_UNUSED(mode)
     Q_UNUSED(path)
 #endif
-    return true;
+    return {};
 }
 
 void Vfs::start(const VfsSetupParams &params)
@@ -92,8 +95,9 @@ bool Vfs::setPinStateInDb(const QString &folderPath, PinState state)
 {
     auto path = folderPath.toUtf8();
     _setupParams.journal->internalPinStates().wipeForPathAndBelow(path);
-    if (state != PinState::Inherited)
+    if (state != PinState::Inherited) {
         _setupParams.journal->internalPinStates().setForPath(path, state);
+    }
     return true;
 }
 
@@ -109,21 +113,25 @@ Vfs::AvailabilityResult Vfs::availabilityInDb(const QString &folderPath)
     auto pin = _setupParams.journal->internalPinStates().effectiveForPathRecursive(path);
     // not being able to retrieve the pin state isn't too bad
     auto hydrationStatus = _setupParams.journal->hasHydratedOrDehydratedFiles(path);
-    if (!hydrationStatus)
+    if (!hydrationStatus) {
         return AvailabilityError::DbError;
+    }
 
     if (hydrationStatus->hasDehydrated) {
-        if (hydrationStatus->hasHydrated)
+        if (hydrationStatus->hasHydrated) {
             return VfsItemAvailability::Mixed;
-        if (pin && *pin == PinState::OnlineOnly)
+        }
+        if (pin && *pin == PinState::OnlineOnly) {
             return VfsItemAvailability::OnlineOnly;
-        else
+        } else {
             return VfsItemAvailability::AllDehydrated;
+        }
     } else if (hydrationStatus->hasHydrated) {
-        if (pin && *pin == PinState::AlwaysLocal)
+        if (pin && *pin == PinState::AlwaysLocal) {
             return VfsItemAvailability::AlwaysLocal;
-        else
+        } else {
             return VfsItemAvailability::AllHydrated;
+        }
     }
     return AvailabilityError::NoSuchItem;
 }
@@ -135,15 +143,27 @@ VfsOff::VfsOff(QObject *parent)
 
 VfsOff::~VfsOff() = default;
 
+HydrationJob *VfsOff::hydrateFile([[maybe_unused]] const QByteArray &fileId, [[maybe_unused]] const QString &targetPath)
+{
+    return nullptr;
+}
+
 static QString modeToPluginName(Vfs::Mode mode)
 {
-    if (mode == Vfs::WithSuffix)
+    switch (mode) {
+    case Vfs::Off:
+        return {};
+    case Vfs::WithSuffix:
         return QStringLiteral("suffix");
-    if (mode == Vfs::WindowsCfApi)
+    case Vfs::WindowsCfApi:
         return QStringLiteral("cfapi");
-    if (mode == Vfs::XAttr)
+    case Vfs::XAttr:
         return QStringLiteral("xattr");
-    return QString();
+    case Vfs::OpenVFS:
+        return QStringLiteral("openvfs");
+    }
+
+    return {};
 }
 
 Q_LOGGING_CATEGORY(lcPlugin, "plugins", QtInfoMsg)
@@ -198,6 +218,10 @@ Vfs::Mode OCC::bestAvailableVfsMode()
         return Vfs::WindowsCfApi;
     }
 
+    if (isVfsPluginAvailable(Vfs::OpenVFS)) {
+        return Vfs::OpenVFS;
+    }
+
     if (isVfsPluginAvailable(Vfs::WithSuffix)) {
         return Vfs::WithSuffix;
     }
@@ -227,8 +251,9 @@ Vfs::Mode OCC::bestAvailableVfsMode()
 
 std::unique_ptr<Vfs> OCC::createVfsFromPlugin(Vfs::Mode mode)
 {
-    if (mode == Vfs::Off)
+    if (mode == Vfs::Off) {
         return std::unique_ptr<Vfs>(new VfsOff);
+    }
 
     auto name = modeToPluginName(mode);
     if (name.isEmpty()) {
@@ -254,6 +279,10 @@ std::unique_ptr<Vfs> OCC::createVfsFromPlugin(Vfs::Mode mode)
         qCCritical(lcPlugin) << "Plugin" << loader.fileName() << "does not implement PluginFactory";
         return nullptr;
     }
+    if (!factory->checkAvailability()) {
+        qCCritical(lcPlugin) << "Plugin" << loader.fileName() << "does not implement PluginFactory";
+        return nullptr;
+    }
 
     auto vfs = std::unique_ptr<Vfs>(qobject_cast<Vfs *>(factory->create(nullptr)));
     if (!vfs) {
@@ -263,4 +292,9 @@ std::unique_ptr<Vfs> OCC::createVfsFromPlugin(Vfs::Mode mode)
 
     qCInfo(lcPlugin) << "Created VFS instance from plugin" << pluginPath;
     return vfs;
+}
+
+const FileSystem::Path &VfsSetupParams::root() const
+{
+    return rootPath;
 }

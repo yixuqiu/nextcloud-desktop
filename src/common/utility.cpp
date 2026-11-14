@@ -1,20 +1,7 @@
 /*
- * Copyright (C) by Klaas Freitag <freitag@owncloud.com>
- * Copyright (C) by Daniel Molkentin <danimo@owncloud.com>
- *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ * SPDX-FileCopyrightText: 2018 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2014 ownCloud GmbH
+ * SPDX-License-Identifier: LGPL-2.1-or-later
  */
 #include "config.h"
 
@@ -65,8 +52,9 @@ bool Utility::writeRandomFile(const QString &fname, int size)
 {
     int maxSize = 10 * 10 * 1024;
 
-    if (size == -1)
+    if (size == -1) {
         size = rand() % maxSize;
+    }
 
     QString randString;
     for (int i = 0; i < size; i++) {
@@ -145,7 +133,7 @@ static QLatin1String platform()
 {
 #if defined(Q_OS_WIN)
     return QLatin1String("Windows");
-#elif defined(Q_OS_MAC)
+#elif defined(Q_OS_MACOS)
     return QLatin1String("Macintosh");
 #elif defined(Q_OS_LINUX)
     return QLatin1String("Linux");
@@ -168,13 +156,13 @@ QByteArray Utility::userAgentString()
 {
     return QStringLiteral("Mozilla/5.0 (%1) mirall/%2 (%3, %4-%5 ClientArchitecture: %6 OsArchitecture: %7)")
         .arg(platform(),
-            QStringLiteral(MIRALL_VERSION_STRING),
-            qApp->applicationName(),
-            QSysInfo::productType(),
-            QSysInfo::kernelVersion(),
-            QSysInfo::buildCpuArchitecture(),
-            QSysInfo::currentCpuArchitecture())
-        .toLatin1();
+             QStringLiteral(MIRALL_VERSION_STRING),
+             qApp->applicationName(),
+             QSysInfo::productType(),
+             QSysInfo::kernelVersion(),
+             QSysInfo::buildCpuArchitecture(),
+             QSysInfo::currentCpuArchitecture())
+        .toUtf8();
 }
 
 QByteArray Utility::friendlyUserAgentString()
@@ -186,7 +174,7 @@ QByteArray Utility::friendlyUserAgentString()
 
 qint64 Utility::freeDiskSpace(const QString &path)
 {
-#if defined(Q_OS_MAC) || defined(Q_OS_FREEBSD) || defined(Q_OS_FREEBSD_KERNEL) || defined(Q_OS_NETBSD) || defined(Q_OS_OPENBSD)
+#if defined(Q_OS_MACOS) || defined(Q_OS_FREEBSD) || defined(Q_OS_FREEBSD_KERNEL) || defined(Q_OS_NETBSD) || defined(Q_OS_OPENBSD)
     struct statvfs stat;
     if (statvfs(path.toLocal8Bit().data(), &stat) == 0) {
         return (qint64)stat.f_bavail * stat.f_frsize;
@@ -218,8 +206,9 @@ QString Utility::compactFormatDouble(double value, int prec, const QString &unit
         }
         str.chop(1);
     }
-    if (!unit.isEmpty())
+    if (!unit.isEmpty()) {
         str += (QLatin1Char(' ') + unit);
+    }
     return str;
 }
 
@@ -246,8 +235,9 @@ void Utility::usleep(int usec)
 // This can be overridden from the tests
 OCSYNC_EXPORT bool fsCasePreserving_override = []() -> bool {
     QByteArray env = qgetenv("OWNCLOUD_TEST_CASE_PRESERVING");
-    if (!env.isEmpty())
+    if (!env.isEmpty()) {
         return env.toInt();
+    }
     return Utility::isWindows() || Utility::isMac();
 }();
 
@@ -325,7 +315,7 @@ QString Utility::durationToDescriptiveString2(quint64 msecs)
         return firstPart;
     }
 
-    return QCoreApplication::translate("Utility", "%1 %2").arg(firstPart, periods[p + 1].description(secondPartNum));
+    return QStringLiteral("%1 %2").arg(firstPart, periods[p + 1].description(secondPartNum));
 }
 
 QString Utility::durationToDescriptiveString1(quint64 msecs)
@@ -399,35 +389,6 @@ int Utility::convertSizeToInt(size_t &convertVar)
     return static_cast<int>(convertVar);
 }
 
-// read the output of the owncloud --version command from the owncloud
-// version that is on disk. This works for most versions of the client,
-// because clients that do not yet know the --version flag return the
-// version in the first line of the help output :-)
-//
-// This version only delivers output on linux, as Mac and Win get their
-// restarting from the installer.
-QByteArray Utility::versionOfInstalledBinary(const QString &command)
-{
-    QByteArray re;
-    if (isLinux()) {
-        QString binary(command);
-        if (binary.isEmpty()) {
-            binary = qApp->arguments()[0];
-        }
-        QStringList params;
-        params << QStringLiteral("--version");
-        QProcess process;
-        process.start(binary, params);
-        process.waitForFinished(); // sets current thread to sleep and waits for pingProcess end
-        re = process.readAllStandardOutput();
-        int newline = re.indexOf('\n');
-        if (newline > 0) {
-            re.truncate(newline);
-        }
-    }
-    return re;
-}
-
 QString Utility::timeAgoInWords(const QDateTime &dt, const QDateTime &from)
 {
     QDateTime now = QDateTime::currentDateTimeUtc();
@@ -454,10 +415,10 @@ QString Utility::timeAgoInWords(const QDateTime &dt, const QDateTime &from)
                 if (secs < 5) {
                     return QObject::tr("now");
                 } else {
-                    return QObject::tr("1m", "one minute after activity date and time");
+                    return QObject::tr("1min", "one minute after activity date and time");
                 }
             } else {
-                return (QObject::tr("%nm", "delay in minutes after an activity", minutes));
+                return (QObject::tr("%nmin", "delay in minutes after an activity", minutes));
             }
         }
     }
@@ -601,23 +562,27 @@ QByteArray Utility::conflictFileBaseNameFromPattern(const QByteArray &conflictNa
 
     // A single space before "(conflicted copy" is considered part of the tag
     auto startNew = conflictName.lastIndexOf("(conflicted copy");
-    if (startNew > 0 && conflictName[startNew - 1] == ' ')
+    if (startNew > 0 && conflictName[startNew - 1] == ' ') {
         startNew -= 1;
+    }
 
     // The rightmost tag is relevant
     auto tagStart = qMax(startOld, startNew);
-    if (tagStart == -1)
+    if (tagStart == -1) {
         return "";
+    }
 
     // Find the end of the tag
     auto tagEnd = conflictName.size();
     auto dot = conflictName.lastIndexOf('.'); // dot could be part of user name for new tag!
-    if (dot > tagStart)
+    if (dot > tagStart) {
         tagEnd = dot;
+    }
     if (tagStart == startNew) {
         auto paren = conflictName.indexOf(')', tagStart);
-        if (paren != -1)
+        if (paren != -1) {
             tagEnd = paren + 1;
+        }
     }
     return conflictName.left(tagStart) + conflictName.mid(tagEnd);
 }
@@ -723,5 +688,42 @@ QString Utility::fullRemotePathToRemoteSyncRootRelative(const QString &fullRemot
     return noLeadingSlashPath(noTrailingSlashPath(relativePathToRemoteSyncRoot));
 }
 
+QStringList Utility::expandCommandLineOptionValues(const QStringList &arguments)
+{
+    QStringList expandedArguments;
+    expandedArguments.reserve(arguments.size());
+
+    for (const auto &argument : arguments) {
+        // Anything that is not a long option is passed through untouched: paths and custom
+        // URI scheme arguments may legitimately contain a '='.
+        const auto separator = argument.startsWith(QLatin1String("--")) ? argument.indexOf(QLatin1Char('=')) : -1;
+        if (separator < 3) {
+            expandedArguments.append(argument);
+            continue;
+        }
+
+        expandedArguments.append(argument.left(separator));
+
+        if (const auto value = argument.mid(separator + 1); !value.isEmpty()) {
+            expandedArguments.append(value);
+        }
+    }
+
+    return expandedArguments;
+}
+
+#ifdef Q_OS_LINUX
+QString Utility::appImageLocation()
+{
+    Q_ASSERT(Utility::runningInAppImage());
+    static const auto value = qEnvironmentVariable("APPIMAGE");
+    return value;
+}
+
+bool Utility::runningInAppImage()
+{
+    return qEnvironmentVariableIsSet("APPIMAGE");
+}
+#endif
 
 } // namespace OCC

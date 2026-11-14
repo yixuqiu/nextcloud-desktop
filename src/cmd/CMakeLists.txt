@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2017 Nextcloud GmbH and Nextcloud contributors
+# SPDX-FileCopyrightText: 2014 ownCloud GmbH
+# SPDX-License-Identifier: GPL-2.0-or-later
 project(cmd)
 set(CMAKE_AUTOMOC TRUE)
 
@@ -14,6 +17,8 @@ target_link_libraries(cmdCore
   Qt::Network
   )
 
+target_compile_definitions(cmdCore PRIVATE QT_NO_KEYWORDS)
+
 if(UNIX AND NOT APPLE)
   set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIE")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIE")
@@ -28,10 +33,20 @@ if(NOT BUILD_LIBRARIES_ONLY)
   add_executable(nextcloudcmd
       cmd.h
       cmd.cpp)
-  set_target_properties(nextcloudcmd PROPERTIES
-    RUNTIME_OUTPUT_NAME "${APPLICATION_EXECUTABLE}cmd")
+  ecm_mark_nongui_executable(nextcloudcmd)
+  set_target_properties(nextcloudcmd PROPERTIES RUNTIME_OUTPUT_NAME "${APPLICATION_EXECUTABLE}cmd")
 
   target_link_libraries(nextcloudcmd cmdCore)
+
+  target_compile_definitions(nextcloudcmd PRIVATE QT_NO_KEYWORDS)
+
+  if(BUILD_GUI)
+    # Account provisioning mode (--userid/--serverurl/...) reuses
+    # AccountManager/FolderMan/AccountSetupCommandLineManager from the GUI
+    # library, so it is only available in GUI builds.
+    target_link_libraries(nextcloudcmd nextcloudCore)
+    target_compile_definitions(nextcloudcmd PRIVATE BUILD_GUI)
+  endif()
 
   if(BUILD_OWNCLOUD_OSX_BUNDLE)
     set_target_properties(nextcloudcmd PROPERTIES
@@ -44,5 +59,8 @@ if(NOT BUILD_LIBRARIES_ONLY)
 	  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 	  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
 	  ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+    if (WIN32)
+      install(FILES $<TARGET_PDB_FILE:nextcloudcmd> DESTINATION bin OPTIONAL)
+    endif()
   endif()
 endif()

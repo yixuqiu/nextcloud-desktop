@@ -1,15 +1,7 @@
 /*
- * Copyright (C) by Klaas Freitag <freitag@kde.org>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2017 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-FileCopyrightText: 2014 ownCloud GmbH
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "folderstatusmodel.h"
@@ -21,9 +13,10 @@
 #include <account.h>
 #include <theme.h>
 
-#include <QFileIconProvider>
 #include <QVarLengthArray>
 #include <set>
+
+using namespace Qt::StringLiterals;
 
 Q_DECLARE_METATYPE(QPersistentModelIndex)
 
@@ -100,7 +93,7 @@ void FolderStatusModel::setAccountState(const AccountState *accountState)
     }
 
     endResetModel();
-    emit dirtyChanged();
+    Q_EMIT dirtyChanged();
 
     // Automatically fetch the subfolders to prevent showing the expansion chevron if there are no subfolders
     for (auto i = 0; i < _folders.size(); ++i) {
@@ -135,6 +128,9 @@ Qt::ItemFlags FolderStatusModel::flags(const QModelIndex &index) const
         return Qt::ItemIsEnabled;
     case SubFolder:
         if (supportsSelectiveSync) {
+            if (info && info->_isEncrypted && !_accountState->account()->capabilities().clientSideEncryptionAvailable()) {
+                return Qt::ItemIsUserCheckable | Qt::ItemIsSelectable;
+            }
             return Qt::ItemIsEnabled | Qt::ItemIsUserCheckable | Qt::ItemIsSelectable;
         } else {
             return Qt::ItemIsEnabled | Qt::ItemIsSelectable;
@@ -167,14 +163,15 @@ QVariant FolderStatusModel::data(const QModelIndex &index, int role) const
 
         switch (role) {
         case Qt::DisplayRole: {
-            //: Example text: "File.txt (23KB)"
             const auto &xParent = static_cast<SubFolderInfo *>(index.internalPointer());
             const auto suffix = (subfolderInfo._isNonDecryptable && subfolderInfo._checked && (!xParent || !xParent->isEncrypted()))
                 ? QStringLiteral(" - ") + tr("Could not decrypt!")
                 : QString{};
+            //: %1 is the file name. %2 is the file size, for example "23 KB".
             return subfolderInfo._size < 0 ? QString(subfolderInfo._name + suffix) : QString(tr("%1 (%2)").arg(subfolderInfo._name, Utility::octetsToString(subfolderInfo._size)) + suffix);
         }
         case Qt::ToolTipRole:
+            //: %1 is the file name. %2 is the file size, for example "23 KB".
             return QString(QLatin1String("<qt>") + Utility::escape(subfolderInfo._size < 0 ? subfolderInfo._name : tr("%1 (%2)").arg(subfolderInfo._name, Utility::octetsToString(subfolderInfo._size))) + QLatin1String("</qt>"));
         case Qt::CheckStateRole:
             if (supportsSelectiveSync) {
@@ -191,7 +188,7 @@ QVariant FolderStatusModel::data(const QModelIndex &index, int role) const
             } else if (subfolderInfo._size > 0 && isAnyAncestorEncrypted(index)) {
                 return QIcon(QLatin1String(":/client/theme/lock-broken.svg"));
             }
-            return QFileIconProvider().icon(subfolderInfo._isExternal ? QFileIconProvider::Network : QFileIconProvider::Folder);
+            return _fileIconProvider.icon(subfolderInfo._isExternal ? QFileIconProvider::Network : QFileIconProvider::Folder);
         }
         case Qt::ForegroundRole:
             if (subfolderInfo._isUndecided || (subfolderInfo._isNonDecryptable && subfolderInfo._checked)) {
@@ -216,7 +213,7 @@ QVariant FolderStatusModel::data(const QModelIndex &index, int role) const
         case Qt::DisplayRole:
             if (folderInfo->_hasError) {
                 return {tr("Error while loading the list of folders from the server.")
-                        + QString("\n")
+                        + QStringLiteral("\n")
                         + folderInfo->_lastErrorString};
             } else {
                 return tr("Fetching folder list from server …");
@@ -247,16 +244,24 @@ QVariant FolderStatusModel::data(const QModelIndex &index, int role) const
         return (folder->syncResult().hasUnresolvedConflicts())
             ? QStringList(tr("There are unresolved conflicts. Click for details."))
             : QStringList();
-    case FolderStatusDelegate::FolderErrorMsg:
-        return folder->syncResult().errorStrings();
+    case FolderStatusDelegate::FolderErrorMsg: {
+        auto errors = folder->syncResult().errorStrings();
+        const auto legacyError = FolderMan::instance()->unsupportedConfiguration(folder->path());
+        if (!legacyError) {
+            // the error message might contain new lines, the delegate only expect multiple single line values
+            errors.append(legacyError.error().split(QLatin1Char('\n')));
+        }
+#ifdef Q_OS_MACOS
+        if (folder->needsSandboxBookmark()) {
+            errors.prepend(tr("Due to recent security improvements, the client no longer has access to the folder. Your approval is required one time to restore access. Please select the synchronization folder root."));
+        }
+#endif
+        return errors;
+    }
     case FolderStatusDelegate::FolderInfoMsg:
         return folder->virtualFilesEnabled() && folder->vfs().mode() != Vfs::Mode::WindowsCfApi
             ? QStringList(tr("Virtual file support is enabled."))
             : QStringList();
-    case FolderStatusDelegate::SyncRunning:
-        return folder->syncResult().status() == SyncResult::SyncRunning;
-    case FolderStatusDelegate::SyncDate:
-        return folder->syncResult().syncTime();
     case FolderStatusDelegate::HeaderRole:
         return folder->shortGuiRemotePathOrAppName();
     case FolderStatusDelegate::FolderAliasRole:
@@ -265,9 +270,16 @@ QVariant FolderStatusModel::data(const QModelIndex &index, int role) const
         return folder->syncPaused();
     case FolderStatusDelegate::FolderAccountConnected:
         return accountConnected;
+    case FolderStatusDelegate::FolderNeedsSandboxBookmark:
+#ifdef Q_OS_MACOS
+        return folder->needsSandboxBookmark();
+#else
+        return false;
+#endif
     case Qt::ToolTipRole: {
         if (!progress.isNull()) {
-            return progress._progressString;
+            // e.g. 13 seconds left, 500 MB of 1 GB, file 3 of 6
+            return progress._overallSyncString;
         }
         auto toolTip = accountConnected
             ? Theme::instance()->statusHeaderText(folder->syncResult().status())
@@ -276,46 +288,44 @@ QVariant FolderStatusModel::data(const QModelIndex &index, int role) const
         toolTip += folderInfo._folder->path();
         return toolTip;
     }
-    case FolderStatusDelegate::FolderStatusIconRole:
-        if (accountConnected) {
-            const auto theme = Theme::instance();
-            const auto status = folder->syncResult().status();
-            if (folder->syncPaused()) {
-                return theme->folderDisabledIcon();
-            } else {
-                if (status == SyncResult::SyncPrepare || status == SyncResult::Undefined) {
-                    return theme->syncStateIcon(SyncResult::SyncRunning);
-                } else {
-                    // The "Problem" *result* just means some files weren't
-                    // synced, so we show "Success" in these cases. But we
-                    // do use the "Problem" *icon* for unresolved conflicts.
-                    if (status == SyncResult::Success || status == SyncResult::Problem) {
-                        if (folder->syncResult().hasUnresolvedConflicts()) {
-                            return theme->syncStateIcon(SyncResult::Problem);
-                        } else {
-                            return theme->syncStateIcon(SyncResult::Success);
-                        }
-                    } else {
-                        return theme->syncStateIcon(status);
-                    }
-                }
-            }
-        } else {
-            return Theme::instance()->folderOfflineIcon();
+    case FolderStatusDelegate::FolderStatusIconRole: {
+        if (!accountConnected) {
+            return Theme::instance()->folderStateIcon(SyncResult::SetupError);
         }
+
+        const auto theme   = Theme::instance();
+        const auto result  = folder->syncResult();
+        const auto status  = result.status();
+
+        if (folder->syncPaused()) {
+            return theme->folderStateIcon(SyncResult::Paused);
+        }
+
+        if (status == SyncResult::SyncPrepare || status == SyncResult::Undefined) {
+            return theme->folderStateIcon(SyncResult::SyncRunning);
+        }
+
+        if (status == SyncResult::Success || status == SyncResult::Problem) {
+            return theme->folderStateIcon(result.hasUnresolvedConflicts()
+                ? SyncResult::Problem
+                : SyncResult::Success);
+        }
+
+        return theme->folderStateIcon(status);
+    }
     case FolderStatusDelegate::SyncProgressItemString:
+        // e.g. Syncing fileName1, filename2
         return progress._progressString;
-    case FolderStatusDelegate::WarningCount:
-        return progress._warningCount;
     case FolderStatusDelegate::SyncProgressOverallPercent:
         return progress._overallPercent;
     case FolderStatusDelegate::SyncProgressOverallString:
+        // 13 seconds left, 500 MB of 1 GB, file 3 of 6
         return progress._overallSyncString;
     case FolderStatusDelegate::FolderSyncText:
         if (folder->virtualFilesEnabled()) {
-            return tr("Synchronizing VirtualFiles with local folder");
+            return tr("Synchronizing virtual files in local folder");
         } else {
-            return tr("Synchronizing with local folder");
+            return tr("Synchronizing files in local folder");
         }
     }
     return {};
@@ -337,7 +347,7 @@ bool FolderStatusModel::setData(const QModelIndex &index, const QVariant &value,
                 const auto parentInfo = infoForIndex(parent);
                 if (parentInfo && parentInfo->_checked != Qt::Checked) {
                     auto hasUnchecked = false;
-                    for (const auto &sub : parentInfo->_subs) {
+                    for (const auto &sub : std::as_const(parentInfo->_subs)) {
                         if (sub._checked != Qt::Checked) {
                             hasUnchecked = true;
                             break;
@@ -381,8 +391,8 @@ bool FolderStatusModel::setData(const QModelIndex &index, const QVariant &value,
             }
         }
         _dirty = true;
-        emit dirtyChanged();
-        emit dataChanged(index, index, QVector<int>() << role);
+        Q_EMIT dirtyChanged();
+        Q_EMIT dataChanged(index, index, QVector<int>() << role);
         return true;
     }
     return QAbstractItemModel::setData(index, value, role);
@@ -404,10 +414,12 @@ int FolderStatusModel::rowCount(const QModelIndex &parent) const
         return _folders.count() + 1; // +1 for the "add folder" button
     }
     const auto info = infoForIndex(parent);
-    if (!info)
+    if (!info) {
         return 0;
-    if (info->hasLabel())
+    }
+    if (info->hasLabel()) {
         return 1;
+    }
     return info->_subs.count();
 }
 
@@ -428,8 +440,9 @@ FolderStatusModel::ItemType FolderStatusModel::classify(const QModelIndex &index
 
 FolderStatusModel::SubFolderInfo *FolderStatusModel::infoForIndex(const QModelIndex &index) const
 {
-    if (!index.isValid())
+    if (!index.isValid()) {
         return nullptr;
+    }
     if (const auto parentInfo = static_cast<SubFolderInfo *>(index.internalPointer())) {
         if (parentInfo->hasLabel()) {
             return nullptr;
@@ -489,8 +502,9 @@ QModelIndex FolderStatusModel::indexForPath(Folder *folder, const QString &path)
     }
 
     const auto parent = indexForPath(folder, path.left(slashPos));
-    if (!parent.isValid())
+    if (!parent.isValid()) {
         return parent;
+    }
 
     if (slashPos == path.size() - 1) {
         // The slash is the last part, we found our index
@@ -520,17 +534,19 @@ QModelIndex FolderStatusModel::index(int row, int column, const QModelIndex &par
     case FetchLabel:
         return {};
     case RootFolder:
-        if (_folders.count() <= parent.row())
+        if (_folders.count() <= parent.row()) {
             return {}; // should not happen
+        }
         return createIndex(row, column, const_cast<SubFolderInfo *>(&_folders[parent.row()]));
     case SubFolder: {
         auto pinfo = static_cast<SubFolderInfo *>(parent.internalPointer());
-        if (pinfo->_subs.count() <= parent.row())
+        if (pinfo->_subs.count() <= parent.row()) {
             return {}; // should not happen
+        }
         auto &info = pinfo->_subs[parent.row()];
-        if (!info.hasLabel()
-            && info._subs.count() <= row)
+        if (!info.hasLabel() && info._subs.count() <= row) {
             return {}; // should not happen
+        }
         return createIndex(row, column, &info);
     }
     }
@@ -613,14 +629,12 @@ void FolderStatusModel::fetchMore(const QModelIndex &parent)
 
     const auto job = new LsColJob(_accountState->account(), path);
     info->_fetchingJob = job;
-    auto props = QList<QByteArray>() << "resourcetype"
-                                     << "http://owncloud.org/ns:size"
-                                     << "http://owncloud.org/ns:permissions"
-                                     << "http://nextcloud.org/ns:is-mount-root"
-                                     << "http://owncloud.org/ns:fileid";
-    if (_accountState->account()->capabilities().clientSideEncryptionAvailable()) {
-        props << "http://nextcloud.org/ns:is-encrypted";
-    }
+    const auto props = QList<QByteArray>() << "resourcetype"
+                                           << "http://owncloud.org/ns:size"
+                                           << "http://owncloud.org/ns:permissions"
+                                           << "http://nextcloud.org/ns:is-mount-root"
+                                           << "http://owncloud.org/ns:fileid"
+                                           << "http://nextcloud.org/ns:is-encrypted";
     job->setProperties(props);
 
     job->setTimeout(60 * 1000);
@@ -720,7 +734,7 @@ void FolderStatusModel::slotUpdateDirectories(const QStringList &list)
     }
 
     std::set<QString> selectiveSyncUndecidedSet; // not QSet because it's not sorted
-    for (const auto &str : selectiveSyncUndecidedList) {
+    for (const auto &str : std::as_const(selectiveSyncUndecidedList)) {
         if (str.startsWith(parentInfo->_path) || parentInfo->_path == QLatin1String("/")) {
             selectiveSyncUndecidedSet.insert(str);
         }
@@ -738,7 +752,7 @@ void FolderStatusModel::slotUpdateDirectories(const QStringList &list)
 
     QVector<SubFolderInfo> newSubs;
     newSubs.reserve(sortedSubfolders.size());
-    for (const auto &path : sortedSubfolders) {
+    for (const auto &path : std::as_const(sortedSubfolders)) {
         auto relativePath = path.mid(pathToRemove.size());
         if (parentInfo->_folder->isFileExcludedRelative(relativePath)) {
             continue;
@@ -748,14 +762,13 @@ void FolderStatusModel::slotUpdateDirectories(const QStringList &list)
         newInfo._folder = parentInfo->_folder;
         newInfo._pathIdx = parentInfo->_pathIdx;
         newInfo._pathIdx << newSubs.size();
-        newInfo._isExternal = permissionMap.value(removeTrailingSlash(path)).toString().contains("M");
-        newInfo._isEncrypted = encryptionMap.value(removeTrailingSlash(path)).toString() == QStringLiteral("1");
+        newInfo._isExternal = permissionMap.value(removeTrailingSlash(path)).toString().contains("M"_L1);
+        newInfo._isEncrypted = encryptionMap.value(removeTrailingSlash(path)).toString() == "1"_L1;
         newInfo._path = relativePath;
 
         newInfo._isNonDecryptable = newInfo.isEncrypted()
             && _accountState->account()->e2e()
-            && !_accountState->account()->e2e()->_publicKey.isNull()
-            && _accountState->account()->e2e()->_privateKey.isNull();
+            && !_accountState->account()->e2e()->isInitialized();
 
         SyncJournalFileRecord rec;
         if (!parentInfo->_folder->journalDb()->getFileRecordByE2eMangledName(removeTrailingSlash(relativePath), &rec)) {
@@ -788,7 +801,7 @@ void FolderStatusModel::slotUpdateDirectories(const QStringList &list)
         } else if (parentInfo->_checked == Qt::Checked) {
             newInfo._checked = Qt::Checked;
         } else {
-            for (const auto &str : selectiveSyncBlackList) {
+            for (const auto &str : std::as_const(selectiveSyncBlackList)) {
                 if (str == relativePath || str == QLatin1String("/")) {
                     newInfo._checked = Qt::Unchecked;
                     break;
@@ -822,8 +835,8 @@ void FolderStatusModel::slotUpdateDirectories(const QStringList &list)
         endInsertRows();
     }
 
-    for (const auto undecidedIndex : qAsConst(undecidedIndexes)) {
-        emit suggestExpand(index(undecidedIndex, 0, parentIdx));
+    for (const auto undecidedIndex : std::as_const(undecidedIndexes)) {
+        Q_EMIT suggestExpand(index(undecidedIndex, 0, parentIdx));
     }
     /* Try to remove from the undecided lists the items that are not on the server. */
     const auto it = std::remove_if(selectiveSyncUndecidedList.begin(), selectiveSyncUndecidedList.end(),
@@ -832,7 +845,7 @@ void FolderStatusModel::slotUpdateDirectories(const QStringList &list)
         selectiveSyncUndecidedList.erase(it, selectiveSyncUndecidedList.end());
         parentInfo->_folder->journalDb()->setSelectiveSyncList(
             SyncJournalDb::SelectiveSyncUndecidedList, selectiveSyncUndecidedList);
-        emit dirtyChanged();
+        Q_EMIT dirtyChanged();
     }
 }
 
@@ -846,8 +859,8 @@ void FolderStatusModel::slotLscolFinishedWithError(QNetworkReply *reply)
     }
     auto parentInfo = infoForIndex(idx);
     if (parentInfo) {
-        qCDebug(lcFolderStatus) << reply->errorString();
-        parentInfo->_lastErrorString = reply->errorString();
+        qCWarning(lcFolderStatus) << reply->errorString() << job->errorString();
+        parentInfo->_lastErrorString = job->errorString();
 
         parentInfo->resetSubs(this, idx);
 
@@ -883,8 +896,9 @@ QStringList FolderStatusModel::createBlackList(const FolderStatusModel::SubFolde
         // We did not load from the server so we reuse the one from the old black list
         const auto path = root._path;
         for (const auto &it : oldBlackList) {
-            if (it.startsWith(path))
+            if (it.startsWith(path)) {
                 result += it;
+            }
         }
     }
     return result;
@@ -895,17 +909,17 @@ void FolderStatusModel::slotUpdateFolderState(Folder *folder)
     if (!folder) {
         return;
     }
-    
+
     for (auto i = 0; i < _folders.count(); ++i) {
         if (_folders.at(i)._folder == folder) {
-            emit dataChanged(index(i), index(i));
+            Q_EMIT dataChanged(index(i), index(i));
         }
     }
 }
 
 void FolderStatusModel::slotApplySelectiveSync()
 {
-    for (const auto &folderInfo : qAsConst(_folders)) {
+    for (const auto &folderInfo : std::as_const(_folders)) {
         if (!folderInfo._fetched) {
             folderInfo._folder->journalDb()->setSelectiveSyncList(SyncJournalDb::SelectiveSyncUndecidedList, QStringList());
             continue;
@@ -947,7 +961,7 @@ void FolderStatusModel::slotApplySelectiveSync()
             }
             //The part that changed should not be read from the DB on next sync because there might be new folders
             // (the ones that are no longer in the blacklist)
-            for (const auto &it : changes) {
+            for (const auto &it : std::as_const(changes)) {
                 folder->journalDb()->schedulePathForRemoteDiscovery(it);
                 folder->schedulePathForLocalDiscovery(it);
             }
@@ -980,40 +994,36 @@ void FolderStatusModel::slotSetProgress(const ProgressInfo &progress)
         return;
     }
 
-    auto *pi = &_folders[folderIndex]._progress;
+    auto *const subFolderProgress = &_folders[folderIndex]._progress;
 
     if (progress.status() == ProgressInfo::Starting) {
         _isSyncRunningForAwhile = false;
     }
 
-    QVector<int> roles;
-    roles << FolderStatusDelegate::SyncProgressItemString
-          << FolderStatusDelegate::WarningCount
-          << Qt::ToolTipRole;
+    const QVector<int> roles{ FolderStatusDelegate::SyncProgressItemString, Qt::ToolTipRole };
 
     if (progress.status() == ProgressInfo::Discovery) {
         if (!progress._currentDiscoveredRemoteFolder.isEmpty()) {
-            pi->_overallSyncString = tr("Checking for changes in remote \"%1\"").arg(progress._currentDiscoveredRemoteFolder);
-            emit dataChanged(index(folderIndex), index(folderIndex), roles);
+            subFolderProgress->_overallSyncString = tr("Checking for changes in remote \"%1\"").arg(progress._currentDiscoveredRemoteFolder);
+            Q_EMIT dataChanged(index(folderIndex), index(folderIndex), roles);
             return;
         } else if (!progress._currentDiscoveredLocalFolder.isEmpty()) {
-            pi->_overallSyncString = tr("Checking for changes in local \"%1\"").arg(progress._currentDiscoveredLocalFolder);
-            emit dataChanged(index(folderIndex), index(folderIndex), roles);
+            subFolderProgress->_overallSyncString = tr("Checking for changes in local \"%1\"").arg(progress._currentDiscoveredLocalFolder);
+            Q_EMIT dataChanged(index(folderIndex), index(folderIndex), roles);
             return;
         }
     }
 
     if (progress.status() == ProgressInfo::Reconcile) {
-        pi->_overallSyncString = tr("Reconciling changes");
-        emit dataChanged(index(folderIndex), index(folderIndex), roles);
+        subFolderProgress->_overallSyncString = tr("Syncing local and remote changes");
+        Q_EMIT dataChanged(index(folderIndex), index(folderIndex), roles);
         return;
     }
 
     // Status is Starting, Propagation or Done
-
     if (!progress._lastCompletedItem.isEmpty()
         && Progress::isWarningKind(progress._lastCompletedItem._status)) {
-        pi->_warningCount++;
+        subFolderProgress->_warningCount++;
     }
 
     // find the single item to display:  This is going to be the bigger item, or the last completed
@@ -1021,28 +1031,26 @@ void FolderStatusModel::slotSetProgress(const ProgressInfo &progress)
     auto curItem = progress._lastCompletedItem;
     qint64 curItemProgress = -1; // -1 means finished
     qint64 biggerItemSize = 0;
-    quint64 estimatedUpBw = 0;
-    quint64 estimatedDownBw = 0;
-    QString allFilenames;
-    for (const auto &citm : progress._currentItems) {
-        if (curItemProgress == -1 || (ProgressInfo::isSizeDependent(citm._item)
-                                         && biggerItemSize < citm._item._size)) {
-            curItemProgress = citm._progress.completed();
-            curItem = citm._item;
-            biggerItemSize = citm._item._size;
+    qint64 estimatedUpBw = 0;
+    qint64 estimatedDownBw = 0;
+    QStringList filenamesList;
+    for (const auto &syncFile : progress._currentItems) {
+        if (curItemProgress == -1 || (ProgressInfo::isSizeDependent(syncFile._item)
+                                         && biggerItemSize < syncFile._item._size)) {
+            curItemProgress = syncFile._progress.completed();
+            curItem = syncFile._item;
+            biggerItemSize = syncFile._item._size;
         }
-        if (citm._item._direction != SyncFileItem::Up) {
-            estimatedDownBw += progress.fileProgress(citm._item).estimatedBandwidth;
+
+        if (syncFile._item._direction != SyncFileItem::Up) {
+            estimatedDownBw += progress.fileProgress(syncFile._item).estimatedBandwidth;
         } else {
-            estimatedUpBw += progress.fileProgress(citm._item).estimatedBandwidth;
+            estimatedUpBw += progress.fileProgress(syncFile._item).estimatedBandwidth;
         }
-        auto fileName = QFileInfo(citm._item._file).fileName();
-        if (allFilenames.length() > 0) {
-            //: Build a list of file names
-            allFilenames.append(QStringLiteral(", \"%1\"").arg(fileName));
-        } else {
-            //: Argument is a file name
-            allFilenames.append(QStringLiteral("\"%1\"").arg(fileName));
+
+        const auto fileName = QFileInfo(syncFile._item._file).fileName();
+        if (filenamesList.length() < 2) {
+            filenamesList.append(QStringLiteral("\"%1\"").arg(fileName));
         }
     }
     if (curItemProgress == -1) {
@@ -1051,28 +1059,19 @@ void FolderStatusModel::slotSetProgress(const ProgressInfo &progress)
 
     const auto itemFileName = curItem._file;
     const auto kindString = Progress::asActionString(curItem);
-
+    const auto allFilenames = filenamesList.join(", ");
     QString fileProgressString;
     if (ProgressInfo::isSizeDependent(curItem)) {
-        const auto s1 = Utility::octetsToString(curItemProgress);
-        const auto s2 = Utility::octetsToString(curItem._size);
-        //quint64 estimatedBw = progress.fileProgress(curItem).estimatedBandwidth;
         if (estimatedUpBw || estimatedDownBw) {
-            /*
-            //: Example text: "uploading foobar.png (1MB of 2MB) time left 2 minutes at a rate of 24Kb/s"
-            fileProgressString = tr("%1 %2 (%3 of %4) %5 left at a rate of %6/s")
-                .arg(kindString, itemFileName, s1, s2,
-                    Utility::durationToDescriptiveString(progress.fileProgress(curItem).estimatedEta),
-                    Utility::octetsToString(estimatedBw) );
-            */
+            //: Example text: "Uploading foobar.png (1MB of 2MB) time left 2 minutes at a rate of 24Kb/s"
             //: Example text: "Syncing 'foo.txt', 'bar.txt'"
-            fileProgressString = tr("Syncing %1").arg(allFilenames);
+            fileProgressString = tr("%1 %2 …").arg(kindString, allFilenames);
             if (estimatedDownBw > 0) {
                 fileProgressString.append(tr(", "));
 // ifdefs: https://github.com/owncloud/client/issues/3095#issuecomment-128409294
 #ifdef Q_OS_WIN
-                //: Example text: "download 24Kb/s"   (%1 is replaced by 24Kb (translated))
-                fileProgressString.append(tr("download %1/s").arg(Utility::octetsToString(estimatedDownBw)));
+                //: Example text: "Download 24Kb/s"   (%1 is replaced by 24Kb (translated))
+                fileProgressString.append(tr("Download %1/s").arg(Utility::octetsToString(estimatedDownBw)));
 #else
                 fileProgressString.append(tr("\u2193 %1/s")
                                               .arg(Utility::octetsToString(estimatedDownBw)));
@@ -1081,47 +1080,51 @@ void FolderStatusModel::slotSetProgress(const ProgressInfo &progress)
             if (estimatedUpBw > 0) {
                 fileProgressString.append(tr(", "));
 #ifdef Q_OS_WIN
-                //: Example text: "upload 24Kb/s"   (%1 is replaced by 24Kb (translated))
-                fileProgressString.append(tr("upload %1/s").arg(Utility::octetsToString(estimatedUpBw)));
+                //: Example text: "Upload 24Kb/s"   (%1 is replaced by 24Kb (translated))
+                fileProgressString.append(tr("Upload %1/s").arg(Utility::octetsToString(estimatedUpBw)));
 #else
                 fileProgressString.append(tr("\u2191 %1/s")
                                               .arg(Utility::octetsToString(estimatedUpBw)));
 #endif
             }
         } else {
-            //: Example text: "uploading foobar.png (2MB of 2MB)"
-            fileProgressString = tr("%1 %2 (%3 of %4)").arg(kindString, itemFileName, s1, s2);
+            //: Example text: "Uploading foobar.png (2MB of 2MB)"
+            fileProgressString = tr("%1 %2 (%3 of %4)").arg(kindString, itemFileName,
+                                                            Utility::octetsToString(curItemProgress),
+                                                            Utility::octetsToString(curItem._size));
         }
     } else if (!kindString.isEmpty()) {
-        //: Example text: "uploading foobar.png"
+        //: Example text: "Uploading foobar.png"
         fileProgressString = tr("%1 %2").arg(kindString, itemFileName);
     }
-    pi->_progressString = fileProgressString;
+    subFolderProgress->_progressString = fileProgressString;
 
     // overall progress
     const auto completedSize = progress.completedSize();
-    const auto completedFile = progress.completedFiles();
     const auto currentFile = progress.currentFile();
-    const auto totalSize = qMax(completedSize, progress.totalSize());
     const auto totalFileCount = qMax(currentFile, progress.totalFiles());
+    const auto totalSize = qMax(completedSize, progress.totalSize());
+
     QString overallSyncString;
-    if (totalSize > 0) {
-        const auto s1 = Utility::octetsToString(completedSize);
-        const auto s2 = Utility::octetsToString(totalSize);
+    if (totalSize > 0 && completedSize > 0) {
+        const auto completedSizeString = Utility::octetsToString(completedSize);
+        const auto totalSizeString = Utility::octetsToString(totalSize);
 
-        const auto estimatedEta = progress.totalProgress().estimatedEta;
+        if (const auto estimatedEta = progress.totalProgress().estimatedEta;
+            progress.trustEta() && (estimatedEta > 0 || _isSyncRunningForAwhile)) {
 
-        if (progress.trustEta() && (estimatedEta > 0 || _isSyncRunningForAwhile)) {
             _isSyncRunningForAwhile = true;
             //: Example text: "5 minutes left, 12 MB of 345 MB, file 6 of 7"
             if (estimatedEta == 0) {
                 overallSyncString = tr("A few seconds left, %1 of %2, file %3 of %4")
-                                        .arg(s1, s2)
+                                        .arg(completedSizeString, totalSizeString)
                                         .arg(currentFile)
                                         .arg(totalFileCount);
             } else {
+                //: %1 is the completed data size. %2 is the total data size. %3 is the current file number.
+                //: %4 is the total file count. %5 is the remaining duration.
                 overallSyncString = tr("%5 left, %1 of %2, file %3 of %4")
-                                        .arg(s1, s2)
+                                        .arg(completedSizeString, totalSizeString)
                                         .arg(currentFile)
                                         .arg(totalFileCount)
                                         .arg(Utility::durationToDescriptiveString1(estimatedEta));
@@ -1130,24 +1133,23 @@ void FolderStatusModel::slotSetProgress(const ProgressInfo &progress)
         } else {
             //: Example text: "12 MB of 345 MB, file 6 of 7"
             overallSyncString = tr("%1 of %2, file %3 of %4")
-                                    .arg(s1, s2)
+                                    .arg(completedSizeString, totalSizeString)
                                     .arg(currentFile)
                                     .arg(totalFileCount);
         }
-    } else if (totalFileCount > 0) {
+    } else if (totalFileCount > 0 && currentFile > 0) {
         // Don't attempt to estimate the time left if there is no kb to transfer.
-        overallSyncString = tr("file %1 of %2").arg(currentFile).arg(totalFileCount);
+        overallSyncString = tr("File %1 of %2").arg(currentFile).arg(totalFileCount);
     }
-
-    pi->_overallSyncString = overallSyncString;
+    subFolderProgress->_overallSyncString = overallSyncString;
 
     auto overallPercent = 0;
-    if (totalFileCount > 0) {
+    if (const auto completedFile = progress.completedFiles();totalFileCount > 0) {
         // Add one 'byte' for each file so the percentage is moving when deleting or renaming files
         overallPercent = qRound(double(completedSize + completedFile) / double(totalSize + totalFileCount) * 100.0);
     }
-    pi->_overallPercent = qBound(0, overallPercent, 100);
-    emit dataChanged(index(folderIndex), index(folderIndex), roles);
+    subFolderProgress->_overallPercent = qBound(0, overallPercent, 100);
+    Q_EMIT dataChanged(index(folderIndex), index(folderIndex), roles);
 }
 
 void FolderStatusModel::e2eInitializationFinished(bool isNewMnemonicGenerated)
@@ -1186,10 +1188,11 @@ void FolderStatusModel::slotFolderSyncStateChange(Folder *folder)
         const auto folderMan = FolderMan::instance();
         auto pos = folderMan->scheduleQueue().indexOf(folder);
         for (auto other : folderMan->map()) {
-            if (other != folder && other->isSyncRunning())
+            if (other != folder && other->isSyncRunning()) {
                 pos += 1;
+            }
         }
-        const auto message = pos <= 0 ? tr("Waiting …") : tr("Waiting for %n other folder(s) …", "", pos);
+        const auto message = pos <= 0 ? tr("About to start syncing") : tr("Waiting for %n other folder(s) …", "", pos);
         pi = SubFolderInfo::Progress();
         pi._overallSyncString = message;
     } else if (state == SyncResult::SyncPrepare) {
@@ -1247,7 +1250,7 @@ void FolderStatusModel::slotSyncAllPendingBigFolders()
             qCWarning(lcFolderStatus) << "Could not read selective sync list from db.";
             return;
         }
-        for (const auto &undecidedFolder : undecidedList) {
+        for (const auto &undecidedFolder : std::as_const(undecidedList)) {
             blackList.removeAll(undecidedFolder);
         }
         folder->journalDb()->setSelectiveSyncList(SyncJournalDb::SelectiveSyncBlackList, blackList);
@@ -1270,7 +1273,7 @@ void FolderStatusModel::slotSyncAllPendingBigFolders()
         }
         // The part that changed should not be read from the DB on next sync because there might be new folders
         // (the ones that are no longer in the blacklist)
-        for (const auto &it : undecidedList) {
+        for (const auto &it : std::as_const(undecidedList)) {
             folder->journalDb()->schedulePathForRemoteDiscovery(it);
             folder->schedulePathForLocalDiscovery(it);
         }
@@ -1310,8 +1313,8 @@ void FolderStatusModel::slotNewBigFolder()
 
     resetAndFetch(index(folderIndex));
 
-    emit suggestExpand(index(folderIndex));
-    emit dirtyChanged();
+    Q_EMIT suggestExpand(index(folderIndex));
+    Q_EMIT dirtyChanged();
 }
 
 void FolderStatusModel::slotShowFetchProgress()

@@ -1,15 +1,6 @@
 /*
- * Copyright (C) by Felix Weilbach <felix.weilbach@nextcloud.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
- * for more details.
+ * SPDX-FileCopyrightText: 2021 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include <QTest>
@@ -20,6 +11,9 @@
 #include "accountfwd.h"
 #include "pushnotifications.h"
 #include "pushnotificationstestutils.h"
+#include "logger.h"
+
+#include <QStandardPaths>
 
 #define RETURN_FALSE_ON_FAIL(expr) \
     if (!(expr)) {                 \
@@ -64,7 +58,15 @@ class TestPushNotifications : public QObject
 {
     Q_OBJECT
 
-private slots:
+private Q_SLOTS:
+    void initTestCase()
+    {
+        OCC::Logger::instance()->setLogFlush(true);
+        OCC::Logger::instance()->setLogDebug(true);
+
+        QStandardPaths::setTestModeEnabled(true);
+    }
+
     void testTryReconnect_capabilitesReportPushNotificationsAvailable_reconnectForEver()
     {
         FakeWebSocketServer fakeServer;
@@ -104,6 +106,24 @@ private slots:
             }));
     }
 
+    void testSetup_httpsAccountWithPlaintextWebSocket_doesNotSendCredentials()
+    {
+        FakeWebSocketServer fakeServer;
+        const auto account = FakeWebSocketServer::createAccount(
+            QStringLiteral("user"),
+            QStringLiteral("app-password"),
+            QUrl(QStringLiteral("https://cloud.example.test")),
+            QUrl(QStringLiteral("ws://localhost:12345")));
+
+        QVERIFY(!account->pushNotifications());
+        QCOMPARE(fakeServer.textMessagesCount(), 0);
+
+        account->trySetupPushNotifications();
+
+        QVERIFY(!account->pushNotifications());
+        QCOMPARE(fakeServer.textMessagesCount(), 0);
+    }
+
     void testOnWebSocketTextMessageReceived_notifyFileMessage_emitFilesChanged()
     {
         FakeWebSocketServer fakeServer;
@@ -117,6 +137,23 @@ private slots:
         // filesChanged signal should be emitted
         QVERIFY(filesChangedSpy.wait());
         QVERIFY(verifyCalledOnceWithAccount(filesChangedSpy, account));
+    }
+
+    void testOnWebSocketTextMessageReceived_notifyFileIdMessage_emitFilesChanged()
+    {
+        FakeWebSocketServer fakeServer;
+        auto account = FakeWebSocketServer::createAccount();
+        const auto socket = fakeServer.authenticateAccount(account);
+        QVERIFY(socket);
+        QSignalSpy filesChangedSpy(account->pushNotifications(), &OCC::PushNotifications::fileIdsChanged);
+
+        socket->sendTextMessage("notify_file_id [1,2,3,5,8,13,21,34,55,89,144]");
+
+        // filesChanged signal should be emitted
+        QVERIFY(filesChangedSpy.wait());
+        QVERIFY(verifyCalledOnceWithAccount(filesChangedSpy, account));
+        const QList<QVariant> expected = {1,2,3,5,8,13,21,34,55,89,144};
+        QCOMPARE(filesChangedSpy.at(0).at(1).toList(), expected);
     }
 
     void testOnWebSocketTextMessageReceived_notifyActivityMessage_emitNotification()
@@ -217,7 +254,7 @@ private slots:
         // The websocket that is retrieved through the server is not connected to the ssl error signal.
         auto pushNotificationsWebSocketChildren = account->pushNotifications()->findChildren<QWebSocket *>();
         QVERIFY(pushNotificationsWebSocketChildren.size() == 1);
-        emit pushNotificationsWebSocketChildren[0]->sslErrors(QList<QSslError>());
+        Q_EMIT pushNotificationsWebSocketChildren[0]->sslErrors(QList<QSslError>());
 
         // Account handled connectionLost signal and the authenticationFailed Signal should be emitted
         QCOMPARE(pushNotificationsDisabledSpy.count(), 1);
@@ -246,8 +283,8 @@ private slots:
 
         QCOMPARE(connectionLostSpy.count(), 1);
 
-        auto accountSent = pushNotificationsDisabledSpy.at(0).at(0).value<OCC::Account *>();
-        QCOMPARE(accountSent, account.data());
+        const auto accountSent = pushNotificationsDisabledSpy.at(0).at(0).value<OCC::AccountPtr>();
+        QCOMPARE(accountSent.data(), account.data());
     }
 
     void testAccount_web_socket_authenticationFailed_emitNotificationsDisabled()
@@ -261,8 +298,8 @@ private slots:
 
         // Now the pushNotificationsDisabled Signal should be emitted
         QCOMPARE(pushNotificationsDisabledSpy.count(), 1);
-        auto accountSent = pushNotificationsDisabledSpy.at(0).at(0).value<OCC::Account *>();
-        QCOMPARE(accountSent, account.data());
+        const auto accountSent = pushNotificationsDisabledSpy.at(0).at(0).value<OCC::AccountPtr>();
+        QCOMPARE(accountSent.data(), account.data());
     }
 
     void testPingTimeout_pingTimedOut_reconnect()

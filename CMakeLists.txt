@@ -1,14 +1,16 @@
+# SPDX-FileCopyrightText: 2018 Nextcloud GmbH and Nextcloud contributors
+# SPDX-FileCopyrightText: 2011 ownCloud GmbH
+# SPDX-License-Identifier: GPL-2.0-or-later
 cmake_minimum_required(VERSION 3.16)
-cmake_policy(SET CMP0071 NEW) # Enable use of QtQuick compiler/generated code
 
 project(client)
 
 if(APPLE)
-    set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0" CACHE STRING "Minimum OSX deployment version")
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING "Minimum OSX deployment version")
 endif()
 
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED 17)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include(FeatureSummary)
 
@@ -17,14 +19,18 @@ if (CLANG_TIDY_EXE)
     set(CMAKE_CXX_CLANG_TIDY ${CLANG_TIDY_EXE} -checks=-*,modernize-use-auto,modernize-use-using,modernize-use-nodiscard,modernize-use-nullptr,modernize-use-override,cppcoreguidelines-pro-type-static-cast-downcast,modernize-use-default-member-init,cppcoreguidelines-pro-type-member-init,cppcoreguidelines-init-variables)
 endif()
 
-set(CMAKE_XCODE_ATTRIBUTE_ENABLE_HARDENED_RUNTIME YES)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(CMAKE_XCODE_ATTRIBUTE_ENABLE_HARDENED_RUNTIME NO)
+else()
+    set(CMAKE_XCODE_ATTRIBUTE_ENABLE_HARDENED_RUNTIME YES)
+endif()
 
 set(BIN_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 include(${CMAKE_SOURCE_DIR}/NEXTCLOUD.cmake)
 
 set(QT_VERSION_MAJOR "6")
-set(REQUIRED_QT_VERSION "6.0.0")
+set(REQUIRED_QT_VERSION "6.10.0")
 
 # CfAPI Shell Extensions
 set( CFAPI_SHELL_EXTENSIONS_LIB_NAME CfApiShellExtensions )
@@ -49,16 +55,26 @@ if(NOT DEFINED APPLICATION_VIRTUALFILE_SUFFIX)
 endif()
 
 # need this logic to not mess with re/uninstallations via macosx.pkgproj
-if(${APPLICATION_REV_DOMAIN} STREQUAL "com.owncloud.desktopclient")
-    set(APPLICATION_REV_DOMAIN_INSTALLER "com.ownCloud.client")
-else()
-    set(APPLICATION_REV_DOMAIN_INSTALLER ${APPLICATION_REV_DOMAIN})
+if(NOT DEFINED APPLICATION_REV_DOMAIN_INSTALLER)
+    set(APPLICATION_REV_DOMAIN_INSTALLER "${APPLICATION_REV_DOMAIN}")
+endif()
+
+option( APPLICATION_DISPLAY_LEGACY_IMPORT_DIALOG "Display legacy import dialog" ON )
+option( DISABLE_ACCOUNT_MIGRATION "Exclude legacy account migration and import" OFF )
+option( WIZARD_HIDE_SELF_HOST_BUTTON "Hide the Self-host button in the account setup wizard" OFF )
+option( WIZARD_HIDE_SIGNUP_BUTTON "Hide the Sign up button in the account setup wizard" OFF )
+if(NOT DEFINED APPLICATION_SIGNUP_URL)
+    set(APPLICATION_SIGNUP_URL "" CACHE STRING "Custom URL for the Sign up button; empty uses the default signup page")
 endif()
 
 # For usage in XML files we preprocess
 string(REPLACE "&" "&amp;" APPLICATION_NAME_XML_ESCAPED "${APPLICATION_NAME}")
 string(REPLACE "<" "&lt;" APPLICATION_NAME_XML_ESCAPED "${APPLICATION_NAME_XML_ESCAPED}")
 string(REPLACE ">" "&gt;" APPLICATION_NAME_XML_ESCAPED "${APPLICATION_NAME_XML_ESCAPED}")
+
+string(REPLACE "&" "&amp;" APPLICATION_VENDOR_XML_ESCAPED "${APPLICATION_VENDOR}")
+string(REPLACE "<" "&lt;" APPLICATION_VENDOR_XML_ESCAPED "${APPLICATION_VENDOR_XML_ESCAPED}")
+string(REPLACE ">" "&gt;" APPLICATION_VENDOR_XML_ESCAPED "${APPLICATION_VENDOR_XML_ESCAPED}")
 
 if (NOT DEFINED LINUX_PACKAGE_SHORTNAME)
     set(LINUX_PACKAGE_SHORTNAME "${APPLICATION_SHORTNAME}")
@@ -68,7 +84,24 @@ if (NOT DEFINED PACKAGE)
     set(PACKAGE "${LINUX_PACKAGE_SHORTNAME}-client")
 endif()
 
-set( CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake/modules )
+set(APPLE_SUPPRESS_X11_WARNING ON)
+
+find_package(ECM 6.0.0 REQUIRED NO_MODULE)
+set_package_properties(ECM PROPERTIES TYPE REQUIRED DESCRIPTION "Extra CMake Modules." URL "https://invent.kde.org/frameworks/extra-cmake-modules")
+
+set(CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake/modules ${ECM_MODULE_PATH} ${CMAKE_MODULE_PATH})
+
+include(KDEInstallDirs)
+include(KDECMakeSettings)
+include(ECMMarkNonGuiExecutable)
+include(ECMSetupVersion)
+include(ECMQmlModule)
+
+include(KDEGitCommitHooks)
+kde_configure_git_pre_commit_hook(CHECKS CLANG_FORMAT)
+
+#include(KDECompilerSettings NO_POLICY_SCOPE)
+include(ECMEnableSanitizers)
 
 include(ECMCoverageOption)
 
@@ -210,10 +243,6 @@ if(OWNCLOUD_5XX_NO_BLACKLIST)
     add_definitions(-DOWNCLOUD_5XX_NO_BLACKLIST=1)
 endif()
 
-if(APPLE)
-  set( SOCKETAPI_TEAM_IDENTIFIER_PREFIX "" CACHE STRING "SocketApi prefix (including a following dot) that must match the codesign key's TeamIdentifier/Organizational Unit" )
-endif()
-
 if(BUILD_CLIENT)
     OPTION(GUI_TESTING "Build with gui introspection features of socket api" OFF)
 
@@ -224,29 +253,32 @@ if(BUILD_CLIENT)
     if(UNIX AND NOT APPLE)
         find_package(Inotify REQUIRED)
     endif()
-    find_package(Sphinx)
-    find_package(PdfLatex)
     find_package(OpenSSL 1.1 REQUIRED )
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(OPENSC-LIBP11 libp11 REQUIRED IMPORTED_TARGET)
 
-   find_package(ZLIB REQUIRED)
-   find_package(SQLite3 3.9.0 REQUIRED)
+    set(ENCRYPTION_HARDWARE_TOKEN_DRIVER_PATH "" CACHE PATH "Path to the driver for end-to-end encryption token")
+    option(CLIENTSIDEENCRYPTION_ENFORCE_USB_TOKEN "Enforce use of an hardware token for end-to-end encryption" false)
 
-   if(NOT WIN32 AND NOT APPLE)
-      find_package(PkgConfig REQUIRED)
-      pkg_check_modules(CLOUDPROVIDERS cloudproviders IMPORTED_TARGET)
+    find_package(ZLIB REQUIRED)
+    find_package(SQLite3 3.9.0 REQUIRED)
 
-      if(CLOUDPROVIDERS_FOUND)
-        pkg_check_modules(DBUS-1 REQUIRED dbus-1 IMPORTED_TARGET)
-        pkg_check_modules(GIO REQUIRED gio-2.0 IMPORTED_TARGET)
-        pkg_check_modules(GLIB2 REQUIRED glib-2.0 IMPORTED_TARGET)
-      endif()
-   endif()
+    find_package(KDSingleApplication-qt6 REQUIRED)
+
+    if(NOT WIN32 AND NOT APPLE)
+        find_package(PkgConfig REQUIRED)
+        pkg_check_modules(CLOUDPROVIDERS cloudproviders IMPORTED_TARGET)
+
+        if(CLOUDPROVIDERS_FOUND)
+            pkg_check_modules(DBUS-1 REQUIRED dbus-1 IMPORTED_TARGET)
+            pkg_check_modules(GIO REQUIRED gio-2.0 IMPORTED_TARGET)
+            pkg_check_modules(GLIB2 REQUIRED glib-2.0 IMPORTED_TARGET)
+        endif()
+    endif()
 endif()
 
-if (APPLE)
-    option(BUILD_WITH_WEBENGINE "BUILD_WITH_WEBENGINE" OFF)
-else ()
-    option(BUILD_WITH_WEBENGINE "BUILD_WITH_WEBENGINE" ON)
+if (LINUX)
+    find_package(KF6DBusAddons)
 endif()
 
 if (NOT DEFINED APPLICATION_ICON_NAME)
@@ -260,9 +292,12 @@ add_definitions(-D_UNICODE)
 if( WIN32 )
 add_definitions( -D__USE_MINGW_ANSI_STDIO=1 )
 add_definitions( -DNOMINMAX )
-# Get APIs from from Vista onwards.
-add_definitions(-D_WIN32_WINNT=0x0601)
-add_definitions(-DWINVER=0x0601)
+# Target Windows 10 or later, matching the documented supported runtime
+# (see README). NTDDI_VERSION is already on Windows 10 2004 (19041), so
+# the previous Windows 7 values for WINVER / _WIN32_WINNT were merely
+# stale — bringing them in line unlocks Win8+ APIs like XAudio2.
+add_definitions(-D_WIN32_WINNT=0x0A00)
+add_definitions(-DWINVER=0x0A00)
 add_definitions(-DNTDDI_VERSION=0x0A000004)
     if( MSVC )
     # Use automatic overload for suitable CRT safe-functions
@@ -271,8 +306,8 @@ add_definitions(-DNTDDI_VERSION=0x0A000004)
     # Also: Disable compiler warnings because we don't use Windows CRT safe-functions explicitly and don't intend to
     # as this is a pure cross-platform source the only alternative would be a ton of ifdefs with calls to the _s version
     add_definitions( -D_CRT_SECURE_NO_WARNINGS )
-    endif( MSVC )
-endif( WIN32 )
+    endif()
+endif()
 
 if (APPLE)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -stdlib=libc++")
@@ -285,23 +320,22 @@ set(TRANSLATIONS ${TRANS_FILES})
 if(BUILD_CLIENT)
     add_subdirectory(src)
     if(NOT BUILD_LIBRARIES_ONLY)
-        add_subdirectory(man)
-        add_subdirectory(doc)
-        add_subdirectory(doc/dev)
         if(IS_DIRECTORY ${CMAKE_SOURCE_DIR}/admin)
             add_subdirectory(admin)
-        endif(IS_DIRECTORY ${CMAKE_SOURCE_DIR}/admin)
-    endif(NOT BUILD_LIBRARIES_ONLY)
+        endif()
+    endif()
 endif()
 
 if(BUILD_SHELL_INTEGRATION)
     add_subdirectory(shell_integration)
 endif()
 
-if(BUILD_TESTING)
+if(BUILD_TESTING AND BUILD_GUI)
     include(CTest)
     enable_testing()
     add_subdirectory(test)
+elseif(BUILD_TESTING)
+    message(STATUS "Skipping tests: BUILD_TESTING requires BUILD_GUI to be enabled.")
 endif()
 
 configure_file(config.h.in ${CMAKE_CURRENT_BINARY_DIR}/config.h)
@@ -313,6 +347,27 @@ if(BUILD_OWNCLOUD_OSX_BUNDLE)
 elseif(BUILD_CLIENT)
     install( FILES sync-exclude.lst DESTINATION ${SYSCONFDIR}/${APPLICATION_SHORTNAME} )
     configure_file(sync-exclude.lst bin/sync-exclude.lst COPYONLY)
+endif()
+
+if(LINUX AND BUILD_CLIENT)
+    set(bindir ${CMAKE_INSTALL_FULL_BINDIR})
+    configure_file(systemd/nextcloud-desktop.service.in "${CMAKE_CURRENT_BINARY_DIR}/${LINUX_APPLICATION_ID}.service")
+
+    pkg_check_modules(SYSTEMD systemd IMPORTED_TARGET)
+    set_package_properties(systemd PROPERTIES
+        DESCRIPTION "Systemd development files needed to install user service"
+        TYPE OPTIONAL
+    )
+    pkg_get_variable(SYSTEMD_USER_UNIT_DIR systemd "systemd_user_unit_dir")
+    if (SYSTEMD_USER_UNIT_DIR)
+        message(STATUS "Systemd development files found. Enable installing systemd user service.")
+        option(INSTALL_SYSTEMD "Install systemd user service" ON)
+        if(INSTALL_SYSTEMD)
+            install(FILES "${CMAKE_CURRENT_BINARY_DIR}/${LINUX_APPLICATION_ID}.service" DESTINATION "${SYSTEMD_USER_UNIT_DIR}")
+        endif()
+    else()
+        message(STATUS "Systemd development files not found. Not installing systemd user service.")
+    endif()
 endif()
 
 feature_summary(WHAT ALL FATAL_ON_MISSING_REQUIRED_PACKAGES INCLUDE_QUIET_PACKAGES)
